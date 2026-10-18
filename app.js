@@ -54,7 +54,8 @@ async function runScan(a){
  const t0=Date.now(),api=apiUrl();let res;
  if(api){
   const r=await fetch(api.replace(/\/$/,'')+'/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assetId:a.id,type:CATS[a.cat].api,targetUrl:['web','api'].includes(a.cat)?proto(a.target):a.target,name:a.name,extra:a.extra||{}})});
-  const j=await r.json();if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
+  let j;try{j=await r.json()}catch{throw new Error('Sunucu geçersiz yanıt verdi ('+r.status+'). Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.')}
+  if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
  }else res=await mock(a);
  a.result=res;a.lastScan=Date.now();
  S.scans.unshift({id:uid(),assetId:a.id,name:a.name,cat:a.cat,score:res.healthScore,status:res.status,at:Date.now(),ms:Date.now()-t0,mock:!api});
