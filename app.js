@@ -27,7 +27,7 @@ const normKey=(cat,v)=>{v=String(v).trim().toLowerCase();if(cat==='saas')return 
 const proto=u=>/^https?:\/\//i.test(u)?u:'https://'+u;
 const sev=f=>/_critical$/.test(f)?'bd':/_warning$/.test(f)?'wn':'mu';
 const sevL={bd:'Kritik',wn:'Uyarı',mu:'Bilgi'};
-const finT=f=>String(f).replace(/^finding_/,'').replace(/_(critical|warning|info)$/,'').replace(/_/g,' ');
+const finT=f=>f==='finding_web_bot_protection_info'?'Bot koruması taramayı engelledi (site büyük olasılıkla çalışıyor, ayrıntılı analiz yapılamadı)':String(f).replace(/^finding_/,'').replace(/_(critical|warning|info)$/,'').replace(/_/g,' ');
 const isBad=s=>['CRITICAL','EXPIRED','DOWN','ERROR'].includes(s);
 const isOk=s=>['ACTIVE','HEALTHY'].includes(s);
 const tone=n=>n>=80?'ok':n>=50?'wn':'bd';
@@ -107,7 +107,7 @@ function dash(){
  <div class="mh" style="margin-top:24px"><b style="font-size:18px">${ic('layers','style="color:var(--bl)"')} Tüm Tarama Araçları</b><span class="hint">8 kategori</span></div>
  <div class="tools">${Object.entries(CATS).map(([k,v])=>`<a class="tool" href="#cat/${k}"><div class="ico" style="color:${v.c}">${ic(v.icon)}</div><h3 style="margin:12px 0 0;font-size:17px">${v.label}</h3><p>${v.desc}</p><div class="bar" style="--c:${v.c}"></div></a>`).join('')}</div>`;
 }
-const scanRow=s=>`<div class="item"><div class="ico" style="color:${CATS[s.cat]?.c}">${ic(CATS[s.cat]?.icon||'scan')}</div><div class="g"><b>${esc(s.name)}</b><span>${fmt(s.at)} • ${s.ms}ms${s.mock?' • demo':''}</span></div><span class="badge ${tone(s.score)}">${s.score}/100</span></div>`;
+const scanRow=s=>`<div class="item"><div class="ico" style="color:${CATS[s.cat]?.c}">${ic(CATS[s.cat]?.icon||'scan')}</div><div class="g"><b>${esc(s.name)}</b><span>${fmt(s.at)} • ${s.ms}ms${s.mock?' • demo':''}</span></div>${s.score!=null?`<span class="badge ${tone(s.score)}">${s.score}/100</span>`:'<span class="badge mu">?</span>'}</div>`;
 function catPage(k){
  const v=CATS[k],list=S.assets.filter(a=>a.cat===k);
  const form=k==='saas'?`<form data-form="add" data-cat="${k}"><input class="field" name="provider" placeholder="Sağlayıcı (ör: Notion)" required>
@@ -150,8 +150,8 @@ function showDetail(id){
  let h=`<div class="mh"><div><h2 style="margin:0">${esc(a.name)}</h2><span class="hint">${CATS[a.cat].label} • ${esc(a.target)}</span></div><button class="btn s" data-act="close">${ic('x')}</button></div>`;
  if(!r)h+=`<div class="empty">Henüz taranmadı</div><button class="btn p w" data-act="rescan" data-id="${id}">Tara</button>`;
  else{
-  const s=r.healthScore??0,sa=r.specificAnalysis||{},ca=r.commonAnalysis||{};
-  h+=`<div class="card" style="display:flex;gap:16px;align-items:center"><div class="ring" style="--p:${s};--rc:${col(s)}"><span>${s}</span></div><div><span class="badge ${isBad(r.status)?'bd':isOk(r.status)?'ok':'wn'}">${esc(r.status)}</span><div class="hint">Son tarama: ${fmt(a.lastScan)}<br>${esc(ca.analyzerVersion||'')} • ${ca.executionTimeMs??r.latencyMs??'-'}ms</div></div></div>`;
+  const s=r.healthScore??0,noScore=r.healthScore==null,sa=r.specificAnalysis||{},ca=r.commonAnalysis||{};
+  h+=`<div class="card" style="display:flex;gap:16px;align-items:center"><div class="ring" style="--p:${noScore?0:s};--rc:${noScore?'var(--mu)':col(s)}"><span>${noScore?'?':s}</span></div><div><span class="badge ${isBad(r.status)?'bd':isOk(r.status)?'ok':'wn'}">${r.status==='PROTECTED'?'KORUMALI':esc(r.status)}</span><div class="hint">Son tarama: ${fmt(a.lastScan)}<br>${esc(ca.analyzerVersion||'')} • ${ca.executionTimeMs??r.latencyMs??'-'}ms</div></div></div>`;
   const sco=Object.entries(sa.scores||{}).filter(([,v])=>typeof v==='number');
   if(sco.length)h+=`<div class="card"><b>Skorlar</b>${sco.map(([k,v])=>`<div class="sc" style="--rc:${col(v)}"><span>${esc(k)}</span><i><u style="width:${Math.min(100,v)}%"></u></i><span>${v}</span></div>`).join('')}</div>`;
   const f=r.findings||[];

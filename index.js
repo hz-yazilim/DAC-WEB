@@ -315,12 +315,44 @@ function defaultStatusFromHealth(level) {
   return "CRITICAL";
 }
 
+// ============ BOT KORUMASI ALGILAMA ============
+// Cloudflare vb. koruma "doğrulama sayfası" döndürürse site çalışıyor ama taranamıyor demektir.
+function detectBotProtection(probe) {
+  const h = probe.headers || {};
+  const body = String(probe.body || "").slice(0, 20000).toLowerCase();
+  const server = String(h["server"] || "").toLowerCase();
+  const blocked = [401, 403, 429, 503].includes(probe.status);
+  const cfHeader = String(h["cf-mitigated"] || "").toLowerCase() === "challenge";
+  const isCf = server.includes("cloudflare") || !!h["cf-ray"];
+  if (cfHeader) return "Cloudflare";
+  if (!blocked) return null;
+  if (isCf && /just a moment|cf-chl|challenge-platform|attention required|checking your browser|cf-browser-verification|enable javascript and cookies/.test(body)) return "Cloudflare";
+  if (h["x-sucuri-id"] || /sucuri website firewall/.test(body)) return "Sucuri";
+  if (h["x-iinfo"] || /incapsula incident/.test(body)) return "Imperva Incapsula";
+  if (server.includes("ddos-guard") || /ddos-guard/.test(body)) return "DDoS-Guard";
+  if (server.includes("akamaighost") && /access denied/.test(body)) return "Akamai";
+  return null;
+}
+
 // ============ 1. WEB SCANNER ============
 async function scanWebsite(targetUrl, extra = {}) {
   const startedAt = Date.now();
   const findings = []; const errors = [];
   if (!targetUrl) { findings.push("finding_web_missing_target_critical"); return { data: null, findings, errors: ["targetUrl yok"] }; }
   const main = await httpProbe(targetUrl);
+  const protection = detectBotProtection(main);
+  if (protection) {
+    // Gerçek içerik görülemedi: DOWN/SEO/güvenlik başlığı sonuçları güvenilmez, uydurma skor verme
+    findings.push("finding_web_bot_protection_info");
+    const specificAnalysis = {
+      url: targetUrl, finalUrl: main.finalUrl, status: main.status, responseTimeMs: main.responseTimeMs,
+      server: main.headers["server"] || null,
+      techStack: [protection],
+      botProtection: { detected: true, provider: protection, note: "Site bot koruması arkasında; tarayıcı doğrulama sayfası aldı. Site büyük olasılıkla çalışıyor, SEO ve güvenlik başlığı analizi yapılamadı." }
+    };
+    const commonAnalysis = { analyzerVersion: "web-analyzer-v3.1", executionTimeMs: Date.now() - startedAt, findings, scannedAt: new Date().toISOString(), score: null, status: "PROTECTED", target: targetUrl };
+    return { data: { assetType: "WEB", commonAnalysis, specificAnalysis, analysisMeta: { scannerVersion: "web-analyzer-v3.1", analyzer: "web", limited: true } }, findings, errors, statusHint: "PROTECTED" };
+  }
   if (!main.ok) findings.push("finding_web_down_critical");
   if (main.responseTimeMs > 3000) findings.push("finding_web_slow_warning");
   if (main.status >= 400) findings.push(`finding_web_status_${main.status}_critical`);
@@ -872,8 +904,9 @@ app.post("/api/scan", async (req, res) => {
   const healthResult = computeHealth(findings);
   const confidence = computeConfidence(findings, scanErrors.length > 0);
 
-  let finalHealthScore = typeData?.commonAnalysis?.score ?? healthResult.healthScore;
-  let finalHealthLevel = healthResult.healthLevel;
+  const scoreUnavailable = typeData?.commonAnalysis && typeData.commonAnalysis.score === null;
+  let finalHealthScore = scoreUnavailable ? null : (typeData?.commonAnalysis?.score ?? healthResult.healthScore);
+  let finalHealthLevel = scoreUnavailable ? "BELİRSİZ" : healthResult.healthLevel;
   let finalStatus = statusHint || (typeData?.commonAnalysis?.status) || defaultStatusFromHealth(finalHealthLevel);
   if (assetType === "DOMAIN" && typeData?.commonAnalysis?.score != null) {
     finalHealthScore = typeData.commonAnalysis.score;
