@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital Asset Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="busy"></div>
+<div id="shade"></div>
+<aside id="side"></aside>
+<div id="main">
+  <header id="top">
+    <button class="ib" data-act="menu" aria-label="Menü"><i data-lucide="menu"></i></button>
+    <div class="search"><i data-lucide="search"></i><input id="q" placeholder="Varlık, domain..." autocomplete="off"><kbd>Ctrl K</kbd><div id="sres" class="drop"></div></div>
+    <div class="rel"><button class="ib" data-act="bell" aria-label="Bildirimler"><i data-lucide="bell"></i><span id="dot"></span></button><div id="bell" class="drop right"></div></div>
+    <button class="avatar" id="av" data-act="goto" data-to="settings"></button>
+  </header>
+  <main id="view"></main>
+</div>
+<div id="modal"><div class="box" id="box"></div></div>
+<div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
