@@ -16,9 +16,9 @@ const LISTS={
  team:{title:'Ekip Yönetimi',icon:'users',f:[['name','Ad Soyad'],['email','Email'],['role','Rol']]},
  projects:{title:'Müşteri Projeleri',icon:'briefcase',f:[['name','Proje adı'],['client','Müşteri'],['note','Not']]}
 };
-const KEY='dac_v1';
-let S=JSON.parse(localStorage.getItem(KEY)||'null')||{assets:[],scans:[],team:[],projects:[],settings:{org:'HZ Yazılım',plan:'free',apiUrl:''}};
-const save=()=>localStorage.setItem(KEY,JSON.stringify(S));
+let KEY='dac_v1',S=null,U=null;
+const blank=()=>({assets:[],scans:[],team:[],projects:[],settings:{org:'HZ Yazılım',plan:'free',apiUrl:''}});
+const save=()=>{if(S)localStorage.setItem(KEY,JSON.stringify(S))};
 const apiUrl=()=>(S.settings.apiUrl||(window.DAC_CONFIG||{}).API_URL||'').trim();
 const LIMIT=5;
 
@@ -133,7 +133,7 @@ function plan(){const p=S.settings.plan;
  <div class="card ${p==='pro'?'on':''}"><h3>Pro</h3><p class="lbl">Sınırsız varlık</p>${p==='pro'?'<span class="badge ok">Aktif</span>':`<button class="btn p" data-act="plan" data-p="pro">Pro'ya geç</button>`}</div></div>
  <p class="hint">Ödeme sistemi bağlı değil; paket değişimi şimdilik yerel olarak yapılır.</p>`}
 function settings(){const s=S.settings;
- return`<h2>Ayarlar</h2><p class="sub">Hesap ve bağlantı</p><div class="card"><form data-form="settings">
+ return`<h2>Ayarlar</h2><p class="sub">${esc(U?.email||'Hesap ve bağlantı')}</p><div class="card"><form data-form="settings">
  <label class="hint">Organizasyon adı</label><input class="field" name="org" value="${esc(s.org)}" required>
  <label class="hint">Scanner API adresi (boşsa demo mod)</label><input class="field" name="apiUrl" value="${esc(s.apiUrl)}" placeholder="${esc((window.DAC_CONFIG||{}).API_URL||'https://scanner.onrender.com')}">
  <button class="btn p w" type="submit">Kaydet</button></form></div>
@@ -162,16 +162,17 @@ function showDetail(id){
 }
 
 /* ---------- ana render ---------- */
-const NAV=[['GENEL',[['dash','Genel Bakış','layout-grid']]],['TARAMA KATEGORİLERİ',Object.entries(CATS).map(([k,v])=>['cat/'+k,v.label,v.icon,S.assets.filter(a=>a.cat===k).length])],
+const NAV=[['GENEL',[['dash','Genel Bakış','layout-grid']]],['TARAMA KATEGORİLERİ',Object.entries(CATS).map(([k,v])=>['cat/'+k,v.label,v.icon])],
  ['YÖNETİM',[['assets','Varlıklarım','database'],['history','Tarama Geçmişi','history'],['reports','Raporlar','bar-chart-3'],['team','Ekip Yönetimi','users'],['projects','Müşteri Projeleri','briefcase'],['plan','Paket ve Faturalandırma','credit-card'],['settings','Ayarlar','settings']]]];
 const icons=()=>window.lucide&&lucide.createIcons();
 function render(){
+ if(!S)return;
  const r=location.hash.slice(1)||'dash',[p,k]=r.split('/');
  const counts={};Object.keys(CATS).forEach(c=>counts[c]=S.assets.filter(a=>a.cat===c).length);
  $('#side').innerHTML=`<div class="brand"><div class="logo">${ic('shield')}</div><div><b>Digital Asset Center</b><small>v10.3 • Enterprise</small></div></div>
  <nav class="nav">${NAV.map(([t,it])=>`<h6>${t}</h6>`+it.map(([h,l,i])=>`<a href="#${h}" class="${h===r?'on':''}">${ic(i)}${l}${h.startsWith('cat/')?`<b>${counts[h.slice(4)]}</b>`:''}</a>`).join('')).join('')}</nav>
  <div class="org"><div class="orgc"><div class="r"><div class="av">${esc(S.settings.org.slice(0,2).toUpperCase())}</div><div><b>${esc(S.settings.org)}</b><br><small>${S.settings.plan==='free'?'Free Paket':'Pro Paket'} • ${S.assets.length}/${S.settings.plan==='free'?LIMIT:'∞'} varlık</small></div></div>
- <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="wipe">${ic('log-out')} Çıkış</button></div></div></div>`;
+ <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="logout">${ic('log-out')} Çıkış</button></div></div></div>`;
  $('#av').textContent=S.settings.org.slice(0,2).toUpperCase();
  $('#dot').style.display=alerts().length?'block':'none';
  $('#view').innerHTML=p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='history'?history():p==='reports'?reports():LISTS[p]?listPage(p):p==='plan'?plan():p==='settings'?settings():dash();
@@ -200,6 +201,7 @@ document.addEventListener('click',e=>{
  else if(act==='clearhist'){S.scans=[];save();render()}
  else if(act==='plan'){S.settings.plan=b.dataset.p;save();render()}
  else if(act==='dellist'){const k=b.dataset.k;S[k]=S[k].filter(x=>x.id!==id);save();render()}
+ else if(act==='logout'){window.dacLogout&&window.dacLogout()}
  else if(act==='wipe'){if(confirm('Tüm veriler silinecek. Emin misiniz?')){localStorage.removeItem(KEY);location.hash='';location.reload()}}
  else if(act==='csv'){const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;dl('varliklar.csv',['Ad;Tür;Hedef;Skor;Durum;Son tarama',...S.assets.map(a=>[a.name,CATS[a.cat].label,a.target,sc(a)??'',a.result?.status??'',fmt(a.lastScan)].map(q).join(';'))].join('\n'),'text/csv')}
  else if(act==='json')dl('varliklar.json',JSON.stringify(S.assets,null,2),'application/json');
@@ -220,4 +222,13 @@ $('#q').addEventListener('input',e=>{
 });
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#q').focus()}if(e.key==='Escape')close()});
 addEventListener('hashchange',()=>{render();scrollTo(0,0)});
-render();
+
+/* ---------- giriş (Firebase Auth index.html içinden çağırır) ---------- */
+window.dacStart=u=>{
+ U=u;KEY='dac_v1_'+u.uid;
+ let raw=localStorage.getItem(KEY);
+ if(!raw){const old=localStorage.getItem('dac_v1');if(old){raw=old;localStorage.setItem(KEY,old);localStorage.removeItem('dac_v1')}}
+ S=JSON.parse(raw||'null')||blank();
+ render();
+};
+window.dacStop=()=>{S=null;U=null;close();$('#view').innerHTML='';location.hash=''};

@@ -60,3 +60,9 @@ details{margin-top:12px}summary{cursor:pointer;color:var(--mu)}pre{font:12px var
 .plans{display:grid;gap:14px}.plans .card{margin:0}.plans .on{border-color:var(--bl)}
 @media(min-width:900px){#side{transform:none}#main{margin-left:270px}.ib[data-act=menu]{display:none}kbd{display:block}.grid{grid-template-columns:repeat(3,1fr)}.tools{grid-template-columns:repeat(4,1fr)}.plans{grid-template-columns:1fr 1fr}
 #modal{align-items:center}.box{border-radius:24px}#shade{display:none!important}}
+#login{display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center;padding:20px}
+body:not(.authed):not(.init) #login{display:flex}
+body:not(.authed) #main,body:not(.authed) #side{display:none}
+.lbox{width:min(380px,100%);background:var(--card);border:1px solid var(--bd);border-radius:24px;padding:32px 24px;text-align:center}
+.lbox h1{font-size:22px;margin:14px 0 6px}.lbox p{color:var(--mu);margin:0 0 22px}
+.lg{width:56px;height:56px;border-radius:16px;background:var(--bl);display:grid;place-items:center;margin:auto;font:700 26px var(--mono);box-shadow:0 0 24px #2f6bff55}

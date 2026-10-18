@@ -8,7 +8,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="init">
+<div id="login"><div class="lbox"><div class="lg">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın</p>
+<button class="btn p w" id="gbtn" type="button">Google ile giriş yap</button><div id="lerr" class="hint"></div></div></div>
 <div id="busy"></div>
 <div id="shade"></div>
 <aside id="side"></aside>
@@ -26,5 +28,49 @@
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.462.0/dist/umd/lucide.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
+  import { getAnalytics } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-analytics.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAOSzq3zlcU5aYV0WmGi8rpGNnh7dEw9g0",
+    authDomain: "assetops-ed334.firebaseapp.com",
+    projectId: "assetops-ed334",
+    storageBucket: "assetops-ed334.firebasestorage.app",
+    messagingSenderId: "500476048545",
+    appId: "1:500476048545:web:48e4f91b78ff46eee6ace0",
+    measurementId: "G-50H7YRCNNV"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  try { getAnalytics(app); } catch (e) {}
+  const auth = getAuth(app);
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+
+  const ERR = {
+    "auth/unauthorized-domain": "Bu alan adı Firebase'de yetkili değil (Authorized domains'e ekleyin).",
+    "auth/operation-not-allowed": "Google girişi Firebase'de etkin değil.",
+    "auth/popup-blocked": "Açılır pencere engellendi, izin verip tekrar deneyin.",
+    "auth/network-request-failed": "İnternet bağlantısı hatası."
+  };
+  const lerr = document.getElementById("lerr");
+  document.getElementById("gbtn").onclick = async () => {
+    lerr.textContent = "";
+    try { await signInWithPopup(auth, provider); }
+    catch (e) {
+      if (e.code === "auth/popup-closed-by-user" || e.code === "auth/cancelled-popup-request") return;
+      lerr.textContent = ERR[e.code] || ("Giriş hatası: " + (e.code || e.message));
+    }
+  };
+  window.dacLogout = () => signOut(auth);
+
+  onAuthStateChanged(auth, (u) => {
+    document.body.classList.remove("init");
+    document.body.classList.toggle("authed", !!u);
+    if (u) window.dacStart(u); else window.dacStop();
+  });
+</script>
 </body>
 </html>
