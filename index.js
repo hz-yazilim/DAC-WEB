@@ -38,7 +38,9 @@ try {
 
 const app = express();
 app.use(require("cors")());
-app.use(express.json({ limit: '2mb' }));
+app.set("trust proxy", 1);
+app.use(express.json({ limit: "2mb", verify: (req, res, buf) => { req.rawBody = buf; } }));
+app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 const PORT = process.env.PORT || 3000;
 
 const BROWSER_HEADERS = {
@@ -144,14 +146,15 @@ async function safeResolveWithDoh(fn, domain) {
   try { const res = await fn(domain); if (res?.length) return res; } catch {}
   return await dohTxt(domain);
 }
-async function httpProbe(url, { method = "GET", timeout = 9000, headers = {} } = {}) {
+async function httpProbe(url, { method = "GET", timeout = 9000, headers = {}, maxRedirects = 5 } = {}) {
   const startedAt = Date.now();
   try {
     const res = await axios.request({
       url, method, timeout,
       headers: { ...BROWSER_HEADERS, ...headers },
       validateStatus: () => true,
-      maxRedirects: 5
+      maxRedirects,
+      beforeRedirect: (o) => { if (process.env.ALLOW_PRIVATE_TARGETS !== "true" && o && net.isIP(String(o.hostname || "")) && isPrivateIp(String(o.hostname))) throw new Error("Özel adrese yönlendirme engellendi"); }
     });
     return {
       ok: res.status < 400,
@@ -816,8 +819,8 @@ async function scanSslCertificate(input, extra = {}) {
     executionTimeMs: Date.now() - startedAt,
     findings, // bunları UI'da Türkçeye çevir
     scannedAt: new Date().toISOString(),
-    score: scores.overall,
-    status: scores.overall >= 80? "HEALTHY" : scores.overall >= 50? "WARNING" : "CRITICAL",
+    score: certInfo?.error ? null : scores.overall,
+    status: certInfo?.error ? "ERROR" : scores.overall >= 80? "HEALTHY" : scores.overall >= 50? "WARNING" : "CRITICAL",
     target: domain
   };
 
@@ -829,7 +832,7 @@ async function scanSslCertificate(input, extra = {}) {
       analysisMeta: { scannerVersion: "ssl-analyzer-v4", analyzer: "ssl" }
     },
     findings, errors,
-    statusHint:!certInfo?.valid? "EXPIRED" : certInfo.daysRemaining < 30? "EXPIRING_SOON" : "ACTIVE"
+    statusHint: certInfo?.error ? "ERROR" : certInfo?.daysRemaining < 0 ? "EXPIRED" : !certInfo?.valid ? "CRITICAL" : certInfo.daysRemaining < 30 ? "EXPIRING_SOON" : "ACTIVE"
   };
 }
 // ============ 5. SAAS SCANNER ============
@@ -858,19 +861,615 @@ function withTimeout(promise, ms) {
 }
 
 // ============ ROUTER ============
+// =====================================================================
+// ============ YENİ TARAYICILAR (v11) =================================
+// =====================================================================
+const tlsMod = require("tls");
+const zlib = require("zlib");
+
+// ---------- Güvenlik: yerel/özel adreslere tarama (SSRF) engeli ----------
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split(".").map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  if (net.isIPv6(ip)) {
+    const l = ip.toLowerCase();
+    return l === "::1" || l === "::" || /^f[cd]/.test(l) || l.startsWith("fe80") || /^::ffff:(127|10|0)\./.test(l) || l.startsWith("::ffff:192.168.") || l.startsWith("::ffff:169.254.");
+  }
+  return false;
+}
+async function assertPublicHost(host) {
+  if (process.env.ALLOW_PRIVATE_TARGETS === "true" || !host) return;
+  const h = String(host).replace(/^\[|\]$/g, "").toLowerCase();
+  const deny = new Error("Yerel veya özel ağ adreslerine tarama yapılamaz");
+  if (h === "localhost" || h.endsWith(".local") || h.endsWith(".internal")) throw deny;
+  if (net.isIP(h)) { if (isPrivateIp(h)) throw deny; return; }
+  let addrs = [];
+  try { addrs = await dns.lookup(h, { all: true }); } catch { return; } // çözülemiyorsa tarayıcı kendi hatasını verir
+  if (addrs.some(a => isPrivateIp(a.address))) throw deny;
+}
+
+// ---------- Ortak yardımcılar ----------
+const ensureUrl = (t) => /^https?:\/\//i.test(String(t || "").trim()) ? String(t).trim() : "https://" + String(t || "").trim();
+const hostOf = (t) => { try { return new URL(ensureUrl(t)).hostname.toLowerCase(); } catch { return null; } };
+const statusFromScore = (s) => s >= 80 ? "HEALTHY" : s >= 50 ? "WARNING" : "CRITICAL";
+const avg = (a) => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : null;
+const daysSince = (d) => { const t = new Date(d).getTime(); return isNaN(t) ? null : Math.floor((Date.now() - t) / 864e5); };
+
+function makeChecker() {
+  const items = [];
+  const calc = (list) => { const t = list.reduce((s, i) => s + i.w, 0); return t ? Math.round(list.filter(i => i.pass).reduce((s, i) => s + i.w, 0) / t * 100) : null; };
+  return {
+    add(pass, w, finding, group) { items.push({ pass: !!pass, w, finding, group: group || "genel" }); },
+    findings: () => items.filter(i => !i.pass && i.finding).map(i => i.finding),
+    score: (group) => calc(group ? items.filter(i => i.group === group) : items),
+    groups: () => [...new Set(items.map(i => i.group))],
+    summary: () => ({ passed: items.filter(i => i.pass).length, total: items.length })
+  };
+}
+function buildResult({ assetType, version, startedAt, target, findings, specific, score, status, errors = [], hint }) {
+  const st = status || statusFromScore(score);
+  const commonAnalysis = { analyzerVersion: version, executionTimeMs: Date.now() - startedAt, findings, scannedAt: new Date().toISOString(), score, status: st, target };
+  const scores = { ...(specific.scores || {}) }; if (score != null) scores.overall = score;
+  return { data: { assetType, commonAnalysis, specificAnalysis: { ...specific, scores }, analysisMeta: { scannerVersion: version, analyzer: assetType.toLowerCase() } }, findings, errors, statusHint: hint || st };
+}
+// İçerik görülemedi (bot koruması / hız sınırı vb.): uydurma skor verme
+function unavailableResult({ assetType, version, startedAt, target, finding, status, note, specific = {} }) {
+  const findings = [finding];
+  const commonAnalysis = { analyzerVersion: version, executionTimeMs: Date.now() - startedAt, findings, scannedAt: new Date().toISOString(), score: null, status, target };
+  return { data: { assetType, commonAnalysis, specificAnalysis: { ...specific, note }, analysisMeta: { scannerVersion: version, analyzer: assetType.toLowerCase(), limited: true } }, findings, errors: [], statusHint: status };
+}
+const protectedResult = (assetType, version, startedAt, target, main, provider) => unavailableResult({
+  assetType, version, startedAt, target, finding: "finding_web_bot_protection_info", status: "PROTECTED",
+  note: "Site bot koruması arkasında; tarayıcı doğrulama sayfası aldı. Site büyük olasılıkla çalışıyor, bu analiz yapılamadı.",
+  specific: { url: target, status: main.status, server: main.headers["server"] || null, botProtection: { detected: true, provider } }
+});
+const downResult = (assetType, version, startedAt, target, main, code) => buildResult({
+  assetType, version, startedAt, target, findings: [code], score: 0, status: "DOWN",
+  specific: { url: target, status: main.status, error: main.error || null }
+});
+
+function metaContent(html, key, attr = "name") {
+  const m = html.match(new RegExp(`<meta[^>]+${attr}=["']${key}["'][^>]*>`, "i"));
+  if (!m) return null;
+  const c = m[0].match(/content=["']([^"']*)["']/i);
+  return c ? c[1].trim() : null;
+}
+function linkHref(html, rel) {
+  const m = html.match(new RegExp(`<link[^>]+rel=["'][^"']*${rel}[^"']*["'][^>]*>`, "i"));
+  if (!m) return null;
+  const h = m[0].match(/href=["']([^"']*)["']/i);
+  return h ? h[1] : null;
+}
+async function followRedirects(url, max = 6) {
+  const chain = []; let cur = url;
+  for (let i = 0; i < max; i++) {
+    const r = await httpProbe(cur, { timeout: 8000, maxRedirects: 0 });
+    chain.push({ url: cur, status: r.status });
+    const loc = r.headers && r.headers["location"];
+    if (r.status >= 300 && r.status < 400 && loc) { try { cur = new URL(loc, cur).toString(); } catch { break; } } else return { chain, final: r, finalUrl: cur };
+  }
+  return { chain, final: null, finalUrl: cur };
+}
+function tlsAlpn(host, timeout = 5000) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const s = tlsMod.connect({ host, port: 443, servername: host, ALPNProtocols: ["h2", "http/1.1"], timeout }, () => {
+      const r = { alpn: s.alpnProtocol || null, tlsVersion: s.getProtocol(), handshakeMs: Date.now() - t0 };
+      s.end(); resolve(r);
+    });
+    s.on("error", () => resolve(null));
+    s.on("timeout", () => { s.destroy(); resolve(null); });
+  });
+}
+// Ham (sıkıştırılmış) boyutu ve ilk bayt süresini ölçen GET
+async function timedGet(url, timeout = 12000) {
+  const t0 = Date.now();
+  try {
+    const res = await axios.request({ url, method: "GET", responseType: "stream", decompress: false, timeout, headers: { ...BROWSER_HEADERS, "Accept-Encoding": "gzip, deflate, br" }, validateStatus: () => true, maxRedirects: 5 });
+    const ttfb = Date.now() - t0;
+    const enc = String(res.headers["content-encoding"] || "").toLowerCase();
+    let transfer = 0, rawBytes = 0; const chunks = [];
+    res.data.on("data", d => { transfer += d.length; });
+    const z = enc === "gzip" ? zlib.createGunzip() : enc === "br" ? zlib.createBrotliDecompress() : enc === "deflate" ? zlib.createInflate() : null;
+    const out = z ? res.data.pipe(z) : res.data;
+    await new Promise((resolve) => {
+      const done = () => resolve();
+      out.on("data", d => { rawBytes += d.length; if (rawBytes <= 2e6) chunks.push(d); });
+      out.on("end", done); out.on("error", done); out.on("close", done); res.data.on("error", done);
+      setTimeout(done, timeout);
+    });
+    return { ok: res.status < 400, status: res.status, ttfb, total: Date.now() - t0, transferBytes: transfer, rawBytes, encoding: enc || null, headers: res.headers, body: Buffer.concat(chunks).toString("utf8"), finalUrl: res.request?.res?.responseUrl || url };
+  } catch (e) {
+    return { ok: false, status: 0, error: e.message, ttfb: null, total: Date.now() - t0, transferBytes: 0, rawBytes: 0, encoding: null, headers: {}, body: "", finalUrl: url };
+  }
+}
+
+// ---------- IP / platform bilgisi ----------
+async function ipInfo(ip) {
+  try {
+    const r = await axios.get(`https://ipwho.is/${encodeURIComponent(ip)}`, { timeout: 6000, validateStatus: () => true });
+    if (r.data && r.data.success) return { ip, country: r.data.country || null, countryCode: r.data.country_code || null, city: r.data.city || null, region: r.data.region || null, asn: r.data.connection?.asn || null, org: r.data.connection?.org || null, isp: r.data.connection?.isp || null };
+  } catch {}
+  return { ip, country: null, city: null, asn: null, org: null, isp: null };
+}
+const DDOS_CAPABLE = ["Cloudflare", "AWS CloudFront", "Akamai", "Fastly", "Sucuri", "Imperva", "DDoS-Guard", "Azure Front Door", "Vercel"];
+function detectPlatforms(h) {
+  const s = (k) => String(h[k] || "").toLowerCase(); const out = [];
+  if (h["cf-ray"] || s("server").includes("cloudflare")) out.push("Cloudflare");
+  if (h["x-amz-cf-id"] || s("via").includes("cloudfront")) out.push("AWS CloudFront");
+  if (s("server").includes("akamai") || h["x-akamai-transformed"]) out.push("Akamai");
+  if (h["x-fastly-request-id"] || (h["x-served-by"] && /cache-/.test(s("x-served-by")))) out.push("Fastly");
+  if (h["x-vercel-id"] || s("server") === "vercel") out.push("Vercel");
+  if (h["x-nf-request-id"] || s("server").includes("netlify")) out.push("Netlify");
+  if (h["x-github-request-id"]) out.push("GitHub Pages");
+  if (h["x-sucuri-id"]) out.push("Sucuri");
+  if (h["x-iinfo"]) out.push("Imperva");
+  if (s("server").includes("ddos-guard")) out.push("DDoS-Guard");
+  if (h["x-azure-ref"]) out.push("Azure Front Door");
+  if (h["rndr-id"] || h["x-render-origin-server"]) out.push("Render");
+  if (h["fly-request-id"]) out.push("Fly.io");
+  return [...new Set(out)];
+}
+async function resolveIps(host) {
+  if (net.isIPv4(host)) return { v4: [host], v6: [] };
+  if (net.isIPv6(host)) return { v4: [], v6: [host] };
+  const [v4, v6] = await Promise.all([safeResolve(dns.resolve4, host), safeResolve(dns.resolve6, host)]);
+  return { v4: v4 || [], v6: v6 || [] };
+}
+
+// ============ HOSTING ============
+async function scanHosting(input) {
+  const startedAt = Date.now(); const V = "hosting-analyzer-v2";
+  const host = parseDomain(input);
+  if (!host) return buildResult({ assetType: "HOSTING", version: V, startedAt, target: String(input || ""), findings: ["finding_hosting_invalid_target_critical"], score: 0, status: "ERROR", specific: {} });
+  const ips = await resolveIps(host);
+  const c = makeChecker();
+  const resolves = ips.v4.length + ips.v6.length > 0;
+  c.add(resolves, 25, "finding_hosting_not_resolving_critical");
+  let main = { ok: false, status: 0, headers: {}, responseTimeMs: null }, geo = null, rdns = null, tlsi = null;
+  if (resolves) {
+    const first = ips.v4[0] || ips.v6[0];
+    [main, geo, tlsi] = await Promise.all([httpProbe(`https://${host}`, { timeout: 9000 }), ipInfo(first), tlsAlpn(host)]);
+    rdns = await safeResolve(dns.reverse, first);
+  }
+  const platforms = detectPlatforms(main.headers || {});
+  const ddos = platforms.some(p => DDOS_CAPABLE.includes(p));
+  const reachable = main.status > 0 && main.status < 500;
+  c.add(reachable, 25, "finding_hosting_unreachable_critical");
+  c.add(!!tlsi, 15, "finding_hosting_no_https_critical");
+  c.add(ddos, 15, "finding_hosting_no_cdn_waf_warning");
+  c.add(ips.v6.length > 0, 5, "finding_hosting_no_ipv6_info");
+  c.add(ips.v4.length + ips.v6.length > 1, 5, "finding_hosting_single_ip_info");
+  c.add(main.responseTimeMs != null && main.responseTimeMs < 1500, 10, "finding_hosting_slow_response_warning");
+  const score = c.score();
+  const findings = c.findings();
+  if (main.status === 403 && detectBotProtection(main)) findings.push("finding_web_bot_protection_info");
+  return buildResult({
+    assetType: "HOSTING", version: V, startedAt, target: host, findings, score, status: !resolves || !reachable ? "DOWN" : undefined,
+    specific: {
+      host,
+      network: { ipv4: ips.v4, ipv6: ips.v6, reverseDns: (rdns && rdns[0]) || null },
+      provider: geo ? { name: geo.org || geo.isp, asn: geo.asn, country: geo.country, city: geo.city } : null,
+      platform: platforms, ddosProtection: ddos,
+      http: { status: main.status, responseTimeMs: main.responseTimeMs, server: (main.headers || {})["server"] || null, protocol: tlsi?.alpn || null, tlsVersion: tlsi?.tlsVersion || null, tlsHandshakeMs: tlsi?.handshakeMs ?? null }
+    }
+  });
+}
+
+// ============ SUNUCU (port taraması) ============
+const SERVER_PORTS = [[21, "FTP", "warn"], [22, "SSH", null], [23, "Telnet", "crit"], [25, "SMTP", null], [80, "HTTP", null], [443, "HTTPS", null], [445, "SMB", "crit"], [1433, "MSSQL", "crit"], [3306, "MySQL", "crit"], [3389, "RDP", "crit"], [5432, "PostgreSQL", "crit"], [5900, "VNC", "crit"], [6379, "Redis", "crit"], [8080, "HTTP-Alt", null], [8443, "HTTPS-Alt", null], [9200, "Elasticsearch", "crit"], [11211, "Memcached", "crit"], [27017, "MongoDB", "crit"]];
+async function scanServer(input) {
+  const startedAt = Date.now(); const V = "server-analyzer-v2";
+  const host = parseDomain(input);
+  if (!host) return buildResult({ assetType: "SERVER", version: V, startedAt, target: String(input || ""), findings: ["finding_server_invalid_target_critical"], score: 0, status: "ERROR", specific: {} });
+  const ips = await resolveIps(host);
+  const ip = ips.v4[0] || ips.v6[0];
+  if (!ip) return buildResult({ assetType: "SERVER", version: V, startedAt, target: host, findings: ["finding_server_not_resolving_critical"], score: 0, status: "DOWN", specific: { host } });
+  const res = await Promise.all(SERVER_PORTS.map(async ([port, name, risk]) => ({ ...(await tcpPortCheck(ip, port, 2500)), name, risk })));
+  const open = res.filter(r => r.open);
+  const findings = []; let score = 100;
+  for (const r of open) {
+    if (r.risk === "crit") { findings.push(`finding_server_exposed_port_${r.port}_critical`); score -= 25; }
+    else if (r.risk === "warn") { findings.push(`finding_server_exposed_port_${r.port}_warning`); score -= 10; }
+  }
+  const alive = open.some(r => [22, 25, 80, 443, 8080, 8443].includes(r.port));
+  if (!open.length) { findings.push("finding_server_unreachable_critical"); score = 0; }
+  else if (!alive) { findings.push("finding_server_no_service_ports_warning"); score -= 10; }
+  score = Math.max(0, score);
+  const lat = open.map(r => r.latencyMs);
+  const geo = await ipInfo(ip);
+  return buildResult({
+    assetType: "SERVER", version: V, startedAt, target: host, findings, score, status: !open.length ? "DOWN" : undefined,
+    specific: {
+      host, ip, provider: geo.org || geo.isp, country: geo.country, city: geo.city,
+      checkedPorts: SERVER_PORTS.length, openCount: open.length, avgConnectMs: avg(lat),
+      openPorts: open.map(r => `${r.port}/${r.name} (${r.latencyMs}ms)`),
+      note: "Yalnızca yaygın 18 porta bağlantı denendi; hiçbir veri gönderilmedi."
+    }
+  });
+}
+
+// ============ SEO ============
+async function scanSeo(targetUrl) {
+  const startedAt = Date.now(); const V = "seo-analyzer-v1"; const url = ensureUrl(targetUrl);
+  const main = await httpProbe(url);
+  const prot = detectBotProtection(main);
+  if (prot) return protectedResult("SEO", V, startedAt, url, main, prot);
+  if (!main.ok) return downResult("SEO", V, startedAt, url, main, "finding_seo_unreachable_critical");
+  const html = main.body || ""; const c = makeChecker(); const h = main.headers;
+  const title = ((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").replace(/\s+/g, " ").trim() || null;
+  const desc = metaContent(html, "description");
+  const robotsMeta = (metaContent(html, "robots") || "").toLowerCase();
+  const xrobots = String(h["x-robots-tag"] || "").toLowerCase();
+  const h1 = (html.match(/<h1[\s>]/gi) || []).length, h2 = (html.match(/<h2[\s>]/gi) || []).length;
+  const imgs = html.match(/<img\b[^>]*>/gi) || []; const noAlt = imgs.filter(i => !/\balt=["'][^"']+["']/i.test(i)).length;
+  const hreflang = (html.match(/<link[^>]+hreflang=/gi) || []).length; const xdefault = /hreflang=["']x-default["']/i.test(html);
+  const jsonld = (html.match(/application\/ld\+json/gi) || []).length;
+  const ogOk = !!(metaContent(html, "og:title", "property") && metaContent(html, "og:description", "property") && metaContent(html, "og:image", "property"));
+  const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>/gi, " ").replace(/\s+/g, " ").trim();
+  const words = text ? text.split(" ").length : 0;
+  const links = (html.match(/<a\s[^>]*href=["'][^"']+["']/gi) || []);
+  let internal = 0, external = 0; const baseHost = hostOf(main.finalUrl || url);
+  for (const l of links) { const m = l.match(/href=["']([^"']+)["']/i)[1]; if (/^(mailto:|tel:|javascript:|#)/i.test(m)) continue; try { (new URL(m, main.finalUrl || url).hostname === baseHost) ? internal++ : external++; } catch {} }
+  const origin = new URL(main.finalUrl || url).origin;
+  const [robots, sitemap] = await Promise.all([httpProbe(origin + "/robots.txt", { timeout: 6000 }), httpProbe(origin + "/sitemap.xml", { timeout: 6000 })]);
+  const robotsTxt = robots.ok ? robots.body : "";
+  const blocksAll = /user-agent:\s*\*\s*[\r\n]+(?:(?:allow|crawl-delay|disallow:\s*\/[^\s]+)[^\r\n]*[\r\n]+)*disallow:\s*\/\s*(?:[\r\n]|$)/i.test(robotsTxt);
+  const sitemapOk = (sitemap.ok && /<urlset|<sitemapindex/i.test(sitemap.body || "")) || /^\s*sitemap:/im.test(robotsTxt);
+  c.add(!!title, 10, "finding_seo_missing_title_critical", "icerik");
+  if (title) c.add(title.length >= 30 && title.length <= 65, 5, "finding_seo_title_length_warning", "icerik");
+  c.add(!!desc, 10, "finding_seo_missing_description_warning", "icerik");
+  if (desc) c.add(desc.length >= 70 && desc.length <= 165, 4, "finding_seo_description_length_warning", "icerik");
+  c.add(h1 === 1, 8, h1 === 0 ? "finding_seo_missing_h1_warning" : "finding_seo_multiple_h1_warning", "icerik");
+  c.add(!imgs.length || noAlt / imgs.length <= 0.1, 5, "finding_seo_images_missing_alt_warning", "icerik");
+  c.add(words >= 300, 4, "finding_seo_thin_content_warning", "icerik");
+  c.add(!/noindex/.test(robotsMeta) && !/noindex/.test(xrobots), 15, "finding_seo_noindex_critical", "teknik");
+  c.add(!blocksAll, 15, "finding_seo_robots_blocks_all_critical", "teknik");
+  c.add(!!linkHref(html, "canonical"), 5, "finding_seo_missing_canonical_warning", "teknik");
+  c.add(robots.ok, 4, "finding_seo_missing_robots_warning", "teknik");
+  c.add(sitemapOk, 6, "finding_seo_missing_sitemap_warning", "teknik");
+  c.add(/^https:/i.test(main.finalUrl || url), 6, "finding_seo_not_https_warning", "teknik");
+  c.add(!!metaContent(html, "viewport"), 6, "finding_seo_missing_viewport_warning", "teknik");
+  c.add(/<html[^>]+lang=["'][^"']+["']/i.test(html), 4, "finding_seo_missing_lang_warning", "teknik");
+  c.add(!!linkHref(html, "icon"), 2, "finding_seo_missing_favicon_warning", "teknik");
+  if (hreflang > 0) c.add(xdefault, 3, "finding_seo_hreflang_no_default_warning", "sosyal");
+  c.add(ogOk, 4, "finding_seo_missing_open_graph_warning", "sosyal");
+  c.add(!!metaContent(html, "twitter:card"), 2, "finding_seo_missing_twitter_card_warning", "sosyal");
+  c.add(jsonld > 0, 4, "finding_seo_missing_structured_data_warning", "sosyal");
+  const scores = { icerik: c.score("icerik"), teknik: c.score("teknik"), sosyal: c.score("sosyal") };
+  return buildResult({
+    assetType: "SEO", version: V, startedAt, target: url, findings: c.findings(), score: c.score(),
+    specific: { url, finalUrl: main.finalUrl, status: main.status, title, titleLength: title ? title.length : 0, metaDescriptionLength: desc ? desc.length : 0, canonical: linkHref(html, "canonical"), htmlLang: (html.match(/<html[^>]+lang=["']([^"']+)["']/i) || [])[1] || null, h1Count: h1, h2Count: h2, wordCount: words, images: { total: imgs.length, missingAlt: noAlt }, links: { internal, external }, hreflangCount: hreflang, structuredDataBlocks: jsonld, openGraph: ogOk, robotsTxt: robots.ok, sitemap: sitemapOk, checks: c.summary(), scores }
+  });
+}
+
+// ============ GÜVENLİK ============
+const EXPOSED = [
+  ["env", "/.env", (b) => /^[A-Z][A-Z0-9_]{2,}\s*=/m.test(b) && !/<html/i.test(b)],
+  ["git", "/.git/HEAD", (b) => /^ref:\s*refs\//.test(b.trim())],
+  ["gitconfig", "/.git/config", (b) => /\[core\]/.test(b) && !/<html/i.test(b)],
+  ["phpinfo", "/phpinfo.php", (b) => /phpinfo\(\)|PHP Version/i.test(b)],
+  ["dsstore", "/.DS_Store", (b) => b.startsWith("\u0000\u0000\u0000\u0001Bud1")],
+  ["serverstatus", "/server-status", (b) => /Apache Server Status/i.test(b)],
+  ["wpconfig", "/wp-config.php.bak", (b) => /DB_PASSWORD/.test(b)],
+  ["sqldump", "/backup.sql", (b) => /CREATE TABLE|INSERT INTO/i.test(b) && !/<html/i.test(b)],
+  ["htpasswd", "/.htpasswd", (b) => /^[^:\s<]+:(\$|\{SHA\}|[A-Za-z0-9./]{13})/m.test(b) && !/<html/i.test(b)]
+];
+async function scanSecurity(targetUrl) {
+  const startedAt = Date.now(); const V = "security-analyzer-v1"; const url = ensureUrl(targetUrl);
+  const main = await httpProbe(url);
+  const prot = detectBotProtection(main);
+  if (prot) return protectedResult("SECURITY", V, startedAt, url, main, prot);
+  if (!main.ok && main.status === 0) return downResult("SECURITY", V, startedAt, url, main, "finding_security_unreachable_critical");
+  const h = main.headers; const c = makeChecker(); const host = hostOf(main.finalUrl || url); const https = /^https:/i.test(main.finalUrl || url);
+  const hsts = String(h["strict-transport-security"] || ""); const maxAge = parseInt((hsts.match(/max-age=(\d+)/i) || [])[1] || "0", 10);
+  const csp = String(h["content-security-policy"] || "");
+  c.add(https, 12, "finding_security_not_https_critical", "aktarim");
+  c.add(!!hsts && maxAge >= 15552000, 12, hsts ? "finding_security_hsts_short_warning" : "finding_security_missing_hsts_warning", "basliklar");
+  c.add(!!csp, 12, "finding_security_missing_csp_warning", "basliklar");
+  if (csp) c.add(!/unsafe-inline|unsafe-eval/.test(csp), 5, "finding_security_csp_unsafe_warning", "basliklar");
+  c.add(!!h["x-frame-options"] || /frame-ancestors/.test(csp), 8, "finding_security_missing_clickjacking_warning", "basliklar");
+  c.add(/nosniff/i.test(String(h["x-content-type-options"] || "")), 6, "finding_security_missing_nosniff_warning", "basliklar");
+  c.add(!!h["referrer-policy"], 5, "finding_security_missing_referrer_policy_warning", "basliklar");
+  c.add(!!h["permissions-policy"], 4, "finding_security_missing_permissions_policy_warning", "basliklar");
+  const disclosure = /\d+\.\d+/.test(String(h["server"] || "")) || /\d+\.\d+/.test(String(h["x-powered-by"] || ""));
+  c.add(!disclosure, 4, "finding_security_version_disclosure_warning", "basliklar");
+  // http -> https yönlendirmesi
+  let httpRedirect = null;
+  if (host) {
+    const r = await httpProbe(`http://${host}`, { timeout: 7000, maxRedirects: 0 });
+    httpRedirect = r.status >= 300 && r.status < 400 && /^https:/i.test(String(r.headers["location"] || ""));
+    c.add(r.status === 0 || httpRedirect, 8, "finding_security_no_https_redirect_warning", "aktarim");
+  }
+  // karışık içerik
+  const mixed = https ? (main.body.match(/(?:src|href)=["']http:\/\/[^"']+/gi) || []).filter(x => /\.(js|css|png|jpe?g|gif|svg|webp|woff2?)|script|iframe/i.test(x)).length : 0;
+  c.add(mixed === 0, 6, "finding_security_mixed_content_warning", "aktarim");
+  // çerezler (değerler asla saklanmaz)
+  const sc = [].concat(h["set-cookie"] || []);
+  const cookies = sc.map(x => ({ name: String(x).split("=")[0], secure: /;\s*secure/i.test(x), httpOnly: /;\s*httponly/i.test(x), sameSite: (String(x).match(/samesite=(\w+)/i) || [])[1] || null }));
+  c.add(!cookies.length || cookies.every(k => (!https || k.secure) && k.httpOnly && k.sameSite), 6, "finding_security_cookie_flags_warning", "aktarim");
+  // sertifika süresi
+  let cert = null;
+  if (https && host) { try { const t = await getTlsDetails(host); const d = Math.floor((new Date(t.cert.valid_to) - Date.now()) / 864e5); cert = { daysRemaining: d, protocol: t.protocol }; c.add(d >= 14, 8, "finding_security_cert_expiring_critical", "aktarim"); c.add(d >= 30 || d < 14, 2, "finding_security_cert_expiring_warning", "aktarim"); c.add(["TLSv1.3", "TLSv1.2"].includes(t.protocol), 6, "finding_security_tls_old_warning", "aktarim"); } catch {} }
+  // açıkta kalan hassas dosyalar
+  const origin = new URL(main.finalUrl || url).origin;
+  const probes = await Promise.all(EXPOSED.map(async ([slug, p, test]) => { const r = await httpProbe(origin + p, { timeout: 5000, maxRedirects: 2 }); return r.status === 200 && test(String(r.body || "").slice(0, 4000)) ? slug : null; }));
+  const exposed = probes.filter(Boolean);
+  c.add(!exposed.length, 25, null, "dosyalar");
+  const findings = [...c.findings(), ...exposed.map(s => `finding_security_exposed_${s}_critical`)];
+  const scores = {}; for (const g of c.groups()) scores[g] = c.score(g);
+  const score = Math.min(c.score(), exposed.length ? 40 : 100);
+  return buildResult({
+    assetType: "SECURITY", version: V, startedAt, target: url, findings, score,
+    specific: { url, finalUrl: main.finalUrl, https, hsts: hsts || null, hstsMaxAgeDays: Math.floor(maxAge / 86400), csp: !!csp, httpToHttpsRedirect: httpRedirect, mixedContentCount: mixed, serverHeader: h["server"] || null, poweredBy: h["x-powered-by"] || null, cookies, certificate: cert, exposedFiles: exposed, checkedFiles: EXPOSED.length, checks: c.summary(), scores }
+  });
+}
+
+// ============ PERFORMANS ============
+async function scanPerformance(targetUrl) {
+  const startedAt = Date.now(); const V = "performance-analyzer-v1"; const url = ensureUrl(targetUrl);
+  const page = await timedGet(url);
+  const prot = detectBotProtection(page);
+  if (prot) return protectedResult("PERFORMANCE", V, startedAt, url, page, prot);
+  if (!page.ok) return downResult("PERFORMANCE", V, startedAt, url, page, "finding_perf_unreachable_critical");
+  const c = makeChecker(); const html = page.body || ""; const host = hostOf(page.finalUrl || url);
+  const [chainRes, tlsi] = await Promise.all([followRedirects(url), host ? tlsAlpn(host) : null]);
+  const hops = Math.max(0, chainRes.chain.length - 1);
+  const compressed = ["gzip", "br", "deflate", "zstd"].includes(page.encoding || "");
+  const textType = /text|json|javascript|xml/i.test(String(page.headers["content-type"] || ""));
+  // sayfa içindeki kaynaklar
+  const scripts = [...html.matchAll(/<script\b[^>]*src=["']([^"']+)["'][^>]*>/gi)];
+  const blocking = scripts.filter(m => !/\b(async|defer|type=["']module["'])\b/i.test(m[0])).length;
+  const css = [...html.matchAll(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["']/gi)].map(m => m[1]);
+  const imgs = (html.match(/<img\b/gi) || []).length; const lazy = (html.match(/<img\b[^>]*loading=["']lazy["']/gi) || []).length;
+  const abs = (u) => { try { return new URL(u, page.finalUrl || url).toString(); } catch { return null; } };
+  const sample = [...new Set([...css.slice(0, 2), ...scripts.slice(0, 2).map(m => m[1])].map(abs).filter(Boolean))].slice(0, 3);
+  const assets = await Promise.all(sample.map(u => timedGet(u, 8000)));
+  const cacheOk = assets.length ? assets.filter(a => /max-age=(\d+)/.test(String(a.headers["cache-control"] || "")) && parseInt(String(a.headers["cache-control"]).match(/max-age=(\d+)/)[1], 10) >= 86400).length : null;
+  const assetsCompressed = assets.length ? assets.filter(a => a.encoding).length : null;
+  c.add(page.ttfb < 600, 18, "finding_perf_slow_ttfb_warning", "sunucu");
+  c.add(page.ttfb < 1500, 12, "finding_perf_very_slow_ttfb_critical", "sunucu");
+  c.add(page.total < 3000, 10, "finding_perf_slow_load_warning", "sunucu");
+  c.add(!textType || compressed, 12, "finding_perf_no_compression_warning", "agi");
+  c.add(tlsi?.alpn === "h2" || /h3/.test(String(page.headers["alt-svc"] || "")), 8, "finding_perf_no_http2_warning", "agi");
+  c.add(hops <= 2, 6, "finding_perf_redirect_chain_warning", "agi");
+  c.add(page.transferBytes < 500000, 8, "finding_perf_heavy_page_warning", "sayfa");
+  c.add(blocking <= 3, 6, "finding_perf_render_blocking_scripts_warning", "sayfa");
+  c.add(scripts.length <= 20, 4, "finding_perf_too_many_scripts_warning", "sayfa");
+  c.add(imgs < 5 || lazy > 0, 4, "finding_perf_no_lazy_loading_warning", "sayfa");
+  if (cacheOk !== null) c.add(cacheOk === assets.length, 8, "finding_perf_weak_caching_warning", "agi");
+  if (assetsCompressed !== null) c.add(assetsCompressed === assets.length || assets.every(a => !/javascript|css/.test(String(a.headers["content-type"] || ""))), 4, "finding_perf_assets_not_compressed_warning", "agi");
+  const scores = {}; for (const g of c.groups()) scores[g] = c.score(g);
+  return buildResult({
+    assetType: "PERFORMANCE", version: V, startedAt, target: url, findings: c.findings(), score: c.score(),
+    specific: { url, finalUrl: page.finalUrl, status: page.status, ttfbMs: page.ttfb, totalLoadMs: page.total, htmlTransferKB: Math.round(page.transferBytes / 102.4) / 10, htmlRawKB: Math.round(page.rawBytes / 102.4) / 10, compression: page.encoding, protocol: tlsi?.alpn || null, tlsVersion: tlsi?.tlsVersion || null, tlsHandshakeMs: tlsi?.handshakeMs ?? null, http3Advertised: /h3/.test(String(page.headers["alt-svc"] || "")), redirectHops: hops, redirectChain: chainRes.chain.map(x => `${x.status} ${x.url}`), externalScripts: scripts.length, renderBlockingScripts: blocking, stylesheets: css.length, images: imgs, lazyImages: lazy, sampledAssets: assets.map((a, i) => `${a.status} ${a.encoding || "sıkıştırmasız"} ${Math.round(a.transferBytes / 1024)}KB cache:${a.headers["cache-control"] || "yok"}`), checks: c.summary(), scores }
+  });
+}
+
+// ============ UPTIME & GECİKME ============
+async function scanUptime(targetUrl, extra = {}) {
+  const startedAt = Date.now(); const V = "uptime-analyzer-v1"; const url = ensureUrl(targetUrl);
+  const N = 6, samples = [];
+  for (let i = 0; i < N; i++) {
+    const r = await httpProbe(url, { timeout: 8000, method: "GET" });
+    samples.push({ status: r.status, ms: r.responseTimeMs, up: r.status > 0 && r.status < 500, protectedBy: r.status >= 400 ? detectBotProtection(r) : null });
+    if (i < N - 1) await new Promise(r2 => setTimeout(r2, 350));
+  }
+  const host = hostOf(url);
+  const t0 = Date.now(); let dnsMs = null; try { await dns.lookup(host); dnsMs = Date.now() - t0; } catch {}
+  let uPort = /^https:/i.test(url) ? 443 : 80; try { const pu = new URL(url); if (pu.port) uPort = parseInt(pu.port, 10); } catch {}
+  const tcp = host ? await tcpPortCheck(host, uPort, 4000) : null;
+  const ups = samples.filter(s => s.up); const times = ups.map(s => s.ms).sort((a, b) => a - b);
+  const rate = Math.round(ups.length / N * 100);
+  const mean = avg(times); const jitter = times.length > 1 ? Math.round(Math.sqrt(times.reduce((s, t) => s + (t - mean) ** 2, 0) / times.length)) : 0;
+  const p95 = times.length ? times[Math.min(times.length - 1, Math.ceil(times.length * 0.95) - 1)] : null;
+  const c = makeChecker();
+  c.add(rate === 100, 40, rate === 0 ? "finding_uptime_down_critical" : "finding_uptime_intermittent_critical", "erisim");
+  c.add(rate >= 80, 10, null, "erisim");
+  c.add(mean != null && mean < 800, 20, "finding_uptime_slow_response_warning", "gecikme");
+  c.add(p95 != null && p95 < 2000, 10, "finding_uptime_high_p95_warning", "gecikme");
+  c.add(jitter < 300, 10, "finding_uptime_unstable_latency_warning", "gecikme");
+  c.add(dnsMs != null && dnsMs < 300, 5, "finding_uptime_slow_dns_warning", "gecikme");
+  c.add(!!tcp && tcp.open && tcp.latencyMs < 500, 5, "finding_uptime_slow_connect_warning", "gecikme");
+  const findings = c.findings();
+  if (ups.length && samples.some(s => s.protectedBy)) findings.push("finding_web_bot_protection_info");
+  const scores = { erisim: c.score("erisim"), gecikme: c.score("gecikme") };
+  return buildResult({
+    assetType: "UPTIME", version: V, startedAt, target: url, findings, score: c.score(), status: rate === 0 ? "DOWN" : undefined,
+    specific: { url, samples: N, successRatePct: rate, statusCodes: samples.map(s => s.status), minMs: times[0] ?? null, avgMs: mean, p95Ms: p95, maxMs: times[times.length - 1] ?? null, jitterMs: jitter, dnsLookupMs: dnsMs, tcpConnectMs: tcp?.open ? tcp.latencyMs : null, note: "Tek noktadan (sunucu konumu) ölçüm; 4xx yanıtlar 'sunucu ayakta' sayılır.", checks: c.summary(), scores }
+  });
+}
+
+// ============ API ============
+async function scanApi(targetUrl) {
+  const startedAt = Date.now(); const V = "api-analyzer-v1"; const url = ensureUrl(targetUrl);
+  const main = await httpProbe(url, { headers: { Accept: "application/json" } });
+  const prot = detectBotProtection(main);
+  if (prot) return protectedResult("API", V, startedAt, url, main, prot);
+  if (main.status === 0 || main.status >= 500) return downResult("API", V, startedAt, url, main, main.status === 0 ? "finding_api_unreachable_critical" : "finding_api_server_error_critical");
+  const h = main.headers; const c = makeChecker(); const ct = String(h["content-type"] || "");
+  const authRequired = main.status === 401 || main.status === 403;
+  let jsonOk = null; if (/json/i.test(ct)) { try { JSON.parse(main.body); jsonOk = true; } catch { jsonOk = false; } }
+  const origin = (() => { try { return new URL(url).origin; } catch { return url; } })();
+  const pre = await httpProbe(url, { method: "OPTIONS", timeout: 6000, headers: { Origin: "https://example.com", "Access-Control-Request-Method": "GET" } });
+  const acao = pre.headers["access-control-allow-origin"] || h["access-control-allow-origin"] || null;
+  const creds = String(pre.headers["access-control-allow-credentials"] || "").toLowerCase() === "true";
+  const bad404 = await httpProbe(origin + "/__dac_not_found__" + Date.now(), { timeout: 6000, headers: { Accept: "application/json" } });
+  const rl = Object.keys(h).filter(k => /ratelimit|retry-after/i.test(k));
+  c.add(main.status < 400 || authRequired, 25, "finding_api_error_status_critical", "erisim");
+  c.add(main.responseTimeMs < 1000, 15, "finding_api_slow_response_warning", "erisim");
+  c.add(/^https:/i.test(url), 10, "finding_api_not_https_critical", "guvenlik");
+  c.add(!(acao === "*" && creds) && !(acao && acao !== "*" && acao === "https://example.com" && creds), 10, "finding_api_cors_credentials_critical", "guvenlik");
+  c.add(/nosniff/i.test(String(h["x-content-type-options"] || "")), 5, "finding_api_missing_nosniff_warning", "guvenlik");
+  c.add(!!h["strict-transport-security"], 5, "finding_api_missing_hsts_warning", "guvenlik");
+  c.add(!/\d+\.\d+/.test(String(h["server"] || "") + String(h["x-powered-by"] || "")), 4, "finding_api_version_disclosure_warning", "guvenlik");
+  if (jsonOk !== null) c.add(jsonOk, 10, "finding_api_invalid_json_critical", "tasarim");
+  else if (!authRequired) c.add(false, 6, "finding_api_not_json_warning", "tasarim");
+  c.add(rl.length > 0, 8, "finding_api_no_rate_limit_headers_warning", "tasarim");
+  c.add(/json/i.test(String(bad404.headers["content-type"] || "")), 4, "finding_api_error_not_json_warning", "tasarim");
+  c.add(/\/v\d+(\/|$)/i.test(url) || !!h["api-version"] || !!h["x-api-version"], 4, "finding_api_no_versioning_warning", "tasarim");
+  const findings = c.findings(); if (authRequired) findings.push("finding_api_auth_required_info");
+  const scores = {}; for (const g of c.groups()) scores[g] = c.score(g);
+  return buildResult({
+    assetType: "API", version: V, startedAt, target: url, findings, score: c.score(),
+    specific: { url, status: main.status, responseTimeMs: main.responseTimeMs, contentType: ct || null, validJson: jsonOk, authRequired, cors: { allowOrigin: acao, allowCredentials: creds }, rateLimitHeaders: rl, unknownRouteStatus: bad404.status, server: h["server"] || null, checks: c.summary(), scores }
+  });
+}
+
+// ============ MOBİL UYGULAMA (Google Play / App Store) ============
+async function scanMobileApp(input) {
+  const startedAt = Date.now(); const V = "mobile-analyzer-v1"; const raw = String(input || "").trim();
+  let store = null, id = null, country = "tr";
+  const play = raw.match(/[?&]id=([A-Za-z0-9._]+)/) || raw.match(/^([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)$/);
+  const apple = raw.match(/apps\.apple\.com\/(?:([a-z]{2})\/)?[^?#]*id(\d{5,})/i) || raw.match(/^(?:id)?(\d{7,})$/i);
+  if (/play\.google\.com/i.test(raw) && play) { store = "play"; id = play[1]; }
+  else if (apple) { store = "appstore"; id = apple[2] || apple[1]; if (apple[2] && apple[1]) country = apple[1]; }
+  else if (play) { store = "play"; id = play[1]; }
+  if (!store) return buildResult({ assetType: "MOBILE_APP", version: V, startedAt, target: raw, findings: ["finding_mobile_invalid_target_critical"], score: 0, status: "ERROR", specific: { hint: "Paket adı (com.firma.uygulama), Play Store linki veya App Store linki girin." } });
+  const c = makeChecker(); let info = {};
+  if (store === "appstore") {
+    const r = await axios.get(`https://itunes.apple.com/lookup?id=${id}&country=${country}`, { timeout: 9000, validateStatus: () => true });
+    const a = r.data?.results?.[0];
+    if (!a) return buildResult({ assetType: "MOBILE_APP", version: V, startedAt, target: raw, findings: ["finding_mobile_not_found_critical"], score: 0, status: "DOWN", specific: { store: "App Store", id } });
+    const age = daysSince(a.currentVersionReleaseDate);
+    info = { store: "App Store", id, name: a.trackName, developer: a.sellerName, version: a.version, rating: a.averageUserRating ? Math.round(a.averageUserRating * 10) / 10 : null, ratingCount: a.userRatingCount || 0, lastUpdate: a.currentVersionReleaseDate, daysSinceUpdate: age, minOs: a.minimumOsVersion, price: a.formattedPrice, category: a.primaryGenreName };
+  } else {
+    const r = await httpProbe(`https://play.google.com/store/apps/details?id=${encodeURIComponent(id)}&hl=en&gl=US`, { timeout: 10000 });
+    if (r.status === 404) return buildResult({ assetType: "MOBILE_APP", version: V, startedAt, target: raw, findings: ["finding_mobile_not_found_critical"], score: 0, status: "DOWN", specific: { store: "Google Play", id } });
+    if (!r.ok) return unavailableResult({ assetType: "MOBILE_APP", version: V, startedAt, target: raw, finding: "finding_mobile_store_unavailable_info", status: "UNKNOWN", note: "Google Play yanıt vermedi veya erişimi kısıtladı.", specific: { store: "Google Play", id, status: r.status } });
+    const b = r.body || "";
+    const rating = parseFloat((b.match(/"ratingValue":\s*"?([\d.]+)"?/) || [])[1]);
+    const rc = parseInt((b.match(/"ratingCount":\s*"?(\d+)"?/) || [])[1], 10);
+    const name = ((b.match(/<title[^>]*>([^<]+)<\/title>/i) || [])[1] || "").replace(/\s*-\s*Apps on Google Play.*/i, "").trim();
+    const installs = (b.match(/>([\d.,]+[KMB]?\+)<\/div><div[^>]*>Downloads/i) || [])[1] || null;
+    info = { store: "Google Play", id, name: name || null, rating: isNaN(rating) ? null : rating, ratingCount: isNaN(rc) ? null : rc, downloads: installs, note: "Play Store resmi API sunmaz; ayrıntılar sayfadan okunur, bulunamayan alanlar boş kalır." };
+  }
+  c.add(true, 40, null, "yayin");
+  if (info.rating != null) c.add(info.rating >= 4.0, 25, "finding_mobile_low_rating_warning", "kalite");
+  if (info.ratingCount != null) c.add(info.ratingCount >= 50, 10, "finding_mobile_few_ratings_info", "kalite");
+  if (info.daysSinceUpdate != null) { c.add(info.daysSinceUpdate <= 365, 15, "finding_mobile_stale_critical", "bakim"); c.add(info.daysSinceUpdate <= 180 || info.daysSinceUpdate > 365, 10, "finding_mobile_aging_warning", "bakim"); }
+  const scores = {}; for (const g of c.groups()) scores[g] = c.score(g);
+  return buildResult({ assetType: "MOBILE_APP", version: V, startedAt, target: raw, findings: c.findings(), score: c.score(), specific: { ...info, scores } });
+}
+
+// ============ KOD DEPOSU (GitHub) ============
+async function scanRepository(input) {
+  const startedAt = Date.now(); const V = "repo-analyzer-v1"; const raw = String(input || "").trim();
+  const m = raw.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:[/?#]|$)/i) || raw.match(/^([\w.-]+)\/([\w.-]+)$/);
+  if (!m) return buildResult({ assetType: "REPOSITORY", version: V, startedAt, target: raw, findings: ["finding_repo_invalid_target_critical"], score: 0, status: "ERROR", specific: { hint: "sahip/depo biçiminde veya GitHub linki girin." } });
+  const [, owner, repo] = m;
+  const H = { "User-Agent": "DigitalAssetCenter", Accept: "application/vnd.github+json", ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) };
+  const gh = (p) => axios.get(`https://api.github.com/repos/${owner}/${repo}${p}`, { headers: H, timeout: 9000, validateStatus: () => true });
+  const r = await gh("");
+  if (r.status === 403 && String(r.headers["x-ratelimit-remaining"]) === "0") return unavailableResult({ assetType: "REPOSITORY", version: V, startedAt, target: `${owner}/${repo}`, finding: "finding_repo_rate_limited_info", status: "UNKNOWN", note: "GitHub hız sınırına takıldı. Sunucuya GITHUB_TOKEN ekleyerek sınırı yükseltebilirsiniz." });
+  if (r.status === 404) return buildResult({ assetType: "REPOSITORY", version: V, startedAt, target: `${owner}/${repo}`, findings: ["finding_repo_not_found_critical"], score: 0, status: "DOWN", specific: { owner, repo, note: "Depo yok ya da özel (private)." } });
+  if (r.status !== 200) return unavailableResult({ assetType: "REPOSITORY", version: V, startedAt, target: `${owner}/${repo}`, finding: "finding_repo_api_error_info", status: "UNKNOWN", note: `GitHub API ${r.status} döndürdü.` });
+  const d = r.data;
+  const [rel, com] = await Promise.all([gh("/releases/latest"), gh("/community/profile")]);
+  const pushAge = daysSince(d.pushed_at); const relAge = rel.status === 200 ? daysSince(rel.data.published_at) : null;
+  const files = com.status === 200 ? com.data.files || {} : {};
+  const c = makeChecker();
+  c.add(!d.archived, 20, "finding_repo_archived_warning", "bakim");
+  c.add(pushAge != null && pushAge <= 365, 20, "finding_repo_inactive_critical", "bakim");
+  c.add(pushAge != null && pushAge <= 90, 10, "finding_repo_stale_warning", "bakim");
+  c.add(!!d.license, 10, "finding_repo_no_license_warning", "topluluk");
+  if (com.status === 200) { c.add(!!files.readme, 8, "finding_repo_no_readme_warning", "topluluk"); c.add(!!files.contributing || !!files.code_of_conduct, 4, "finding_repo_no_contributing_info", "topluluk"); }
+  c.add((d.open_issues_count || 0) < 100, 8, "finding_repo_many_open_issues_warning", "bakim");
+  c.add(rel.status === 200, 5, "finding_repo_no_releases_info", "bakim");
+  const scores = {}; for (const g of c.groups()) scores[g] = c.score(g);
+  return buildResult({
+    assetType: "REPOSITORY", version: V, startedAt, target: `${owner}/${repo}`, findings: c.findings(), score: c.score(),
+    specific: { repo: d.full_name, visibility: d.visibility || (d.private ? "private" : "public"), language: d.language, license: d.license?.spdx_id || null, stars: d.stargazers_count, forks: d.forks_count, openIssues: d.open_issues_count, defaultBranch: d.default_branch, archived: d.archived, lastPush: d.pushed_at, daysSinceLastPush: pushAge, latestRelease: rel.status === 200 ? `${rel.data.tag_name} (${relAge} gün önce)` : null, communityHealthPct: com.status === 200 ? com.data.health_percentage : null, sizeKB: d.size, scores }
+  });
+}
+
+// ============ MARKA KORUMASI ============
+const MULTI_TLDS = ["com.tr", "net.tr", "org.tr", "gen.tr", "web.tr", "co.uk", "org.uk", "com.au", "co.jp", "com.br", "co.za", "com.mx", "co.in"];
+const BRAND_TLDS = ["com", "net", "org", "io", "co", "app", "dev", "info", "biz", "online", "store", "tech", "ai", "com.tr", "net.tr", "org.tr", "de", "fr", "es", "it", "nl", "co.uk", "eu", "us", "ae", "sa"];
+function splitDomain(d) {
+  const p = d.split("."); const l2 = p.slice(-2).join(".");
+  if (MULTI_TLDS.includes(l2) && p.length >= 3) return { label: p[p.length - 3], tld: l2 };
+  return { label: p[p.length - 2] || p[0], tld: p[p.length - 1] };
+}
+function typoVariants(label, cap = 30) {
+  const out = new Set(); const hg = { o: "0", l: "1", i: "l", a: "e", e: "a" };
+  for (let i = 0; i < label.length; i++) {
+    out.add(label.slice(0, i) + label.slice(i + 1));                       // harf eksik
+    out.add(label.slice(0, i) + label[i] + label.slice(i));                // harf çift
+    if (i < label.length - 1) out.add(label.slice(0, i) + label[i + 1] + label[i] + label.slice(i + 2)); // yer değiştirme
+    if (hg[label[i]]) out.add(label.slice(0, i) + hg[label[i]] + label.slice(i + 1));                    // benzer karakter
+  }
+  if (label.includes("m")) out.add(label.replace("m", "rn"));
+  if (label.length > 4) out.add(label.slice(0, Math.floor(label.length / 2)) + "-" + label.slice(Math.floor(label.length / 2)));
+  out.delete(label);
+  const ok = [...out].filter(v => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(v) && v.length >= 2);
+  if (ok.length <= cap) return ok;
+  const step = ok.length / cap; return Array.from({ length: cap }, (_, i) => ok[Math.floor(i * step)]);
+}
+async function dnsRegistered(name, resolver) {
+  try { const ns = await resolver.resolveNs(name); return { state: "registered", ns: ns.map(x => x.toLowerCase()).sort() }; }
+  catch (e) {
+    if (e.code === "ENOTFOUND") return { state: "free", ns: [] };
+    if (e.code === "ENODATA") { try { const a = await resolver.resolve4(name); return { state: "registered", ns: [], a }; } catch (e2) { return { state: e2.code === "ENOTFOUND" ? "free" : "unknown", ns: [] }; } }
+    return { state: "unknown", ns: [] };
+  }
+}
+async function scanBrand(input, extra = {}, resolverOverride) {
+  const startedAt = Date.now(); const V = "brand-analyzer-v1"; const domain = parseDomain(input);
+  if (!domain) return buildResult({ assetType: "BRAND", version: V, startedAt, target: String(input || ""), findings: ["finding_brand_invalid_target_critical"], score: 0, status: "ERROR", specific: {} });
+  const { label, tld } = splitDomain(domain); const base = `${label}.${tld}`;
+  const resolver = resolverOverride || new (require("dns").promises.Resolver)({ timeout: 3000, tries: 2 });
+  if (!resolverOverride) resolver.setServers(["1.1.1.1", "8.8.8.8"]);
+  const own = await dnsRegistered(base, resolver);
+  const ownNs = own.ns.join(","); let ownA = []; try { ownA = await resolver.resolve4(base); } catch {}
+  const tlds = BRAND_TLDS.filter(t => t !== tld).map(t => `${label}.${t}`);
+  const typos = typoVariants(label).map(v => `${v}.${tld}`);
+  const names = [...tlds.map(n => ({ n, kind: "tld" })), ...typos.map(n => ({ n, kind: "typo" }))];
+  const results = []; const queue = [...names];
+  await Promise.all(Array.from({ length: 12 }, async () => { while (queue.length) { const it = queue.shift(); const r = await dnsRegistered(it.n, resolver); let a = r.a || []; if (r.state === "registered" && !a.length) { try { a = await resolver.resolve4(it.n); } catch {} } results.push({ ...it, ...r, a }); } }));
+  const mine = (r) => r.state === "registered" && ((ownNs && r.ns.join(",") === ownNs) || (r.a || []).some(ip => ownA.includes(ip)));
+  const reg = results.filter(r => r.state === "registered");
+  const thirdTld = reg.filter(r => r.kind === "tld" && !mine(r)), thirdTypo = reg.filter(r => r.kind === "typo" && !mine(r));
+  const freeTld = results.filter(r => r.kind === "tld" && r.state === "free");
+  const unknown = results.filter(r => r.state === "unknown").length;
+  const findings = [];
+  if (thirdTypo.length) findings.push(`finding_brand_${thirdTypo.length}_lookalike_registered_warning`);
+  if (thirdTld.length) findings.push(`finding_brand_${thirdTld.length}_tld_thirdparty_warning`);
+  if (freeTld.length) findings.push(`finding_brand_${freeTld.length}_tld_unprotected_info`);
+  if (own.state === "free") findings.push("finding_brand_base_not_registered_warning");
+  if (unknown > results.length / 2) findings.push("finding_brand_dns_unreliable_info");
+  const score = unknown > results.length / 2 ? null : Math.max(0, 100 - Math.min(thirdTypo.length * 5, 40) - Math.min(thirdTld.length * 8, 40));
+  const fmt = (a) => a.map(r => `${r.n}${r.ns[0] ? " → " + r.ns[0] : ""}`);
+  const base_ = { domain: base, checkedTldVariants: tlds.length, checkedTypoVariants: typos.length, ownedOrSameOwner: reg.filter(mine).map(r => r.n), thirdPartyTldVariants: fmt(thirdTld), thirdPartyLookalikes: fmt(thirdTypo), unregisteredTlds: freeTld.map(r => r.n), undetermined: unknown, note: "Kayıt tespiti DNS'e dayanır: aynı nameserver/IP'ye sahip olanlar 'sizin' sayılır. DNS'i olmayan ama kayıtlı alan adları görünmez; kesin sahiplik için WHOIS/RDAP gerekir." };
+  if (score == null) return unavailableResult({ assetType: "BRAND", version: V, startedAt, target: base, finding: "finding_brand_dns_unreliable_info", status: "UNKNOWN", note: "DNS sorguları yeterince yanıt vermedi.", specific: base_ });
+  return buildResult({ assetType: "BRAND", version: V, startedAt, target: base, findings, score, specific: base_ });
+}
+
+
 const TYPE_HANDLERS = {
   WEB: ({ targetUrl, extra }) => scanWebsite(targetUrl, extra),
   WEBSITE: ({ targetUrl, extra }) => scanWebsite(targetUrl, extra),
   DOMAIN: ({ targetUrl, extra }) => scanDomain(targetUrl || extra.domain || extra.target, extra),
+  EMAIL: ({ targetUrl, extra }) => scanDomain(targetUrl || extra.domain || extra.target, extra),
   SSL_CERTIFICATE: ({ targetUrl, extra }) => scanSslCertificate(targetUrl || extra.domain || extra.target, extra),
-  HOSTING: ({ targetUrl, extra }) => scanHosting(targetUrl || extra.domain || extra.target, extra),
-  SERVER: ({ targetUrl, extra }) => scanHosting(targetUrl || extra.domain || extra.target, extra),
+  HOSTING: ({ targetUrl, extra }) => scanHosting(targetUrl || extra.domain || extra.target),
+  SERVER: ({ targetUrl, extra }) => scanServer(targetUrl || extra.domain || extra.target),
+  SEO: ({ targetUrl, extra }) => scanSeo(targetUrl || extra.target),
+  SECURITY: ({ targetUrl, extra }) => scanSecurity(targetUrl || extra.target),
+  PERFORMANCE: ({ targetUrl, extra }) => scanPerformance(targetUrl || extra.target),
+  UPTIME: ({ targetUrl, extra }) => scanUptime(targetUrl || extra.target, extra),
+  API: ({ targetUrl, extra }) => scanApi(targetUrl || extra.target),
+  MOBILE_APP: ({ targetUrl, extra }) => scanMobileApp(targetUrl || extra.target),
+  REPOSITORY: ({ targetUrl, extra }) => scanRepository(targetUrl || extra.target),
+  BRAND: ({ targetUrl, extra }) => scanBrand(targetUrl || extra.target, extra),
   SAAS_SUBSCRIPTION: ({ extra }) => scanSaasSubscription(extra)
 };
 
 // ===== Site dosyalarını aynı sunucudan yayınla =====
 const path = require("path");
-const STATIC_FILES = ["style.css", "app.js", "config.js", "manifest.json", "icon-192.png", "icon-512.png"];
+const STATIC_FILES = ["index.html", "style.css", "app.js", "config.js", "plans.js", "manifest.json", "icon-192.png", "icon-512.png"];
 STATIC_FILES.forEach(f => app.get("/" + f, (q, r) => r.sendFile(path.join(__dirname, f))));
 // Service worker: her zaman güncel çekilsin, tüm site kapsamında çalışsın
 app.get("/sw.js", (q, r) => {
@@ -879,15 +1478,39 @@ app.get("/sw.js", (q, r) => {
 });
 app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));
 
-app.post("/api/scan", async (req, res) => {
+// ---- Basit hız sınırı (IP başına) ----
+const rateHits = new Map();
+const rateLimit = (max, windowMs) => (req, res, next) => {
+  const now = Date.now(); const arr = (rateHits.get(req.ip + req.path) || []).filter(t => now - t < windowMs);
+  if (arr.length >= max) return res.status(429).json({ success: false, error: "Çok fazla istek. Biraz sonra tekrar deneyin." });
+  arr.push(now); rateHits.set(req.ip + req.path, arr); next();
+};
+setInterval(() => { const now = Date.now(); for (const [k, v] of rateHits) if (!v.some(t => now - t < 600000)) rateHits.delete(k); }, 300000).unref();
+
+const payments = require("./payments")({ app, db, admin, http: axios });
+
+app.post("/api/scan", rateLimit(parseInt(process.env.SCAN_RATE_LIMIT || "60", 10), 5 * 60 * 1000), async (req, res) => {
   const { assetId, type, targetUrl, extra = {}, name, notes, organizationId, ownerId } = req.body || {};
   if (!assetId) return res.status(400).json({ success: false, error: "assetId gerekli" });
   const assetType = (type || "WEBSITE").toUpperCase();
   const handler = TYPE_HANDLERS[assetType];
   if (!handler) return res.status(400).json({ success: false, error: `Desteklenmeyen tür: ${assetType}` });
 
+  // Yerel/özel ağlara tarama engeli (SSRF)
+  if (!["SAAS_SUBSCRIPTION", "MOBILE_APP", "REPOSITORY"].includes(assetType)) {
+    try { await assertPublicHost(hostOf(targetUrl || extra.domain || extra.target)); }
+    catch (e) { return res.status(400).json({ success: false, error: e.message }); }
+  }
+  // Sunucu tarafı plan kontrolü (ENFORCE_PLANS=true ise)
+  if (process.env.ENFORCE_PLANS === "true") {
+    try {
+      const u = await payments.verifyUser(req); const ent = await payments.getEntitlement(u.uid);
+      if (ent.plan === "expired") return res.status(402).json({ success: false, code: "PLAN_REQUIRED", error: "Deneme süreniz bitti. Devam etmek için bir paket seçin." });
+    } catch (e) { return res.status(e.status || 401).json({ success: false, error: e.message }); }
+  }
+
   const scanStartedAt = Date.now();
-  let findings = [], scanErrors = [], typeData = {}, statusHint = null;
+  let findings = [], scanErrors = [], typeData = {}, statusHint = null, failed = false;
 
   try {
     const result = await handler({ targetUrl, extra });
@@ -898,15 +1521,16 @@ app.post("/api/scan", async (req, res) => {
   } catch (e) {
     findings.push("finding_scan_error");
     scanErrors.push(e?.message || "Unknown");
-    statusHint = "ERROR";
+    statusHint = "ERROR"; failed = true;
   }
 
   const healthResult = computeHealth(findings);
   const confidence = computeConfidence(findings, scanErrors.length > 0);
 
-  const scoreUnavailable = typeData?.commonAnalysis && typeData.commonAnalysis.score === null;
+  const scoreUnavailable = failed || (typeData?.commonAnalysis && typeData.commonAnalysis.score === null);
   let finalHealthScore = scoreUnavailable ? null : (typeData?.commonAnalysis?.score ?? healthResult.healthScore);
   let finalHealthLevel = scoreUnavailable ? "BELİRSİZ" : healthResult.healthLevel;
+  if (finalHealthScore != null && !scoreUnavailable) finalHealthLevel = finalHealthScore >= 80 ? "YEŞİL" : finalHealthScore >= 50 ? "SARI" : "KIRMIZI";
   let finalStatus = statusHint || (typeData?.commonAnalysis?.status) || defaultStatusFromHealth(finalHealthLevel);
   if (assetType === "DOMAIN" && typeData?.commonAnalysis?.score != null) {
     finalHealthScore = typeData.commonAnalysis.score;
@@ -964,6 +1588,6 @@ app.post("/api/scan", async (req, res) => {
   return res.json({ success: true, assetId, checkId, saved, saveError, errors: scanErrors, result: assetUpdate });
 });
 
-app.get("/health", (req, res) => res.json({ ok: true, types: Object.keys(TYPE_HANDLERS), version: "v10.1-firestore-optional", firestore: !!db, timestamp: new Date().toISOString() }));
+app.get("/health", (req, res) => res.json({ ok: true, types: Object.keys(TYPE_HANDLERS), version: "v11.0", firestore: !!db, payments: payments.status(), timestamp: new Date().toISOString() }));
 app.listen(PORT, () => console.log(`Scraper v10.0 FULL FIXED CLEAN ${PORT} portunda`));
 module.exports = app;

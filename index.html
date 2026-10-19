@@ -35,6 +35,7 @@
 <div id="toast"></div>
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.462.0/dist/umd/lucide.min.js"></script>
 <script src="config.js"></script>
+<script src="plans.js"></script>
 <script src="app.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
@@ -73,6 +74,7 @@
     }
   };
   window.dacLogout = () => signOut(auth);
+  window.dacToken = async () => (auth.currentUser ? await auth.currentUser.getIdToken() : null);
 
   onAuthStateChanged(auth, (u) => {
     document.body.classList.remove("init");
