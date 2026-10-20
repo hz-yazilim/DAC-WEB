@@ -175,7 +175,7 @@ async function runScan(a){
  const t0=Date.now(),api=apiUrl();let res;
  if(api){
   const target=URLCATS.includes(a.cat)?proto(a.target):a.target;
-  const r=await fetch(api+'/api/scan',{method:'POST',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({assetId:a.id,type:CATS[a.cat].api,targetUrl:target,name:a.name,extra:a.extra||{}})});
+  let r;try{r=await fetch(api+'/api/scan',{method:'POST',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({assetId:a.id,type:CATS[a.cat].api,targetUrl:target,name:a.name,extra:a.extra||{}})})}catch{throw new Error('Tarama sunucusuna ulaşılamadı ('+api+'). Adres yanlış olabilir veya Render uyanıyor, 30 sn sonra tekrar deneyin. Ayarlar > Scanner API adresini kontrol edin.')}
   let j;try{j=await r.json()}catch{throw new Error('Sunucu geçersiz yanıt verdi ('+r.status+'). Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.')}
   if(r.status===402){location.hash='plan';throw new Error(j.error||'Paket gerekli')}
   if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
