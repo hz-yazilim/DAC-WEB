@@ -241,9 +241,10 @@ async function request(url, o = {}) {
     const timer = setTimeout(() => { truncated = true; try { res.data.destroy(); } catch {} done(); }, Math.max(3000, timeout));
     const dec = enc ? decoderFor(enc) : null;
     res.data.on("data", d => { transfer += d.length; if (transfer > maxBytes * 2 && !dec) { truncated = true; res.data.destroy(); done(); } });
-    res.data.on("error", done); res.data.on("close", done);
+    res.data.on("error", done);
     const out = dec ? res.data.pipe(dec) : res.data;
-    if (dec) dec.on("error", done);
+    // Sıkıştırılmışsa bitiş, AÇICI akıştan beklenir (kaynak akış önce kapanıp gövdeyi yarım bırakmasın)
+    if (dec) { dec.on("error", done); dec.on("close", done); } else res.data.on("close", done);
     out.on("data", d => { raw += d.length; if (readBody && textual && raw <= maxBytes) chunks.push(d); else if (raw > maxBytes) { truncated = true; try { res.data.destroy(); } catch {} done(); } });
     out.on("end", done);
   });
@@ -262,7 +263,8 @@ async function requestRetry(url, o = {}) {
       if (r2.status > 0) { r2.tlsError = r.errorInfo.code || r.errorInfo.message; return r2; }
       return r;
     }
-    if (["timeout", "reset", "dns_temp", "other"].includes(k) && !o.noRetry) { await sleep(350); const r2 = await request(url, o); if (r2.status > 0 || !r2.errorInfo) return r2; return r2; }
+    // Zaman aşımında yeniden deneme yok (engelleyen/yanıt vermeyen sitede süreyi ikiye katlamasın)
+    if (["reset", "dns_temp", "other"].includes(k) && !o.noRetry) { await sleep(300); return await request(url, o); }
   }
   return r;
 }
@@ -736,12 +738,22 @@ async function scanDomain(input, extra = {}) {
 
   // ---- Paralel ağır işler ----
   const errs2 = [];
-  const [nsHealth, rdap, ctRes, mailPolicies, dnssecResult] = await Promise.all([
-    dnsRecords.ns.length ? withTimeout(checkNameservers(domain, dnsRecords.ns), 12000, "NS").catch(() => null) : null,
-    withTimeout(fetchRdap(domain, errs2), 25000, "RDAP").catch(() => ({ data: null, noRdap: false, timeout: true })),
-    withTimeout(ctSubdomains(domain), 9000, "CT").catch(() => ({ ok: false, names: [] })),
+  const ctPromise = withTimeout(ctSubdomains(domain), 8000, "CT").catch(() => ({ ok: false, names: [] }));
+  const takePromise = ctPromise.then(ct => withTimeout(checkTakeover(domain, ct.names), 15000, "Takeover").catch(() => []));
+  const blPromise = (async () => {
+    const mxIps = []; await pool(dnsRecords.mx.slice(0, 3), 3, async (m) => { const r = await dq("resolve4", m.exchange); mxIps.push(...r.data.slice(0, 1)); });
+    return withTimeout(checkDnsbl([...dnsRecords.a.slice(0, 2), ...mxIps]), 12000, "DNSBL").catch(() => ({ status: "NOT_CHECKED", hits: [], checkedIps: [] }));
+  })();
+  const [nsHealth, rdap, ctRes, mailPolicies, dnssecResult, spf, dmarcTxt, dkimFound, takeRows, bl] = await Promise.all([
+    dnsRecords.ns.length ? withTimeout(checkNameservers(domain, dnsRecords.ns), 10000, "NS").catch(() => null) : null,
+    withTimeout(fetchRdap(domain, errs2), 20000, "RDAP").catch(() => ({ data: null, noRdap: false, timeout: true })),
+    ctPromise,
     hasMx ? checkMailPolicies(domain).catch(() => null) : null,
-    checkDnssec(domain, dnsRecords.ds).catch(() => ({ enabled: false, status: STATUS.UNKNOWN, method: "ERROR" }))
+    checkDnssec(domain, dnsRecords.ds).catch(() => ({ enabled: false, status: STATUS.UNKNOWN, method: "ERROR" })),
+    analyzeSpf(domain, dnsRecords.txt),
+    resolveTxtRobust(`_dmarc.${domain}`),
+    hasMx ? withTimeout(discoverDkim(domain, mailProv.selectors), 12000, "DKIM").catch(() => []) : [],
+    takePromise, blPromise
   ]);
   errors.push(...errs2); debug.rdapAttempts = errs2;
 
@@ -757,7 +769,6 @@ async function scanDomain(input, extra = {}) {
   }
 
   // ---- SPF ----
-  const spf = await analyzeSpf(domain, dnsRecords.txt);
   let spfStatus;
   if (spf.record) {
     const valid = /^v=spf1\s+/i.test(spf.record) && /(?:include:|ip4:|ip6:|\ba\b|\bmx\b|[~\-?+]all|redirect=|exists:)/i.test(spf.record);
@@ -777,7 +788,7 @@ async function scanDomain(input, extra = {}) {
   else spfStatus = STATUS.NOT_REQUIRED;
 
   // ---- DMARC ----
-  const dmarcTxt = await resolveTxtRobust(`_dmarc.${domain}`); debug.dmarcRaw = normalizeTxtRecords(dmarcTxt.records);
+  debug.dmarcRaw = normalizeTxtRecords(dmarcTxt.records);
   const dmarcAll = findDmarcRecords(dmarcTxt.records); const dmarcRecord = dmarcAll[0] || null; const dt = parseTags(dmarcRecord);
   let dmarcStatus, dmarcPolicy = null, dmarcPct = null;
   if (dmarcRecord) {
@@ -799,7 +810,7 @@ async function scanDomain(input, extra = {}) {
   // ---- DKIM ----
   let dkimList = [], dkimStatus = STATUS.NOT_REQUIRED;
   if (hasMx) {
-    dkimList = await withTimeout(discoverDkim(domain, mailProv.selectors), 14000, "DKIM").catch(() => []);
+    dkimList = dkimFound || [];
     if (dkimList.length) {
       dkimStatus = STATUS.VALID; findings.push("EMAIL_DKIM_VALID"); c.add(true, 20, null, "email");
       const weak = dkimList.filter(k => k.bits && k.bits < 1024), mid = dkimList.filter(k => k.bits && k.bits >= 1024 && k.bits < 2048);
@@ -844,7 +855,7 @@ async function scanDomain(input, extra = {}) {
     if (expiration) {
       daysUntilExpiry = daysUntil(expiration);
       c.add(daysUntilExpiry >= 0, 50, "finding_domain_expired_critical", "renewal");
-      if (daysUntilExpiry >= 0) { c.add(daysUntilExpiry >= 14, 20, "finding_domain_expiring_critical_critical", "renewal"); c.add(daysUntilExpiry >= 30, 15, "finding_domain_expiring_soon_warning", "renewal"); c.add(daysUntilExpiry >= 60, 15, "finding_domain_expiring_soon_info", "renewal"); }
+      if (daysUntilExpiry >= 0) { c.add(daysUntilExpiry >= 14, 20, "finding_domain_expiring_critical_critical", "renewal"); c.add(daysUntilExpiry >= 30 || daysUntilExpiry < 14, 15, "finding_domain_expiring_soon_warning", "renewal"); c.add(daysUntilExpiry >= 60 || daysUntilExpiry < 30, 15, "finding_domain_expiring_soon_info", "renewal"); }
     } else info.push("finding_domain_missing_expiry_warning");
     statuses = rdapStatuses(rdap.data); const ns = statuses.map(normStatus);
     if (ns.some(s => /serverhold|clienthold/.test(s))) c.add(false, 20, "finding_domain_on_hold_critical", "security");
@@ -861,14 +872,11 @@ async function scanDomain(input, extra = {}) {
   else { errors.push("RDAP tüm endpointler başarısız"); registrarStatus = "LOOKUP_FAILED"; info.push("finding_domain_rdap_failed_warning"); }
 
   // ---- Takeover / subdomain ----
-  const takeRows = await withTimeout(checkTakeover(domain, ctRes.names), 25000, "Takeover").catch(() => []);
   const takeovers = takeRows.filter(r => r.takeover), dangling = takeRows.filter(r => r.dangling && !r.takeover);
   c.add(takeovers.length === 0, 25, "finding_domain_takeover_risk_critical", "security");
   if (dangling.length) c.add(false, 5, "finding_domain_dangling_cname_warning", "security");
 
-  // ---- Kara liste ----
-  const mxIps = []; await pool(dnsRecords.mx.slice(0, 3), 3, async (m) => { const r = await dq("resolve4", m.exchange); mxIps.push(...r.data.slice(0, 1)); });
-  const bl = await withTimeout(checkDnsbl([...dnsRecords.a.slice(0, 2), ...mxIps]), 15000, "DNSBL").catch(() => ({ status: "NOT_CHECKED", hits: [], checkedIps: [] }));
+  // ---- Kara liste (bl yukarıda paralel hesaplandı) ----
   if (bl.status === "LISTED") { if (bl.strongHit || bl.multiHit) c.add(false, 20, "finding_domain_ip_blacklisted_critical", "security"); else c.add(false, 10, "finding_domain_ip_listed_warning", "security"); }
   else if (bl.status === "CLEAN") c.add(true, 15, null, "security");
 
@@ -1410,20 +1418,17 @@ function securityHeaderChecks(c, ctx) {
 // =====================================================================
 async function getPage(targetUrl, o = {}) {
   const url = ensureUrl(targetUrl); const typedScheme = /^https?:\/\//i.test(String(targetUrl || "").trim());
-  let main = await httpProbe(url, { timeout: 12000, maxRedirects: 8, ...o }); let variant = null, httpOnly = false;
-  const retriable = ["dns", "refused", "timeout", "reset", "unreachable", "tls"];
-  if (main.status === 0 && retriable.includes(main.errorInfo?.kind)) {
+  let main = await httpProbe(url, { timeout: 10000, maxRedirects: 8, ...o }); let variant = null, httpOnly = false;
+  const kind = main.errorInfo?.kind;
+  // Yedek denemeler yalnızca HIZLI başarısızlıklarda (DNS/ret/TLS/reset); zaman aşımında beklemeyi uzatmayız
+  if (main.status === 0 && ["dns", "refused", "reset", "unreachable", "tls"].includes(kind)) {
     try {
-      const u = new URL(url);
-      if (!net.isIP(u.hostname)) {
-        const alt = new URL(url); alt.hostname = u.hostname.startsWith("www.") ? u.hostname.slice(4) : "www." + u.hostname;
-        const m2 = await httpProbe(alt.toString(), { timeout: 10000, maxRedirects: 8, ...o });
-        if (m2.status > 0) { main = m2; variant = { from: u.hostname, to: alt.hostname }; }
-      }
-      if (main.status === 0 && u.protocol === "https:" && (!typedScheme || ["refused", "tls", "reset"].includes(main.errorInfo?.kind))) {
-        const hu = new URL(url); hu.protocol = "http:"; const m3 = await httpProbe(hu.toString(), { timeout: 10000, maxRedirects: 8, ...o });
-        if (m3.status > 0) { main = m3; httpOnly = !/^https:/i.test(m3.finalUrl); }
-      }
+      const u = new URL(url); const tasks = [];
+      if (!net.isIP(u.hostname)) { const alt = new URL(url); alt.hostname = u.hostname.startsWith("www.") ? u.hostname.slice(4) : "www." + u.hostname; tasks.push(httpProbe(alt.toString(), { timeout: 8000, maxRedirects: 8, ...o }).then(r => ({ t: "variant", r, host: alt.hostname }))); }
+      if (u.protocol === "https:" && (!typedScheme || ["refused", "tls", "reset"].includes(kind))) { const hu = new URL(url); hu.protocol = "http:"; tasks.push(httpProbe(hu.toString(), { timeout: 8000, maxRedirects: 8, ...o }).then(r => ({ t: "http", r }))); }
+      const outs = await Promise.all(tasks);
+      const v = outs.find(x => x.t === "variant" && x.r.status > 0); if (v) { main = v.r; variant = { from: u.hostname, to: v.host }; }
+      else { const h = outs.find(x => x.t === "http" && x.r.status > 0); if (h) { main = h.r; httpOnly = !/^https:/i.test(h.r.finalUrl); } }
     } catch {}
   }
   return { url, main, variant, httpOnly, prot: main.status ? detectBotProtection(main) : null };
@@ -1663,13 +1668,14 @@ async function scanPerformance(targetUrl) {
 // UPTIME & GECİKME v2
 // =====================================================================
 async function scanUptime(targetUrl, extra = {}) {
-  const startedAt = Date.now(); const V = "uptime-analyzer-v2.0"; const url = ensureUrl(targetUrl); const N = 6, samples = [];
-  for (let i = 0; i < N; i++) {
-    const r = await request(url, { timeout: 9000, readBody: true, maxBytes: 200000, insecure: true });
+  const startedAt = Date.now(); const V = "uptime-analyzer-v2.0"; const url = ensureUrl(targetUrl); const N0 = 6, samples = [];
+  for (let i = 0; i < N0; i++) {
+    if (i >= 3 && samples.every(s => !s.up)) break; // 3 ardışık başarısızlıktan sonra boşuna bekleme
+    const r = await request(url, { timeout: 8000, readBody: true, maxBytes: 200000, insecure: true });
     samples.push({ status: r.status, ms: r.total, ttfb: r.ttfb, up: r.status > 0 && r.status < 500, protectedBy: r.status >= 400 ? detectBotProtection(r) : null, err: r.errorInfo?.kind || null, retryAfter: r.headers["retry-after"] || null, maint: r.status === 503 });
-    if (i < N - 1) await sleep(500);
+    if (i < N0 - 1) await sleep(500);
   }
-  const host = hostOf(url); const t0 = Date.now(); let dnsMs = null; try { await dns.lookup(host); dnsMs = Date.now() - t0; } catch {}
+  const N = samples.length; const host = hostOf(url); const t0 = Date.now(); let dnsMs = null; try { await dns.lookup(host); dnsMs = Date.now() - t0; } catch {}
   let uPort = /^https:/i.test(url) ? 443 : 80; try { const pu = new URL(url); if (pu.port) uPort = parseInt(pu.port, 10); } catch {}
   const [tcp, tlsi] = await Promise.all([host ? tcpPortCheck(host, uPort, 4000) : null, /^https:/i.test(url) && host ? tlsAlpn(host) : null]);
   const ups = samples.filter(s => s.up); const times = ups.map(s => s.ttfb ?? s.ms).sort((a, b) => a - b); const rate = Math.round(ups.length / N * 100);
@@ -1868,6 +1874,10 @@ async function scanBrand(input, extra = {}, resolverOverride) {
   if (!parsed) return buildResult({ assetType: "BRAND", version: V, startedAt, target: String(input || ""), findings: ["finding_brand_invalid_target_critical"], score: 0, status: "ERROR", specific: {} });
   const domain = registrableDomain(parsed); const { label, tld } = splitDomain(domain); const base = `${label}.${tld}`;
   const resolver = resolverOverride || new dns.Resolver({ timeout: 3000, tries: 2 }); if (!resolverOverride) resolver.setServers(["1.1.1.1", "8.8.8.8"]);
+  { // Çözücü sağlık kontrolü: bozuksa "hepsi boş" diye sahte sonuç üretme
+    let ok = false; try { ok = (await resolver.resolve4("cloudflare.com")).length > 0; } catch {}
+    if (!ok) return unavailableResult({ assetType: "BRAND", version: V, startedAt, target: base, finding: "finding_brand_dns_unreliable_info", status: "UNKNOWN", note: "DNS çözücü yanıt vermedi; marka taraması yapılamadı.", specific: { domain: base } });
+  }
   const own = await dnsRegistered(base, resolver); const ownNs = own.ns.join(","); let ownA = []; try { ownA = await resolver.resolve4(base); } catch {}
   const wildcard = await (async () => { try { await resolver.resolve4(`dac-${Math.random().toString(36).slice(2, 10)}.${tld}`); return true; } catch { return false; } })();
   const tlds = BRAND_TLDS.filter(t => t !== tld).map(t => `${label}.${t}`); const typos = typoVariants(label).map(v => `${v}.${tld}`);
