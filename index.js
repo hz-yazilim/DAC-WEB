@@ -58,9 +58,30 @@ try {
 }
 
 const app = express();
-app.use(require("cors")());
+const SEC = require("./security");
+app.disable("x-powered-by");
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "2mb", verify: (req, res, buf) => { req.rawBody = buf; } }));
+app.use(require("helmet")({
+  // Google ile giriş penceresi (popup) için COOP gevşetildi; CSP önce "report-only" başlar (CSP_MODE=enforce ile zorunlu yapılır)
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    reportOnly: process.env.CSP_MODE !== "enforce",
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://www.gstatic.com", "https://www.googletagmanager.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://*.onrender.com", "https://*.googleapis.com", "https://*.google-analytics.com", "https://*.firebaseio.com", "https://*.firebaseapp.com", "https://www.gstatic.com"],
+      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.iyzipay.com", "https://js.stripe.com"],
+      formAction: ["'self'", "https://*.iyzipay.com", "https://checkout.stripe.com"],
+      objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"]
+    }
+  }
+}));
+app.use(require("cors")(SEC.corsOptions));
+app.use(express.json({ limit: "256kb", verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 const PORT = process.env.PORT || 3000;
 const SCANNER_VERSION = "v12.0";
@@ -1986,30 +2007,48 @@ STATIC_FILES.forEach(f => app.get("/" + f, (q, r) => r.sendFile(path.join(__dirn
 app.get("/sw.js", (q, r) => { r.set({ "Cache-Control": "no-cache", "Service-Worker-Allowed": "/" }); r.type("application/javascript").sendFile(path.join(__dirname, "sw.js")); });
 app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));
 
-// ---- Basit hız sınırı (IP başına) ----
-const rateHits = new Map();
-const rateLimit = (max, windowMs) => (req, res, next) => {
-  const now = Date.now(); const arr = (rateHits.get(req.ip + req.path) || []).filter(t => now - t < windowMs);
-  if (arr.length >= max) return res.status(429).json({ success: false, error: "Çok fazla istek. Biraz sonra tekrar deneyin." });
-  arr.push(now); rateHits.set(req.ip + req.path, arr); next();
-};
-setInterval(() => { const now = Date.now(); for (const [k, v] of rateHits) if (!v.some(t => now - t < 600000)) rateHits.delete(k); }, 300000).unref();
-
 const payments = require("./payments")({ app, db, admin, http: axios });
 
-app.post("/api/scan", rateLimit(parseInt(process.env.SCAN_RATE_LIMIT || "60", 10), 5 * 60 * 1000), async (req, res) => {
-  const body = req.body || {}; const { assetId, type, name, notes, organizationId, ownerId } = body;
+// ---- Hız ve eşzamanlılık sınırları (bellek içi: tek Render örneği için; çoklu örnekte Redis gerekir) ----
+const ipLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_RATE_LIMIT, 60), 5 * 60 * 1000);
+const userLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_USER_RATE_LIMIT, 30), 5 * 60 * 1000);
+const concurrency = SEC.makeConcurrency(SEC.int(process.env.SCAN_CONCURRENCY_PER_USER, 2), SEC.int(process.env.SCAN_CONCURRENCY_GLOBAL, 8));
+const tooMany = (res, msg) => res.status(429).json({ success: false, error: msg || "Çok fazla istek. Biraz sonra tekrar deneyin." });
+const scanGuard = [
+  (req, res, next) => (ipLimit(req.ip) ? next() : tooMany(res)),
+  SEC.authenticate((req) => payments.verifyUser(req)),
+  (req, res, next) => (userLimit(req.user.uid) ? next() : tooMany(res))
+];
+
+app.post("/api/scan", scanGuard, async (req, res) => {
+  const body = req.body || {}; const { assetId, type, name, notes } = body; const uid = req.user.uid;
   const targetUrl = typeof body.targetUrl === "string" ? body.targetUrl.trim().slice(0, 2048) : body.targetUrl;
   const extra = body.extra && typeof body.extra === "object" && !Array.isArray(body.extra) ? body.extra : {};
-  if (!assetId || typeof assetId !== "string" || assetId.length > 200 || /[\/]/.test(assetId)) return res.status(400).json({ success: false, error: "assetId gerekli" });
+  if (!assetId || typeof assetId !== "string" || assetId.length > 200 || !/^[A-Za-z0-9_-]+$/.test(assetId)) return res.status(400).json({ success: false, error: "assetId gerekli (harf, rakam, - ve _)" });
   const assetType = String(type || "WEBSITE").toUpperCase(); const handler = TYPE_HANDLERS[assetType];
   if (!handler) return res.status(400).json({ success: false, error: `Desteklenmeyen tür: ${assetType}` });
   if (!NO_HOST_TYPES.includes(assetType) && !(targetUrl || extra.domain || extra.target)) return res.status(400).json({ success: false, error: "Hedef adres gerekli" });
   if (!NO_HOST_TYPES.includes(assetType)) { try { await assertPublicHost(hostOf(targetUrl || extra.domain || extra.target)); } catch (e) { return res.status(400).json({ success: false, error: e.message }); } }
-  if (process.env.ENFORCE_PLANS === "true") {
-    try { const u = await payments.verifyUser(req); const ent = await payments.getEntitlement(u.uid); if (ent.plan === "expired") return res.status(402).json({ success: false, code: "PLAN_REQUIRED", error: "Deneme süreniz bitti. Devam etmek için bir paket seçin." }); }
-    catch (e) { return res.status(e.status || 401).json({ success: false, error: e.message }); }
+  // Paket: üretimde her zaman sunucuda zorunlu (geliştirme test kullanıcısı hariç)
+  let ent = null;
+  if (SEC.enforcePlans() && !req.user.dev) {
+    try { ent = await payments.getEntitlement(uid); } catch (e) { return res.status(e.status || 503).json({ success: false, error: e.message }); }
+    if (ent.plan === "expired") return res.status(402).json({ success: false, code: "PLAN_REQUIRED", error: "Deneme süreniz bitti. Devam etmek için bir paket seçin." });
   }
+  // Sahiplik + kota: başkasına ait varlık değiştirilemez
+  if (db) {
+    try {
+      const claim = await SEC.claimAsset(db, assetId, uid);
+      if (!claim.ok) return res.status(403).json({ success: false, code: "FORBIDDEN", error: "Bu varlık size ait değil." });
+      if (ent) {
+        const q = await SEC.checkAssetQuota(db, uid, ent.plan, claim.isNew);
+        if (!q.ok) { if (claim.isNew) await db.collection("assets").doc(assetId).delete().catch(() => {}); return res.status(402).json({ success: false, code: "QUOTA_EXCEEDED", error: `Paket varlık limiti doldu (${q.limit}).` }); }
+      }
+    } catch (e) { console.error("Sahiplik/kota kontrolü hatası:", e.message); return res.status(503).json({ success: false, error: "Veritabanına ulaşılamadı, tekrar deneyin." }); }
+  }
+  const release = concurrency.acquire(uid);
+  if (!release) return tooMany(res, "Aynı anda çok fazla tarama var. Birinin bitmesini bekleyin.");
+  res.on("close", release);
   const scanStartedAt = Date.now(); let findings = [], scanErrors = [], typeData = {}, statusHint = null, failed = false, scanConfidence = null;
   try {
     const result = await withTimeout(Promise.resolve(handler({ targetUrl, extra })), SCAN_TIMEOUT_MS, "Tarama");
@@ -2025,9 +2064,11 @@ app.post("/api/scan", rateLimit(parseInt(process.env.SCAN_RATE_LIMIT || "60", 10
   let finalHealthScore = scoreUnavailable ? null : typeData.commonAnalysis.score; let finalHealthLevel = "BELİRSİZ";
   if (finalHealthScore != null) finalHealthLevel = finalHealthScore >= 80 ? "YEŞİL" : finalHealthScore >= 50 ? "SARI" : "KIRMIZI";
   let finalStatus = noData || failed ? "ERROR" : (statusHint || typeData.commonAnalysis.status || defaultStatusFromHealth(finalHealthLevel));
+  const timedOut = failed && scanErrors.some(m => /zaman aşımı/i.test(String(m)));
+  const scanStatus = timedOut ? "TIMEOUT" : (failed || noData) ? "FAILED" : scanErrors.length ? "PARTIAL" : "COMPLETED";
   const nowIso = new Date().toISOString();
-  const assetUpdate = { assetId, assetType, type: assetType, ...typeData, findings, healthLevel: finalHealthLevel, healthScore: finalHealthScore, confidence, status: finalStatus, latencyMs: Date.now() - scanStartedAt, lastCheck: nowIso, updatedAt: nowIso };
-  if (name) assetUpdate.name = name; if (targetUrl) assetUpdate.targetUrl = targetUrl; if (organizationId) assetUpdate.organizationId = organizationId; if (ownerId) assetUpdate.ownerId = ownerId;
+  const assetUpdate = { assetId, scanStatus, assetType, type: assetType, ...typeData, findings, healthLevel: finalHealthLevel, healthScore: finalHealthScore, confidence, status: finalStatus, latencyMs: Date.now() - scanStartedAt, lastCheck: nowIso, updatedAt: nowIso };
+  if (name) assetUpdate.name = String(name).slice(0, 200); if (targetUrl) assetUpdate.targetUrl = targetUrl; assetUpdate.ownerId = uid; // sahip bilgisi yalnızca doğrulanmış oturumdan gelir
   let saved = false, checkId = null, saveError = null;
   if (db) {
     try {
@@ -2035,19 +2076,32 @@ app.post("/api/scan", rateLimit(parseInt(process.env.SCAN_RATE_LIMIT || "60", 10
       await withTimeout((async () => {
         await db.collection("assets").doc(assetId).set({ ...doc, lastCheck: ts, updatedAt: ts }, { merge: true });
         const checkRef = db.collection("assetChecks").doc(); checkId = checkRef.id;
-        await checkRef.set(forFirestore({ assetId, checkId, type: assetType, targetUrl: targetUrl || null, errors: scanErrors, findings, healthScore: finalHealthScore, healthLevel: finalHealthLevel, confidence, latencyMs: Date.now() - scanStartedAt, status: finalStatus, scannerVersion: typeData?.analysisMeta?.scannerVersion || null, scores: typeData?.specificAnalysis?.scores || null, checkedAt: ts }) );
+        await checkRef.set(forFirestore({ assetId, checkId, type: assetType, targetUrl: targetUrl || null, errors: scanErrors, findings, healthScore: finalHealthScore, healthLevel: finalHealthLevel, confidence, latencyMs: Date.now() - scanStartedAt, status: finalStatus, scanStatus, ownerId: uid, scannerVersion: typeData?.analysisMeta?.scannerVersion || null, scores: typeData?.specificAnalysis?.scores || null, checkedAt: ts }) );
       })(), 8000, "Firestore");
       saved = true;
     } catch (e) { saveError = e?.message || "Firestore hatası"; console.error("Firestore kayıt hatası:", saveError); }
   }
-  return res.json({ success: true, assetId, checkId, saved, saveError, errors: scanErrors, result: assetUpdate });
+  if (scanStatus === "FAILED" || scanStatus === "TIMEOUT") {
+    return res.status(scanStatus === "TIMEOUT" ? 504 : 502).json({ success: false, scanStatus, assetId, checkId, saved, error: scanStatus === "TIMEOUT" ? "Tarama zaman aşımına uğradı. Hedef yanıt vermiyor olabilir." : "Tarama tamamlanamadı. Hedefe ulaşılamadı veya analiz sırasında hata oluştu.", errors: scanErrors });
+  }
+  return res.json({ success: true, scanStatus, assetId, checkId, saved, saveError: saveError ? "Sonuç kaydedilemedi" : null, errors: scanErrors, result: assetUpdate });
 });
 
-app.get("/health", (req, res) => res.json({ ok: true, types: Object.keys(TYPE_HANDLERS), version: SCANNER_VERSION, firestore: !!db, payments: payments.status(), timestamp: new Date().toISOString() }));
+app.get("/health", (req, res) => { const p = payments.status(); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico }, timestamp: new Date().toISOString() }); });
 // JSON ayrıştırma vb. hatalar için düzgün yanıt
-app.use((err, req, res, next) => { if (res.headersSent) return next(err); res.status(err.status || 400).json({ success: false, error: err.type === "entity.parse.failed" ? "Geçersiz JSON" : (err.message || "İstek hatası") }); });
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const code = err.status && err.status >= 400 && err.status < 600 ? err.status : 400;
+  if (code >= 500) console.error("Sunucu hatası:", err && err.stack || err);
+  res.status(code).json({ success: false, error: err.type === "entity.parse.failed" ? "Geçersiz JSON" : err.type === "entity.too.large" ? "İstek çok büyük" : code >= 500 ? "Sunucu hatası" : (err.message || "İstek hatası") });
+});
 process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e && e.stack || e));
 process.on("uncaughtException", (e) => console.error("uncaughtException:", e && e.stack || e));
-if (require.main === module) app.listen(PORT, () => console.log(`Scanner ${SCANNER_VERSION} DEEP ${PORT} portunda`));
+if (require.main === module) {
+  if (SEC.isProd() && !db) console.warn("UYARI: Üretim modunda Firebase yapılandırılmamış; kimlik doğrulama gerektiren uç noktalar 503 döndürür.");
+  if (SEC.devBypass()) console.warn("UYARI: DEV_AUTH_BYPASS aktif (yalnızca geliştirme). Üretimde ASLA kullanmayın.");
+  const server = app.listen(PORT, () => console.log(`Scanner ${SCANNER_VERSION} DEEP ${PORT} portunda (${SEC.isProd() ? "üretim" : "geliştirme"})`));
+  process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor"); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
+}
 module.exports = app;
-module.exports._internals = { scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore };
+module.exports._internals = { isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore };

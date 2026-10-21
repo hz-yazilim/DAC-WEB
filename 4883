@@ -1,0 +1,22 @@
+# Yalnızca değişken adları ve SAHTE örnek değerler. Gerçek sırları buraya yazmayın.
+NODE_ENV=production
+PORT=3000
+# Firebase Admin: Firebase > Proje ayarları > Hizmet hesapları > yeni özel anahtar (tek satır JSON)
+FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"ornek"}
+ALLOWED_ORIGINS=https://ornek-site.onrender.com
+PUBLIC_API_URL=https://ornek-site.onrender.com
+# CSP önce rapor modunda başlar; tarayıcı konsolunda hata yoksa enforce yapın
+CSP_MODE=report-only
+STRIPE_SECRET_KEY=sk_test_ornek
+STRIPE_WEBHOOK_SECRET=whsec_ornek
+IYZICO_API_KEY=sandbox-ornek
+IYZICO_SECRET_KEY=sandbox-ornek
+IYZICO_BASE_URL=https://sandbox-api.iyzipay.com
+# Sınırlar (isteğe bağlı)
+SCAN_RATE_LIMIT=60
+SCAN_USER_RATE_LIMIT=30
+SCAN_CONCURRENCY_PER_USER=2
+SCAN_CONCURRENCY_GLOBAL=8
+SCAN_TIMEOUT_MS=75000
+# SADECE yerel geliştirme (NODE_ENV=development iken çalışır, üretimde yok sayılır)
+# DEV_AUTH_BYPASS=true

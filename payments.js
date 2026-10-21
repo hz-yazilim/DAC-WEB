@@ -9,13 +9,14 @@
  */
 const crypto = require("crypto");
 const PLANS = require("./plans");
+const SEC = require("./security");
 
 module.exports = function initPayments({ app, db, admin, http }) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
   const stripeKey = () => process.env.STRIPE_SECRET_KEY || null;
   const iyziReady = () => !!(process.env.IYZICO_API_KEY && process.env.IYZICO_SECRET_KEY);
   const status = () => ({ stripe: !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET, iyzico: iyziReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true" });
-  const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); res.status(e.status || 500).json({ success: false, error: e.message }); } };
+  const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
 
   // ---------- Kullanıcı doğrulama ----------
   async function verifyUser(req) {
@@ -46,7 +47,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
   const clientIp = (req) => String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "85.34.78.112").split(",")[0].trim();
   const returnUrlOf = (req) => {
     const origin = req.get("origin");
-    if (!origin || !/^https?:\/\//i.test(origin)) throw fail(400, "Geçersiz istek kaynağı.");
+    if (!origin || !SEC.allowedOrigins().includes(origin)) throw fail(400, "Geçersiz istek kaynağı.");
     const p = String((req.body && req.body.returnPath) || "/"); return origin + (p.startsWith("/") ? p : "/" + p);
   };
   const withParam = (u, k, v) => u + (u.includes("?") ? "&" : "?") + k + "=" + v;
@@ -130,12 +131,13 @@ module.exports = function initPayments({ app, db, admin, http }) {
     if (!order) return back(null, false);
     const paid = r.status === "success" && r.paymentStatus === "SUCCESS" && Number(r.paidPrice) + 0.01 >= order.amount;
     if (!paid) { await ref.set({ status: "failed", gatewayStatus: r.paymentStatus || r.errorMessage || null }, { merge: true }); return back(order.returnUrl, false); }
-    if (order.status !== "paid") { // tekrar çağrılırsa süreyi iki kez uzatma
+    // Tekrar/eşzamanlı callback süreyi iki kez uzatmasın: sipariş durumu transaction içinde "paid"e çekilir
+    const first = await db.runTransaction(async (t) => { const o = (await t.get(ref)).data(); if (!o || o.status === "paid") return false; t.set(ref, { status: "paid", paidAt: Date.now(), paymentId: r.paymentId || null }, { merge: true }); return true; });
+    if (first) {
       const cur = (await db.collection("subscriptions").doc(order.uid).get()).data() || {};
       const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === order.plan ? cur.periodEnd : Date.now();
       const periodEnd = startFrom + (order.cycle === "yearly" ? 365 : 30) * 864e5;
       await activate(order.uid, { plan: order.plan, status: "active", provider: "iyzico", currency: "TRY", cycle: order.cycle, periodEnd });
-      await ref.set({ status: "paid", paidAt: Date.now(), paymentId: r.paymentId || null }, { merge: true });
     }
     back(order.returnUrl, true);
   }));
@@ -156,12 +158,18 @@ module.exports = function initPayments({ app, db, admin, http }) {
   }
   app.post("/api/stripe/webhook", handler(async (req, res) => {
     const secret = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!secret || !req.rawBody) throw fail(503, "Webhook yapılandırılmadı.");
+    if (!secret || !req.rawBody || !db) throw fail(503, "Webhook yapılandırılmadı.");
     if (!verifyStripeSignature(req.rawBody, req.headers["stripe-signature"], secret)) throw fail(400, "İmza doğrulanamadı.");
     const ev = req.body; const o = ev.data && ev.data.object;
-    if (ev.type === "checkout.session.completed" && o.subscription) await stripeSync(await stripeApi("GET", "/subscriptions/" + o.subscription));
-    else if (ev.type === "invoice.paid") { const id = o.subscription || o.parent?.subscription_details?.subscription; if (id) await stripeSync(await stripeApi("GET", "/subscriptions/" + id)); }
-    else if (ev.type === "customer.subscription.updated" || ev.type === "customer.subscription.deleted") await stripeSync(o);
+    if (!ev || !ev.id || !o) throw fail(400, "Geçersiz olay.");
+    const evRef = db.collection("webhookEvents").doc(String(ev.id));
+    const isNew = await db.runTransaction(async (t) => { if ((await t.get(evRef)).exists) return false; t.set(evRef, { type: ev.type, at: Date.now() }); return true; });
+    if (!isNew) return res.json({ received: true, duplicate: true });
+    try {
+      if (ev.type === "checkout.session.completed" && o.subscription) await stripeSync(await stripeApi("GET", "/subscriptions/" + o.subscription));
+      else if (ev.type === "invoice.paid") { const id = o.subscription || o.parent?.subscription_details?.subscription; if (id) await stripeSync(await stripeApi("GET", "/subscriptions/" + id)); }
+      else if (ev.type === "customer.subscription.updated" || ev.type === "customer.subscription.deleted") await stripeSync(o);
+    } catch (e) { await evRef.delete().catch(() => {}); throw e; } // işlenemediyse Stripe tekrar deneyebilsin
     res.json({ received: true });
   }));
 
