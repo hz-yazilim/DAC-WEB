@@ -1514,7 +1514,7 @@ async function scanWebsite(targetUrl, extra = {}) {
   if (main.tlsError) cAv.add(false, 20, "finding_web_tls_error_critical");
   if (variant) cAv.add(false, 4, "finding_web_variant_unreachable_warning");
   if (altProbe) cAv.add(altProbe.status > 0 && altProbe.status < 500, 4, "finding_web_www_inconsistent_warning");
-  cAv.add(soft404.status === 404 || soft404.status === 410 || soft404.status === 0 || (soft404.status >= 300 && soft404.status < 400), 4, "finding_web_soft_404_warning");
+  if (main.status < 400) cAv.add(soft404.status === 404 || soft404.status === 410 || soft404.status === 0 || (soft404.status >= 300 && soft404.status < 400), 4, "finding_web_soft_404_warning");
   const extraF = []; if (state.includes("under_construction")) extraF.push("finding_web_under_construction_info"); if (state.includes("maintenance")) extraF.push("finding_web_maintenance_info");
   if (main.uaFallback) extraF.push("finding_web_blocks_unknown_agents_info");
   // --- güvenlik başlıkları (hafif) ---

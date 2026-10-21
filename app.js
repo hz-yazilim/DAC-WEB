@@ -163,14 +163,6 @@ const busy=b=>document.body.classList.toggle('busy',b);
 const authH=async()=>{try{const t=window.dacToken?await window.dacToken():null;return t?{Authorization:'Bearer '+t}:{}}catch{return{}}};
 
 /* ---------- tarama ---------- */
-async function mock(a){
- await new Promise(r=>setTimeout(r,1200));
- let h=0;for(const ch of a.key)h=(h*31+ch.charCodeAt(0))>>>0;
- const score=55+h%41,f=[];if(score<85)f.push(`finding_${a.cat}_demo_warning`);
- return{assetType:CATS[a.cat].api,healthScore:score,status:score>=80?'HEALTHY':score>=50?'WARNING':'CRITICAL',findings:f,latencyMs:1200,
-  commonAnalysis:{analyzerVersion:'demo',executionTimeMs:1200,scannedAt:new Date().toISOString(),score,target:a.target},
-  specificAnalysis:{target:a.target,note:'DEMO veri — gerçek analiz için Ayarlar\'dan API adresi girin',scores:{overall:score}}};
-}
 async function runScan(a){
  const t0=Date.now(),api=apiUrl();let res;
  if(api){
@@ -179,9 +171,9 @@ async function runScan(a){
   let j;try{j=await r.json()}catch{throw new Error('Sunucu geçersiz yanıt verdi ('+r.status+'). Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.')}
   if(r.status===402){location.hash='plan';throw new Error(j.error||'Paket gerekli')}
   if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
- }else res=await mock(a);
+ }else throw new Error('Tarama sunucusu adresi bulunamadı. Ayarlar > Scanner API adresini girin.');
  a.result=res;a.lastScan=Date.now();
- S.scans.unshift({id:uid(),assetId:a.id,name:a.name,cat:a.cat,score:res.healthScore,status:res.status,at:Date.now(),ms:Date.now()-t0,mock:!api});
+ S.scans.unshift({id:uid(),assetId:a.id,name:a.name,cat:a.cat,score:res.healthScore,status:res.status,at:Date.now(),ms:Date.now()-t0});
  S.scans=S.scans.slice(0,planState().p.history||300);save();
 }
 async function rescan(id,open){
@@ -209,7 +201,7 @@ function assetRow(a){
  ${s!=null?`<span class="badge ${tone(s)}">${s}/100</span>`:`<span class="badge mu">${st?(SL[st]||'?'):'-'}</span>`}
  <div class="acts"><button class="btn s" data-act="detail" data-id="${a.id}">Detay</button><button class="btn s" data-act="rescan" data-id="${a.id}">${ic('refresh-cw')}</button><button class="btn s d" data-act="del" data-id="${a.id}">${ic('trash-2')}</button></div></div>`;
 }
-const scanRow=s=>`<div class="item"><div class="ico" style="color:${CATS[s.cat]?.c}">${ic(CATS[s.cat]?.icon||'scan')}</div><div class="g"><b>${esc(s.name)}</b><span>${fmt(s.at)} • ${s.ms}ms${s.mock?' • demo':''}</span></div>${s.score!=null?`<span class="badge ${tone(s.score)}">${s.score}/100</span>`:`<span class="badge mu">${SL[s.status]||'?'}</span>`}</div>`;
+const scanRow=s=>`<div class="item"><div class="ico" style="color:${CATS[s.cat]?.c}">${ic(CATS[s.cat]?.icon||'scan')}</div><div class="g"><b>${esc(s.name)}</b><span>${fmt(s.at)} • ${s.ms}ms</span></div>${s.score!=null?`<span class="badge ${tone(s.score)}">${s.score}/100</span>`:`<span class="badge mu">${SL[s.status]||'?'}</span>`}</div>`;
 const stat=(i,n,l,h,c)=>`<div class="card stat"><div class="top"><div class="ico" style="color:${c}">${ic(i)}</div><span class="tag">LIVE</span></div><div class="num">${n}</div><div class="lbl">${l}</div><div class="hint">${h}</div></div>`;
 function planBanner(){
  const ps=planState();
@@ -243,7 +235,7 @@ function dash(){
  ${stat('shield-alert',crit,'Sorun Tespit',crit?`${crit} kritik`:'Kritik değil','#f59e0b')}
  ${stat('bar-chart-3',avg,'Ortalama Skor',scored.length?'Tüm varlıklar':'Henüz veri yok','#8b9bb8')}
  ${stat('circle-check',ok,'Çalışan Varlıklar','Aktif','#10b981')}</div>
- <div class="card" style="margin-top:14px"><div class="item" style="border:0"><div class="ico" style="color:var(--bl)">${ic('zap')}</div><div class="g"><b style="font-size:18px">Hızlı Tarama</b><span style="white-space:normal">Domain veya URL girin, kategori seçin ve tarayın${apiUrl()?'':' • demo mod'}</span></div></div>
+ <div class="card" style="margin-top:14px"><div class="item" style="border:0"><div class="ico" style="color:var(--bl)">${ic('zap')}</div><div class="g"><b style="font-size:18px">Hızlı Tarama</b><span style="white-space:normal">Domain veya URL girin, kategori seçin ve tarayın</span></div></div>
  <form data-form="quick"><input class="field" name="t" placeholder="örn: google.com veya https://ornek.com" autocomplete="off"><select class="field" name="c">${GROUPS.map(([g,l])=>`<optgroup label="${l}">${Object.entries(CATS).filter(([,v])=>v.g===g).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</optgroup>`).join('')}</select>
  <button class="btn p w" type="submit">${ic('scan-search')} Tara</button></form>
  <div class="chips" style="margin-top:14px">ÖNERİ: ${['google.com','github.com','vercel.com'].map(d=>`<button class="chip" data-act="sug" data-v="${d}">${d}</button>`).join('')}</div>
@@ -323,7 +315,7 @@ function settings(){
  <div class="card"><form data-form="settings"><b>${ic('building-2')} Organizasyon ve uyarılar</b><div style="height:10px"></div>
  <label class="hint">Organizasyon adı</label><input class="field" name="org" value="${esc(s.org)}" required>
  <label class="hint">Uyarı eşiği: skoru bunun altında kalan varlıklar "Aktif Uyarılar"a düşer</label><input class="field" name="alertBelow" type="number" min="10" max="95" value="${s.alertBelow??50}">
- <label class="hint">Scanner API adresi (boşsa demo mod)</label><input class="field" name="apiUrl" value="${esc(s.apiUrl)}" placeholder="${esc((window.DAC_CONFIG||{}).API_URL||'https://scanner.onrender.com')}">
+ <label class="hint">Scanner API adresi (boşsa varsayılan adres kullanılır)</label><input class="field" name="apiUrl" value="${esc(s.apiUrl)}" placeholder="${esc((window.DAC_CONFIG||{}).API_URL||'https://scanner.onrender.com')}">
  <button class="btn p w" type="submit">Kaydet</button></form>
  <div class="acts" style="margin-top:10px"><button class="btn s" data-act="ping">${ic('plug-zap')} Bağlantıyı test et</button></div><div class="hint" id="pingres" style="margin-top:8px"></div></div>
  <div class="card"><form data-form="billing"><b>${ic('receipt')} Fatura bilgileri</b><div class="hint">TL ödemesi (iyzico) için ad soyad, adres ve şehir zorunludur.</div><div style="height:10px"></div>
@@ -382,7 +374,7 @@ function handleReturn(){
 }
 async function ping(){
  const el=$('#pingres'),api=apiUrl();if(!el)return;
- if(!api){el.textContent='API adresi yok (demo mod).';return}
+ if(!api){el.textContent='API adresi yok.';return}
  el.textContent='Bağlanıyor…';const t0=Date.now(),j=await fetchHealth(),ms=Date.now()-t0;
  el.textContent=j?`✔ Bağlandı (${ms} ms) • sürüm ${j.version} • ${j.types?.length} tarama türü • Firebase: ${j.firestore?'bağlı':'yok'} • TL ödeme: ${j.payments?.iyzico?'hazır':'yok'} • USD ödeme: ${j.payments?.stripe?'hazır':'yok'}`:'✘ Bağlanılamadı. Adresi kontrol edin; Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.';
 }
@@ -512,6 +504,9 @@ window.dacStart=u=>{
  const st=S.settings=Object.assign({},blank().settings,S.settings||{});
  if(!P.PAID.includes(st.plan))st.plan='trial';   // eski yerel "free/pro" değerleri deneme sayılır
  st.billing=st.billing||{};
+ // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
+ S.scans=(S.scans||[]).filter(x=>!x.mock);
+ (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
  save();render();syncPlan();handleReturn();
 };
 window.dacStop=()=>{S=null;U=null;close();$('#view').innerHTML='';location.hash=''};

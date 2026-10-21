@@ -52,6 +52,11 @@
     measurementId: "G-50H7YRCNNV"
   };
 
+  // ====== GİRİŞ ANAHTARI ======
+  // false: Google girişi PASİF (test modu, giriş ekranı çıkmaz, uygulama doğrudan açılır)
+  // true : Google girişi AKTİF (kodlar olduğu gibi duruyor, sadece bunu true yapmanız yeter)
+  const LOGIN_ENABLED = false;
+
   const app = initializeApp(firebaseConfig);
   try { getAnalytics(app); } catch (e) {}
   const auth = getAuth(app);
@@ -73,14 +78,27 @@
       lerr.textContent = ERR[e.code] || ("Giriş hatası: " + (e.code || e.message));
     }
   };
-  window.dacLogout = () => signOut(auth);
+  window.dacLogout = () => {
+    if (!LOGIN_ENABLED) { if (typeof toast === "function") toast("Giriş pasif (test modu): çıkış yapılacak oturum yok", "warn"); return; }
+    return signOut(auth);
+  };
   window.dacToken = async () => (auth.currentUser ? await auth.currentUser.getIdToken() : null);
 
-  onAuthStateChanged(auth, (u) => {
+  if (LOGIN_ENABLED) {
+    onAuthStateChanged(auth, (u) => {
+      if (u) { try { localStorage.setItem("dac_last_uid", u.uid); } catch (e) {} }
+      document.body.classList.remove("init");
+      document.body.classList.toggle("authed", !!u);
+      if (u) window.dacStart(u); else window.dacStop();
+    });
+  } else {
+    // Test modu: giriş ekranı atlanır. Daha önce Google ile girdiyseniz aynı yerel verilerle açılır.
+    let uid = "test-user";
+    try { uid = localStorage.getItem("dac_last_uid") || uid; } catch (e) {}
     document.body.classList.remove("init");
-    document.body.classList.toggle("authed", !!u);
-    if (u) window.dacStart(u); else window.dacStop();
-  });
+    document.body.classList.add("authed");
+    window.dacStart({ uid, displayName: "Test Modu", email: "Google girişi pasif", photoURL: null, metadata: {} });
+  }
 </script>
 <script>
 if ("serviceWorker" in navigator) {
