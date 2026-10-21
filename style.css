@@ -82,3 +82,12 @@ h6.gh{margin:22px 0 10px;font:600 12px var(--mono);letter-spacing:.12em;color:va
 .pfp{width:46px;height:46px;border-radius:50%;border:1px solid var(--bd);object-fit:cover}
 .btn[disabled]{opacity:.5;cursor:not-allowed;filter:none}
 label.hint{display:block;margin:2px 0 6px 4px}
+
+/* e-posta / şifre girişi */
+.or{display:flex;align-items:center;gap:10px;color:var(--mu);font-size:12px;margin:18px 0 12px}
+.or:before,.or:after{content:"";flex:1;height:1px;background:var(--bd)}
+#eform{display:flex;flex-direction:column;gap:10px;text-align:left}
+#eform .btn.w{width:100%;height:50px;border-radius:25px}
+.lnk{background:none;border:0;color:var(--mu);font:inherit;font-size:13px;text-decoration:underline;cursor:pointer;padding:4px;align-self:center}
+.lnk:hover{color:var(--tx,#fff)}
+#lerr{margin-top:14px;min-height:18px;line-height:1.4}

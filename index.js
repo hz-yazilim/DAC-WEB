@@ -36,26 +36,11 @@ const zlib = require("zlib");
 const crypto = require("crypto");
 const path = require("path");
 
-// Firebase OPSİYONEL: FIREBASE_SERVICE_ACCOUNT yoksa sunucu sadece tarama yapar.
-let db = null;
-try {
-  if (!admin.apps.length) {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      admin.initializeApp({ credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)) });
-    } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT) {
-      admin.initializeApp();
-    }
-  }
-  if (admin.apps.length) {
-    db = admin.firestore();
-    db.settings({ ignoreUndefinedProperties: true });
-  } else {
-    console.warn("Firebase kimlik bilgisi yok: Firestore kaydı kapalı, sadece tarama yapılacak.");
-  }
-} catch (e) {
-  console.error("Firebase başlatılamadı, Firestore kaydı kapalı:", e.message);
-  db = null;
-}
+// Firebase OPSİYONEL: geçerli hizmet hesabı yoksa sunucu sadece tarama yapar (ayrıntı: firebase-init.js).
+const FB = require("./firebase-init");
+const fbInit = FB.initFirebase(admin);
+let db = fbInit.db;
+const firebaseStatus = fbInit.status;
 
 const app = express();
 const SEC = require("./security");
@@ -81,7 +66,8 @@ app.use(require("helmet")({
   }
 }));
 app.use(require("cors")(SEC.corsOptions));
-app.use(express.json({ limit: "256kb", verify: (req, res, buf) => { req.rawBody = buf; } }));
+const jsonParser = express.json({ limit: "256kb", verify: (req, res, buf) => { req.rawBody = buf; } });
+app.use((req, res, next) => (req.path === "/api/state" ? next() : jsonParser(req, res, next)));
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 const PORT = process.env.PORT || 3000;
 const SCANNER_VERSION = "v12.0";
@@ -1997,6 +1983,50 @@ async function scanSaasSubscription(extra = {}) {
 // =====================================================================
 // ROUTER
 // =====================================================================
+// ===== ANALYTICS (Google Analytics 4 / GTM) =====
+// Firestore'daki ANALYTICS belge yapısı korunur: commonAnalysis + specificAnalysis{health, property, traffic}.
+// GA Data API kimlik bilgisi olmadan canlı trafik ölçülemez: dataReceiving / activeUsers24h / bounceRate / realtimeUsers
+// UYDURULMAZ, null döner. Burada yalnızca sitede doğrulanabilen etiket kurulumu denetlenir.
+async function scanAnalytics(targetUrl, extra = {}) {
+  const startedAt = Date.now(); const V = "analytics-analyzer-v1.0"; const url = ensureUrl(targetUrl);
+  const declared = String(extra.measurementId || "").trim().toUpperCase();
+  const declaredValid = /^G-[A-Z0-9]{4,14}$/.test(declared);
+  const main = await httpProbe(url, { timeout: 12000, maxRedirects: 4 });
+  const prot = main.status ? detectBotProtection(main) : null;
+  if (prot) return protectedResult("ANALYTICS", V, startedAt, url, main, prot);
+  if (main.status === 0) return downResult("ANALYTICS", V, startedAt, url, main, netErrorFinding("analytics", main));
+  const body = String(main.body || "");
+  const uniq = (re, g = 1) => [...new Set([...body.matchAll(re)].map(m => m[g].toUpperCase()))].slice(0, 10);
+  const ga4 = [...new Set([...uniq(/googletagmanager\.com\/gtag\/js\?id=(G-[A-Z0-9]+)/gi), ...uniq(/gtag\(\s*['"]config['"]\s*,\s*['"](G-[A-Z0-9]+)['"]/gi)])];
+  const gtm = uniq(/googletagmanager\.com\/gtm\.js\?id=(GTM-[A-Z0-9]+)/gi);
+  const ua = uniq(/\b(UA-\d{4,10}-\d{1,4})\b/gi);
+  const legacyJs = /google-analytics\.com\/(analytics|ga)\.js/i.test(body);
+  const tagType = ga4.length ? "gtag" : gtm.length ? "gtm" : legacyJs || ua.length ? "legacy" : null;
+  const c = makeChecker();
+  c.add(main.status < 400, 15, "finding_analytics_site_error_status_critical", "erisim");
+  c.add(/^https:/i.test(main.finalUrl || url), 5, "finding_analytics_not_https_warning", "erisim");
+  c.add(!!(ga4.length || gtm.length), 40, "finding_analytics_no_tag_critical", "yayin");
+  let idMatch = null;
+  if (declaredValid && ga4.length) idMatch = ga4.includes(declared);
+  if (idMatch !== null) c.add(idMatch, 25, "finding_analytics_measurement_id_mismatch_critical", "yayin");
+  c.add(!(ua.length || legacyJs) || ga4.length > 0, 10, "finding_analytics_legacy_ua_warning", "kalite");
+  let scriptOk = null;
+  const checkId = declaredValid ? declared : ga4[0];
+  if (checkId) { const sp = await httpProbe("https://www.googletagmanager.com/gtag/js?id=" + encodeURIComponent(checkId), { timeout: 8000, maxRedirects: 1, noUaFallback: true, readBody: false }); scriptOk = sp.status === 200; c.add(scriptOk, 5, "finding_analytics_tag_script_unreachable_warning", "kalite"); }
+  const findings = c.findings();
+  if (extra.measurementId && !declaredValid) findings.push("finding_analytics_measurement_id_invalid_warning");
+  if (gtm.length && !ga4.length) findings.push("finding_analytics_gtm_only_info");
+  findings.push("finding_analytics_live_data_unavailable_info");
+  const specific = {
+    health: { tagDetected: !!tagType, tagType, measurementIdMatches: idMatch, tagScriptReachable: scriptOk, dataReceiving: null, conversionEventsCount: null, lastDataReceivedAt: null },
+    property: { measurementId: declaredValid ? declared : (ga4[0] || null), propertyName: extra.propertyName ? String(extra.propertyName).slice(0, 120) : null, provider: "Google Analytics 4", detectedMeasurementIds: ga4, gtmContainers: gtm, legacyIds: ua },
+    traffic: { activeUsers24h: null, bounceRate: null, realtimeUsers: null },
+    scores: c.groupScores(),
+    note: "Canlı trafik, dönüşüm ve veri alımı değerleri Google Analytics Data API yetkisi gerektirir; bağlanmadığı için boş bırakıldı."
+  };
+  return buildResult({ assetType: "ANALYTICS", version: V, startedAt, target: url, findings, specific, score: c.score() });
+}
+
 const TYPE_HANDLERS = {
   WEB: ({ targetUrl, extra }) => scanWebsite(targetUrl, extra),
   WEBSITE: ({ targetUrl, extra }) => scanWebsite(targetUrl, extra),
@@ -2011,6 +2041,7 @@ const TYPE_HANDLERS = {
   PERFORMANCE: ({ targetUrl, extra }) => scanPerformance(targetUrl || extra.target),
   UPTIME: ({ targetUrl, extra }) => scanUptime(targetUrl || extra.target, extra),
   API: ({ targetUrl, extra }) => scanApi(targetUrl || extra.target),
+  ANALYTICS: ({ targetUrl, extra }) => scanAnalytics(targetUrl || extra.target, extra),
   MOBILE_APP: ({ targetUrl, extra }) => scanMobileApp(targetUrl || extra.target),
   REPOSITORY: ({ targetUrl, extra }) => scanRepository(targetUrl || extra.target),
   BRAND: ({ targetUrl, extra }) => scanBrand(targetUrl || extra.target, extra),
@@ -2038,6 +2069,15 @@ app.get("/sw.js", (q, r) => { r.set({ "Cache-Control": "no-cache", "Service-Work
 app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));
 
 const payments = require("./payments")({ app, db, admin, http: axios });
+require("./user-state")({ app, db, verifyUser: payments.verifyUser });
+
+// Tarayıcı için herkese açık Firebase web yapılandırması (Render ortam değişkenlerinden; kodda sabit değer yok)
+app.get("/api/firebase-config", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const w = FB.webConfig();
+  if (!w.ok) return res.status(503).json({ success: false, error: w.error || "Firebase web yapılandırması eksik.", missing: w.missing });
+  res.json({ success: true, config: w.config });
+});
 
 // ---- Hız ve eşzamanlılık sınırları (bellek içi: tek Render örneği için; çoklu örnekte Redis gerekir) ----
 const ipLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_RATE_LIMIT, 60), 5 * 60 * 1000);
@@ -2050,7 +2090,7 @@ const scanGuard = [
     if (db) return payments.verifyUser(req); // Firebase Admin varsa onunla doğrula
     const m = String(req.headers.authorization || "").match(/^Bearer (.+)$/i); // yoksa Google'ın açık anahtarlarıyla doğrula
     if (!m) throw Object.assign(new Error("Giriş yapmanız gerekiyor."), { status: 401 });
-    return SEC.verifyFirebaseToken(m[1], process.env.FIREBASE_PROJECT_ID || "assetops-ed334");
+    return SEC.verifyFirebaseToken(m[1], FB.EXPECTED_PROJECT_ID);
   }),
   (req, res, next) => (userLimit(req.user.uid) ? next() : tooMany(res))
 ];
@@ -2074,7 +2114,7 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   if (db) {
     try {
       const claim = await SEC.claimAsset(db, assetId, uid);
-      if (!claim.ok) return res.status(403).json({ success: false, code: "FORBIDDEN", error: "Bu varlık size ait değil." });
+      if (!claim.ok) return res.status(403).json({ success: false, code: "FORBIDDEN", error: claim.legacy ? "Bu kayıt sistem/eski veridir, kullanıcıya devredilemez." : "Bu varlık size ait değil." });
       if (ent) {
         const q = await SEC.checkAssetQuota(db, uid, ent.plan, claim.isNew);
         if (!q.ok) { if (claim.isNew) await db.collection("assets").doc(assetId).delete().catch(() => {}); return res.status(402).json({ success: false, code: "QUOTA_EXCEEDED", error: `Paket varlık limiti doldu (${q.limit}).` }); }
@@ -2109,7 +2149,7 @@ app.post("/api/scan", scanGuard, async (req, res) => {
     try {
       const ts = admin.firestore.FieldValue.serverTimestamp(); const doc = forFirestore({ ...assetUpdate, lastCheck: undefined, updatedAt: undefined });
       await withTimeout((async () => {
-        await db.collection("assets").doc(assetId).set({ ...doc, lastCheck: ts, updatedAt: ts }, { merge: true });
+        await db.collection("assets").doc(assetId).set({ ...doc, target: typeData?.commonAnalysis?.target ?? targetUrl ?? null, scannedAt: ts, lastCheck: ts, updatedAt: ts }, { merge: true }); // scannedAt/target: Firestore'daki mevcut varlık belge yapısıyla uyum
         const checkRef = db.collection("assetChecks").doc(); checkId = checkRef.id;
         await checkRef.set(forFirestore({ assetId, checkId, type: assetType, targetUrl: targetUrl || null, errors: scanErrors, findings, healthScore: finalHealthScore, healthLevel: finalHealthLevel, confidence, latencyMs: Date.now() - scanStartedAt, status: finalStatus, scanStatus, ownerId: uid, scannerVersion: typeData?.analysisMeta?.scannerVersion || null, scores: typeData?.specificAnalysis?.scores || null, checkedAt: ts }) );
       })(), 8000, "Firestore");
@@ -2133,10 +2173,11 @@ app.use((err, req, res, next) => {
 process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e && e.stack || e));
 process.on("uncaughtException", (e) => console.error("uncaughtException:", e && e.stack || e));
 if (require.main === module) {
+  if (firebaseStatus.ok) console.log("Firebase hazır: proje " + firebaseStatus.projectId + " (" + firebaseStatus.mode + ")");
   if (SEC.isProd() && !db) console.warn("UYARI: Üretim modunda Firebase yapılandırılmamış; kimlik doğrulama gerektiren uç noktalar 503 döndürür.");
   if (SEC.devBypass()) console.warn("UYARI: DEV_AUTH_BYPASS aktif (yalnızca geliştirme). Üretimde ASLA kullanmayın.");
   const server = app.listen(PORT, () => console.log(`Scanner ${SCANNER_VERSION} DEEP ${PORT} portunda (${SEC.isProd() ? "üretim" : "geliştirme"})`));
   process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor"); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
 }
 module.exports = app;
-module.exports._internals = { isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore };
+module.exports._internals = { isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore };

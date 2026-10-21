@@ -40,6 +40,10 @@ security:{g:'perf',label:'Güvenlik',icon:'shield-check',c:'#ef4444',api:'SECURI
 api:{g:'perf',label:'API',icon:'code-2',c:'#6366f1',api:'API',desc:'Endpoint erişimi, JSON geçerliliği, CORS ve rate-limit',ph:'api.ornek.com/v1/health',
  what:['Durum kodu ve yanıt süresi (401/403 "korumalı" sayılır)','JSON geçerliliği ve hata formatı','CORS ayarları','Rate-limit başlıkları','HTTPS, HSTS ve sürüm bilgisi','API sürümleme (/v1)'],
  why:'Müşteriniz ürününüzü API ile kullanıyorsa, API kesintisi sizin kesintinizdir.'},
+analytics:{g:'perf',label:'Analitik (GA4)',icon:'bar-chart-3',c:'#f59e0b',api:'ANALYTICS',desc:'Google Analytics 4 / GTM etiket kurulumu ve ölçüm kimliği doğrulaması',ph:'ornek.com',
+ what:['GA4 (gtag) veya Google Tag Manager etiketi sitede var mı?','Girdiğiniz Ölçüm Kimliği (G-XXXX) sitedeki etiketle eşleşiyor mu?','Eski Universal Analytics (UA-) kalıntısı','Etiket betiğine erişim'],
+ why:'Yanlış ya da eksik etiket, reklam ve dönüşüm verisinin sessizce kaybolması demektir.',
+ hint:'Canlı kullanıcı, çıkma oranı ve dönüşüm değerleri Google Analytics Data API yetkisi gerektirir; şu an boş (—) görünür.'},
 brand:{g:'brand',label:'Marka Koruması',icon:'fingerprint',c:'#d946ef',api:'BRAND',desc:'Benzer alan adı ve farklı uzantı (TLD) kayıtlarını bulur',ph:'sirketim.com',
  what:['25+ uzantıda (.net, .io, .com.tr, .de…) kayıt durumu','Yazım hatası ve benzer karakter varyasyonları (kimlik avı riski)','Aynı nameserver/IP ile "sizin" olanları ayırır','Henüz kayıt edilmemiş önemli uzantılar'],
  why:'Markanızı taklit eden alan adları kimlik avı ve müşteri kaybı yaratır; yeni ülkelere açılırken ülke uzantılarını sahiplenmek gerekir.',
@@ -61,14 +65,73 @@ saas:{g:'soft',label:'SaaS Abonelik',icon:'layers',c:'#ec4899',api:'SAAS_SUBSCRI
  why:'Unutulan abonelikler bütçeyi sessizce eritir; yenilemeyi kaçırmak servis kesintisi demektir.',
  hint:'Bu kategori internetten tarama yapmaz; girdiğiniz bilgileri değerlendirir.'}
 };
-const URLCATS=['web','api','seo','security','performance','uptime'];
+const URLCATS=['web','api','seo','security','performance','uptime','analytics'];
 const LISTS={
 team:{title:'Ekip Yönetimi',icon:'users',f:[['name','Ad Soyad'],['email','Email'],['role','Rol']]},
 projects:{title:'Müşteri Projeleri',icon:'briefcase',f:[['name','Proje adı'],['client','Müşteri'],['note','Not']]}
 };
 let KEY='dac_v1',S=null,U=null,PAYCFG=null,DEFERRED=null,HEALTH_TRIED=false;
 const blank=()=>({assets:[],scans:[],team:[],projects:[],settings:{org:'HZ Yazılım',plan:'trial',apiUrl:'',trialStart:Date.now(),alertBelow:50,currency:/^tr/i.test(navigator.language)?'TRY':'USD',cycle:'monthly',billing:{}}});
-const save=()=>{if(S)localStorage.setItem(KEY,JSON.stringify(S))};
+const save=np=>{if(S){localStorage.setItem(KEY,JSON.stringify(S));if(!np)schedulePush()}};
+
+/* ---------- bulut senkronu (users/{uid}/state/app, sunucu üzerinden) ----------
+ * Yerel veri her zaman önce gelir; buluttan gelen veri ASLA silici değil BİRLEŞTİRİCİDİR (id'ye göre).
+ * Silmeler "tomb" kayıtlarıyla taşınır. Birleştirme veriyi değiştirecekse önce yerel yedek alınır. İlk başarılı çekmeden önce bulut yazılmaz. */
+const SYNC={ver:0,pulled:false,timer:null,busy:false,dirty:false,lastErr:0};
+const syncReset=()=>{clearTimeout(SYNC.timer);Object.assign(SYNC,{ver:0,pulled:false,timer:null,busy:false,dirty:false})};
+const syncSay=m=>{const n=Date.now();if(n-SYNC.lastErr>30000){SYNC.lastErr=n;toast(m,'warn')}};
+function remotePayload(){
+ const {plan,planEnd,provider,trialStart,apiUrl,...settings}=S.settings;
+ let p={assets:S.assets,scans:S.scans,team:S.team,projects:S.projects,settings,settingsAt:S.settingsAt||0,tomb:S.tomb||{}};
+ if(JSON.stringify(p).length>800000)p={...p,assets:p.assets.map(({result,...r})=>r)};
+ if(JSON.stringify(p).length>800000)p={...p,scans:p.scans.slice(0,1000)};
+ return p;
+}
+function mergeState(r){
+ const now=Date.now(),T={};
+ for(const [k,v] of Object.entries({...(r.tomb||{}),...(S.tomb||{})}))if(now-v<90*864e5)T[k]=v;
+ S.tomb=T;
+ const ts=x=>x.lastScan||x.createdAt||0;
+ const uni=(a,b,newer)=>{const m=new Map();for(const x of [...a,...b]){if(!x||!x.id||T[x.id])continue;const o=m.get(x.id);if(!o||newer(x,o)&&x!==o)m.set(x.id,x)}return [...m.values()]};
+ // yerel öğeler önce gelir; uzak öğe yalnızca kesin olarak daha yeniyse yerel olanın yerine geçer
+ S.assets=uni(S.assets||[],r.assets||[],(x,o)=>ts(x)>ts(o));
+ S.team=uni(S.team||[],r.team||[],()=>false);S.projects=uni(S.projects||[],r.projects||[],()=>false);
+ S.scans=uni(S.scans||[],r.scans||[],()=>false).sort((a,b)=>b.at-a.at).slice(0,planState().p.history||300);
+ if((r.settingsAt||0)>(S.settingsAt||0)){S.settings=Object.assign({},S.settings,r.settings||{});S.settingsAt=r.settingsAt}
+}
+async function pullState(){
+ const api=apiUrl();if(!api||!S||!U)return;const my=U.uid;
+ try{
+  const r=await fetch(api+'/api/state',{headers:await authH()});const j=await r.json().catch(()=>({}));
+  if(!r.ok||!j.success)throw new Error(j.error||('HTTP '+r.status));
+  if(!S||!U||U.uid!==my)return;
+  SYNC.ver=j.version||0;
+  if(j.exists&&j.state){
+   const before=JSON.stringify(S);mergeState(j.state);
+   if(JSON.stringify(S)!==before){try{localStorage.setItem(KEY+'_bak',before)}catch{}save(true);render()}
+  }
+  SYNC.pulled=true;await pushState();
+ }catch(e){syncSay('Bulut senkronu başarısız: '+e.message+'. Verileriniz bu cihazda güvende; tekrar denenecek.')}
+}
+function schedulePush(){if(!SYNC.pulled||!U)return;clearTimeout(SYNC.timer);SYNC.timer=setTimeout(pushState,1500)}
+async function pushState(){
+ const api=apiUrl();if(!api||!S||!U||!SYNC.pulled)return;
+ if(SYNC.busy){SYNC.dirty=true;return}
+ SYNC.busy=true;const my=U.uid;
+ try{
+  for(let i=0;i<3;i++){
+   const r=await fetch(api+'/api/state',{method:'PUT',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({state:remotePayload(),baseVersion:SYNC.ver})});
+   const j=await r.json().catch(()=>({}));
+   if(!S||!U||U.uid!==my)return;
+   if(r.status===409){SYNC.ver=j.version||0;if(j.state){const b=JSON.stringify(S);mergeState(j.state);if(JSON.stringify(S)!==b){try{localStorage.setItem(KEY+'_bak',b)}catch{}save(true);render()}}continue}
+   if(!r.ok||!j.success)throw new Error(j.error||('HTTP '+r.status));
+   SYNC.ver=j.version;return;
+  }
+  throw new Error('Çakışma çözülemedi');
+ }catch(e){syncSay('Buluta kaydedilemedi: '+e.message+'. Değişiklikler bu cihazda saklanıyor; tekrar denenecek.')}
+ finally{SYNC.busy=false;if(SYNC.dirty){SYNC.dirty=false;schedulePush()}}
+}
+addEventListener('online',()=>{if(S&&U)SYNC.pulled?schedulePush():pullState()});
 const apiUrl=()=>(S.settings.apiUrl||(window.DAC_CONFIG||{}).API_URL||'').trim().replace(/\/$/,'');
 
 /* ---------- Paket / deneme durumu ---------- */
@@ -93,6 +156,7 @@ const sev=f=>/_critical$/.test(f)?'bd':/_warning$/.test(f)?'wn':'mu';
 const sevL={bd:'Kritik',wn:'Uyarı',mu:'Bilgi'};
 /* Bulgu çevirileri (kod -> Türkçe). Bulunamazsa kod okunabilir hale getirilir. */
 const FT={
+analytics_site_error_status:'Site hata kodu döndürüyor; etiket denetlenemedi',analytics_not_https:'Site HTTPS değil',analytics_no_tag:'Sitede GA4 / Google Tag Manager etiketi bulunamadı',analytics_measurement_id_mismatch:'Girilen Ölçüm Kimliği sitedeki etiketle eşleşmiyor',analytics_legacy_ua:'Yalnızca eski Universal Analytics (UA-) etiketi var; GA4\'e geçilmeli',analytics_tag_script_unreachable:'GA etiket betiğine erişilemedi',analytics_measurement_id_invalid:'Ölçüm Kimliği biçimi geçersiz (G-XXXXXXXXXX olmalı)',analytics_gtm_only:'Yalnızca GTM bulundu; GA4 etiketinin konteyner içinde olduğu buradan doğrulanamaz',analytics_live_data_unavailable:'Canlı trafik/dönüşüm verisi için Google Analytics Data API bağlantısı gerekir (henüz bağlı değil)',
 web_bot_protection:'Bot koruması taramayı engelledi — site büyük olasılıkla çalışıyor, ayrıntılı analiz yapılamadı',web_down:'Site erişilemiyor',web_missing_target:'Hedef adres girilmemiş',web_slow:'Yanıt süresi yavaş',web_missing_title:'Sayfa başlığı (title) yok',web_missing_meta_description:'Meta açıklaması yok',web_missing_h1:'Sayfada H1 başlığı yok',web_missing_hsts:'HSTS başlığı yok',web_missing_csp:'Content-Security-Policy başlığı yok',web_missing_xframe:'Clickjacking koruması (X-Frame-Options) yok',web_missing_robots:'robots.txt bulunamadı',web_missing_sitemap:'sitemap.xml bulunamadı',
 domain_invalid:'Geçersiz alan adı',domain_not_resolving:'Alan adı DNS\'te çözülmüyor',domain_missing_ns:'Nameserver (NS) kaydı yok',domain_single_ns:'Tek nameserver var (yedeksiz)',domain_missing_mx:'MX (e-posta) kaydı yok',domain_missing_caa:'CAA kaydı yok',domain_missing_spf:'SPF kaydı yok',domain_invalid_spf:'SPF kaydı hatalı',domain_missing_dmarc:'DMARC kaydı yok',domain_dmarc_policy_none:'DMARC politikası "none" (koruma uygulanmıyor)',domain_missing_dnssec:'DNSSEC kapalı',domain_dnssec_unknown:'DNSSEC durumu belirlenemedi',domain_expired:'Alan adının süresi dolmuş',domain_expiring_critical:'Alan adı süresi çok yakında doluyor',domain_expiring_soon:'Alan adı süresi yakında doluyor',domain_missing_expiry:'Bitiş tarihi okunamadı',domain_rdap_failed:'WHOIS/RDAP sorgusu başarısız',domain_registrar_unknown:'Kayıt kuruluşu belirlenemedi',domain_transfer_unlocked:'Domain transfer kilidi kapalı',domain_transfer_lock_unknown:'Transfer kilidi durumu belirlenemedi',domain_takeover_risk:'Subdomain devralma (takeover) riski',
 DNS_SEC_ACTIVE:'DNSSEC aktif',DOMAIN_TRANSFER_LOCKED:'Transfer kilidi aktif (iyi)',EMAIL_CAA_VALID:'CAA kaydı geçerli',EMAIL_DKIM_VALID:'DKIM kaydı geçerli',EMAIL_DMARC_VALID:'DMARC kaydı geçerli',EMAIL_SPF_VALID:'SPF kaydı geçerli',
@@ -254,7 +318,7 @@ function catPage(k){
  <div class="row2"><select class="field" name="currency"><option value="TRY">₺ TRY</option><option value="USD">$ USD</option><option value="EUR">€ EUR</option></select><input class="field" name="usagePercent" type="number" min="0" max="100" placeholder="Kullanım %"></div>
  <label class="hint">Yenileme tarihi</label><input class="field" name="renewalDate" type="date">
  <button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form>`
- :`<form data-form="add" data-cat="${k}"><input class="field" name="t" placeholder="${v.ph}" required autocomplete="off"><input class="field" name="name" placeholder="Görünen ad (opsiyonel)"><button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form>`;
+ :`<form data-form="add" data-cat="${k}"><input class="field" name="t" placeholder="${v.ph}" required autocomplete="off"><input class="field" name="name" placeholder="Görünen ad (opsiyonel)">${k==='analytics'?'<input class="field" name="measurementId" placeholder="Ölçüm Kimliği (G-XXXXXXXXXX, opsiyonel)" autocomplete="off"><input class="field" name="propertyName" placeholder="Özellik (property) adı (opsiyonel)">':''}<button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form>`;
  return`<h2>${v.label}</h2><p class="sub">${v.desc}</p>
  <div class="card info"><b>${ic('list-checks','style="color:'+v.c+'"')} Ne taranır?</b><ul class="ul">${v.what.map(x=>`<li>${x}</li>`).join('')}</ul><div class="why"><b>Neden önemli?</b> ${v.why}</div>${v.hint?`<div class="hint" style="margin-top:8px">${ic('info')} ${v.hint}</div>`:''}</div>
  <div class="card"><b>Yeni ${v.label} ekle</b><div style="height:12px"></div>${form}</div>
@@ -440,7 +504,7 @@ document.addEventListener('click',async e=>{
  else if(act==='close')close();
  else if(act==='detail')showDetail(id);
  else if(act==='rescan')rescan(id,$('#modal').classList.contains('on'));
- else if(act==='del'){if(A&&confirm(`"${A.name}" silinsin mi?`)){S.assets=S.assets.filter(x=>x.id!==id);save();close();render();toast('Varlık silindi')}}
+ else if(act==='del'){if(A&&confirm(`"${A.name}" silinsin mi?`)){S.assets=S.assets.filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();close();render();toast('Varlık silindi')}}
  else if(act==='sug'){const i=$('[name=t]');if(i)i.value=b.dataset.v}
  else if(act==='goto')location.hash=b.dataset.to;
  else if(act==='bell'){const al=alerts();$('#bell').innerHTML=al.length?al.map(a=>`<a data-act="detail" data-id="${a.id}">${ic('triangle-alert')} ${esc(a.name)} <span class="badge ${sc(a)!=null?tone(sc(a)):'bd'}">${sc(a)??'!'}</span></a>`).join(''):'<div class="it hint">Bildirim yok</div>';$('#bell').classList.toggle('on');icons()}
@@ -454,9 +518,9 @@ document.addEventListener('click',async e=>{
  else if(act==='install'){if(DEFERRED){DEFERRED.prompt();await DEFERRED.userChoice;DEFERRED=null;render()}}
  else if(act==='clearcache')clearCache();
  else if(act==='copyuid'){try{await navigator.clipboard.writeText(U.uid);toast('Kopyalandı')}catch{toast(U.uid)}}
- else if(act==='dellist'){const k=b.dataset.k;S[k]=S[k].filter(x=>x.id!==id);save();render()}
+ else if(act==='dellist'){const k=b.dataset.k;S[k]=S[k].filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();render()}
  else if(act==='logout'){window.dacLogout&&window.dacLogout()}
- else if(act==='wipe'){if(confirm('Bu cihazdaki tüm veriler silinecek. Emin misiniz?')){localStorage.removeItem(KEY);location.hash='';location.reload()}}
+ else if(act==='wipe'){if(confirm('Bu cihazdaki yerel veriler silinecek. Bulut kopyası durur ve bir sonraki girişte geri yüklenir. Emin misiniz?')){localStorage.removeItem(KEY);location.hash='';location.reload()}}
  else if(act==='csv'){const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;dl('varliklar.csv','\ufeff'+['Ad;Tür;Hedef;Skor;Durum;Son tarama',...S.assets.map(a=>[a.name,CATS[a.cat].label,a.target,sc(a)??'',SL[a.result?.status]||a.result?.status||'',fmt(a.lastScan)].map(q).join(';'))].join('\n'),'text/csv;charset=utf-8')}
  else if(act==='json')dl('varliklar.json',JSON.stringify(S.assets,null,2),'application/json');
  else if(act==='backup'){const {billing,plan,planEnd,trialStart,provider,...rest}=st;dl(`dac-yedek-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({version:11,exportedAt:new Date().toISOString(),assets:S.assets,scans:S.scans,team:S.team,projects:S.projects,settings:rest},null,2),'application/json')}
@@ -478,12 +542,12 @@ document.addEventListener('submit',e=>{
  const f=e.target.closest('[data-form]');if(!f)return;e.preventDefault();
  const d=Object.fromEntries(new FormData(f)),t=f.dataset.form;
  if(t==='quick')addAndScan(d.c,d.t,d.c==='saas'?{provider:d.t}:{});
- else if(t==='add'){const c=f.dataset.cat;if(c==='saas')addAndScan(c,d.provider,{provider:d.provider,plan:d.plan||'unknown',cost:+d.cost||0,currency:d.currency||'TRY',renewalDate:d.renewalDate||null,usagePercent:d.usagePercent?+d.usagePercent:undefined});else addAndScan(c,d.t,{},d.name)}
+ else if(t==='add'){const c=f.dataset.cat;if(c==='saas')addAndScan(c,d.provider,{provider:d.provider,plan:d.plan||'unknown',cost:+d.cost||0,currency:d.currency||'TRY',renewalDate:d.renewalDate||null,usagePercent:d.usagePercent?+d.usagePercent:undefined});else if(c==='analytics')addAndScan(c,d.t,{measurementId:(d.measurementId||'').trim().toUpperCase(),propertyName:(d.propertyName||'').trim()},d.name);else addAndScan(c,d.t,{},d.name)}
  else if(t==='list'){const k=f.dataset.k,n=LISTS[k].f[0][0],ps=planState();
   if(k==='team'&&ps.p.team!=null&&S.team.length>=ps.p.team)return toast(`${ps.p.name} paketinde en fazla ${ps.p.team} ekip kaydı eklenebilir`,'err');
   if(S[k].some(x=>String(x[n]).toLowerCase()===d[n].trim().toLowerCase()))return toast('Bu kayıt zaten var','warn');S[k].push({id:uid(),...d});save();render()}
- else if(t==='settings'){const s=S.settings;s.org=d.org.trim();s.apiUrl=d.apiUrl.trim();s.alertBelow=Math.min(95,Math.max(10,+d.alertBelow||50));PAYCFG=null;HEALTH_TRIED=false;save();render();toast('Kaydedildi')}
- else if(t==='billing'){const o={};for(const k in d)o[k]=String(d[k]).trim();S.settings.billing=o;save();toast('Fatura bilgileri kaydedildi')}
+ else if(t==='settings'){const s=S.settings;s.org=d.org.trim();s.apiUrl=d.apiUrl.trim();s.alertBelow=Math.min(95,Math.max(10,+d.alertBelow||50));PAYCFG=null;HEALTH_TRIED=false;S.settingsAt=Date.now();save();render();toast('Kaydedildi')}
+ else if(t==='billing'){const o={};for(const k in d)o[k]=String(d[k]).trim();S.settings.billing=o;S.settingsAt=Date.now();save();toast('Fatura bilgileri kaydedildi')}
 });
 $('#q').addEventListener('input',e=>{
  const q=e.target.value.toLowerCase().trim(),r=$('#sres');
@@ -493,7 +557,7 @@ $('#q').addEventListener('input',e=>{
 });
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#q').focus()}if(e.key==='Escape')close()});
 addEventListener('hashchange',()=>{render();scrollTo(0,0)});
-addEventListener('focus',()=>{if(S&&U&&apiUrl()&&!document.hidden)syncPlan()});
+addEventListener('focus',()=>{if(S&&U&&apiUrl()&&!document.hidden){syncPlan();SYNC.pulled?schedulePush():pullState()}});
 
 /* ---------- giriş (Firebase Auth index.html içinden çağırır) ---------- */
 window.dacStart=u=>{
@@ -507,6 +571,6 @@ window.dacStart=u=>{
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.scans=(S.scans||[]).filter(x=>!x.mock);
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
- save();render();syncPlan();handleReturn();
+ syncReset();save(true);render();syncPlan();handleReturn();pullState();
 };
-window.dacStop=()=>{S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+window.dacStop=()=>{syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};

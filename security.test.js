@@ -99,7 +99,8 @@ test("Sahiplik: başkasının varlığı reddedilir, kendi varlığı kabul edil
   const db = fakeDb({ a1: { ownerId: "alice" }, legacy: {} });
   assert.equal((await SEC.claimAsset(db, "a1", "bob")).ok, false);
   assert.equal((await SEC.claimAsset(db, "a1", "alice")).ok, true);
-  assert.equal((await SEC.claimAsset(db, "legacy", "bob")).ok, true); assert.equal(db.docs.legacy.ownerId, "bob");
+  assert.equal((await SEC.claimAsset(db, "legacy", "bob")).ok, false, "sahipsiz mevcut belge varsayılan olarak devredilmez");
+  process.env.ALLOW_CLAIM_LEGACY_ASSETS = "true"; assert.equal((await SEC.claimAsset(db, "legacy", "bob")).ok, true); assert.equal(db.docs.legacy.ownerId, "bob"); delete process.env.ALLOW_CLAIM_LEGACY_ASSETS;
   const n = await SEC.claimAsset(db, "new1", "bob"); assert.deepEqual(n, { ok: true, isNew: true });
 });
 test("Kota: deneme paketi 3 varlıkla sınırlı", async () => {
@@ -142,4 +143,55 @@ test("Token doğrulama: geçerli kabul; yanlış proje, süresi dolmuş, bozuk i
   await assert.rejects(() => SEC.verifyFirebaseToken(mk({ exp: now - 10 }), P, o), /doğrulanamadı/);
   await assert.rejects(() => SEC.verifyFirebaseToken(mk({}, other.privateKey), P, o), /doğrulanamadı/);
   await assert.rejects(() => SEC.verifyFirebaseToken("a.b.c", P, o), /doğrulanamadı/);
+});
+
+// ---------- Firebase yapılandırması / e-posta girişi / sahiplik (bu sürümde eklendi) ----------
+test("Hizmet hesabı: eksik, bozuk JSON ve yanlış proje reddedilir; anahtar mesajda geçmez", () => {
+  const FBI = require("./firebase-init");
+  const mk = (o = {}) => ({ type: "service_account", project_id: "varlik-operasyonlari-ed334", client_email: "x@varlik-operasyonlari-ed334.iam.gserviceaccount.com", private_key: "-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----\n", ...o });
+  assert.equal(FBI.parseServiceAccount({}).code, "MISSING");
+  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: "{bozuk" }).code, "BAD_JSON");
+  const old = FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk({ project_id: "assetops-ed334", client_email: "x@assetops-ed334.iam.gserviceaccount.com" })) });
+  assert.equal(old.ok, false); assert.equal(old.code, "OLD_PROJECT"); assert.ok(!JSON.stringify(old).includes("SECRETKEY"));
+  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk({ project_id: "baska-proje" })) }).code, "PROJECT_MISMATCH");
+  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk()), FIREBASE_PROJECT_ID: "assetops-ed334" }).code, "BAD_PROJECT");
+  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk()) }).ok, true);
+  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT_B64: Buffer.from(JSON.stringify(mk())).toString("base64") }).ok, true);
+});
+test("Web yapılandırması: eksik değişkenler adıyla bildirilir, uydurulmaz", () => {
+  const FBI = require("./firebase-init");
+  const r = FBI.webConfig({}); assert.equal(r.ok, false);
+  assert.deepEqual(r.missing.sort(), ["FIREBASE_WEB_API_KEY", "FIREBASE_WEB_APP_ID", "FIREBASE_WEB_AUTH_DOMAIN", "FIREBASE_WEB_MESSAGING_SENDER_ID"]);
+  const ok = FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "varlik-operasyonlari-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" });
+  assert.equal(ok.ok, true); assert.equal(ok.config.projectId, "varlik-operasyonlari-ed334");
+  assert.equal(FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "assetops-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" }).ok, false);
+});
+test("/api/firebase-config: env yokken 503 + eksik liste", async () => {
+  for (const k of Object.keys(process.env)) if (k.startsWith("FIREBASE_WEB_")) delete process.env[k];
+  const s = await listen(require("./index")); const r = await call(s, "GET", "/api/firebase-config");
+  assert.equal(r.status, 503); s.close();
+});
+test("E-posta/şifre hesabı doğrulanmadan reddedilir; Google ve doğrulanmış hesap geçer", () => {
+  const t = (provider, verified) => ({ firebase: { sign_in_provider: provider }, email_verified: verified });
+  assert.throws(() => SEC.assertEmailVerified(t("password", false)), (e) => e.status === 403 && e.code === "EMAIL_NOT_VERIFIED");
+  SEC.assertEmailVerified(t("password", true)); SEC.assertEmailVerified(t("google.com", false));
+});
+test("Sahipsiz mevcut belge devredilmez (ALLOW_CLAIM_LEGACY_ASSETS kapalıyken)", async () => {
+  const docs = { legacy: { assetId: "legacy" } };
+  const db = { collection: () => ({ doc: (id) => ({ id }) }), runTransaction: async (fn) => fn({ get: async (r) => ({ exists: !!docs[r.id], data: () => docs[r.id] }), set: () => { throw new Error("yazılmamalı"); } }) };
+  delete process.env.ALLOW_CLAIM_LEGACY_ASSETS;
+  const r = await SEC.claimAsset(db, "legacy", "bob"); assert.equal(r.ok, false); assert.equal(r.legacy, true);
+});
+test("Kullanıcı durumu: geçersiz yapı reddedilir, plan/apiUrl buluta yazılmaz, __proto__ temizlenir", () => {
+  const { sanitizeState } = require("./user-state");
+  assert.throws(() => sanitizeState(null)); assert.throws(() => sanitizeState({ assets: "x" })); assert.throws(() => sanitizeState({ assets: [{ nope: 1 }] }));
+  const o = sanitizeState(JSON.parse('{"assets":[{"id":"a1","__proto__":{"x":1}}],"settings":{"plan":"enterprise","apiUrl":"http://x","org":"A"}}'));
+  assert.equal(o.settings.plan, undefined); assert.equal(o.settings.apiUrl, undefined); assert.equal(o.settings.org, "A"); assert.equal({}.x, undefined);
+});
+test("/api/state: token yoksa reddedilir", async () => {
+  delete process.env.DEV_AUTH_BYPASS; const s = await listen(require("./index"));
+  const r = await call(s, "GET", "/api/state"); assert.ok([401, 503].includes(r.status), "durum: " + r.status); s.close();
+});
+test("ANALYTICS tarayıcısı: etiket ve ölçüm kimliği eşleşmesi, canlı veri alanları null", async () => {
+  const { scanAnalytics } = require("./index")._internals; assert.equal(typeof scanAnalytics, "function");
 });

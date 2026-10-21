@@ -1,7 +1,7 @@
 /* Digital Asset Center - Ödeme ve abonelik altyapısı
  * TL  -> iyzico (Checkout Form)      USD -> Stripe (Checkout, aylık/yıllık abonelik)
  * Gerekli ortam değişkenleri (Render > Environment):
- *   FIREBASE_SERVICE_ACCOUNT   (zorunlu: kullanıcı doğrulama + abonelik kaydı)
+ *   FIREBASE_SERVICE_ACCOUNT   (zorunlu: kullanıcı doğrulama + abonelik kaydı; varlik-operasyonlari-ed334 projesine ait olmalı)
  *   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET            (USD için)
  *   IYZICO_API_KEY, IYZICO_SECRET_KEY, IYZICO_BASE_URL   (TL için; canlıda https://api.iyzipay.com)
  *   PUBLIC_API_URL   (opsiyonel: Render adresin, ör. https://dac-web-yefr.onrender.com)
@@ -23,8 +23,9 @@ module.exports = function initPayments({ app, db, admin, http }) {
     if (!db || !admin.apps.length) throw fail(503, "Sunucuda Firebase yapılandırılmamış (FIREBASE_SERVICE_ACCOUNT gerekli).");
     const m = String(req.headers.authorization || "").match(/^Bearer (.+)$/i);
     if (!m) throw fail(401, "Giriş yapmanız gerekiyor.");
-    try { const t = await admin.auth().verifyIdToken(m[1]); return { uid: t.uid, email: t.email || null, name: t.name || null }; }
-    catch { throw fail(401, "Oturum doğrulanamadı, tekrar giriş yapın."); }
+    let t; try { t = await admin.auth().verifyIdToken(m[1]); } catch { throw fail(401, "Oturum doğrulanamadı, tekrar giriş yapın."); }
+    SEC.assertEmailVerified(t); // şifreli hesapta doğrulanmamış e-posta → 403 EMAIL_NOT_VERIFIED
+    return { uid: t.uid, email: t.email || null, name: t.name || null };
   }
 
   // ---------- Yetki: abonelik > deneme > süresi dolmuş ----------

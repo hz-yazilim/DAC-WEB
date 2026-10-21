@@ -25,10 +25,20 @@ function allowedOrigins() {
 }
 const corsOptions = {
   origin(origin, cb) { cb(null, !origin || allowedOrigins().includes(origin)); }, // Origin yok = aynı site / sunucudan sunucuya
-  methods: ["GET", "POST"],
+  methods: ["GET", "POST", "PUT"],
   allowedHeaders: ["Content-Type", "Authorization"],
   maxAge: 600
 };
+
+// ---------- E-posta doğrulama kapısı ----------
+// E-posta/şifre ile açılan hesaplar e-postasını doğrulamadan API kullanamaz (Google hesapları zaten doğrulanmış gelir).
+// claims: Admin SDK'nın DecodedIdToken'ı veya JWT payload'u.
+function assertEmailVerified(claims) {
+  const provider = claims && claims.firebase && claims.firebase.sign_in_provider;
+  if (provider === "password" && claims.email_verified !== true) {
+    throw Object.assign(new Error("E-posta adresinizi doğrulayın: gelen kutunuza gönderilen bağlantıya tıklayıp tekrar giriş yapın."), { status: 403, code: "EMAIL_NOT_VERIFIED" });
+  }
+}
 
 // ---------- Kimlik doğrulama ----------
 // verifyUser: payments.verifyUser (Firebase ID token'ı Admin SDK ile doğrular)
@@ -79,6 +89,9 @@ async function claimAsset(db, assetId, uid) {
     const s = await t.get(ref);
     const owner = s.exists ? s.data().ownerId : null;
     if (owner && owner !== uid) return { ok: false, isNew: false };
+    // Sahibi olmayan MEVCUT belge (eski/örnek/sistem verisi) kimliğini bilen herkese devredilmez.
+    // Bilinçli devralma gerekirse ALLOW_CLAIM_LEGACY_ASSETS=true (geçici) ayarlanır.
+    if (s.exists && !owner && process.env.ALLOW_CLAIM_LEGACY_ASSETS !== "true") return { ok: false, isNew: false, legacy: true };
     if (!owner) t.set(ref, { ownerId: uid }, { merge: true });
     return { ok: true, isNew: !s.exists };
   });
@@ -117,7 +130,8 @@ async function verifyFirebaseToken(token, projectId, opts = {}) {
   if (!crypto.verify("RSA-SHA256", Buffer.from(parts[0] + "." + parts[1]), key, Buffer.from(parts[2], "base64url"))) throw bad();
   const now = Math.floor(Date.now() / 1000);
   if (!(payload.exp > now) || payload.iat > now + 300 || payload.aud !== projectId || payload.iss !== "https://securetoken.google.com/" + projectId || !payload.sub) throw bad();
+  assertEmailVerified(payload);
   return { uid: payload.sub, email: payload.email || null, name: payload.name || null };
 }
 
-module.exports = { verifyFirebaseToken, isProd, devBypass, enforcePlans, corsOptions, allowedOrigins, authenticate, makeLimiter, makeConcurrency, claimAsset, checkAssetQuota, int };
+module.exports = { assertEmailVerified, verifyFirebaseToken, isProd, devBypass, enforcePlans, corsOptions, allowedOrigins, authenticate, makeLimiter, makeConcurrency, claimAsset, checkAssetQuota, int };
