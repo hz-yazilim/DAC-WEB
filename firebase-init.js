@@ -1,13 +1,13 @@
 /* Digital Asset Center - Firebase Admin SDK güvenli başlatma
  * - Hizmet hesabı SADECE ortam değişkeninden okunur (kaynak koda / GitHub'a yazılmaz).
  * - JSON ayrıştırma, alan ve proje doğrulaması yapılır; hata mesajları anahtar içeriğini ASLA yazdırmaz.
- * - Hizmet hesabı başka bir Firebase projesine aitse (ör. eski "assetops-ed334") BAŞLATILMAZ.
+ * - Hizmet hesabı başka bir Firebase projesine aitse (ör. "varlik-operasyonlari-ed334") BAŞLATILMAZ.
  * - Admin SDK Firestore Security Rules'u atlar; bu yüzden yetkilendirme sunucu kodunda yapılır (security.js, payments.js).
  */
 "use strict";
 
-const EXPECTED_PROJECT_ID = "varlik-operasyonlari-ed334";
-const FORBIDDEN_PROJECT_IDS = ["assetops-ed334"];
+const EXPECTED_PROJECT_ID = "assetops-ed334"; // verilerin (assets, assetChecks, users) bulunduğu Firestore projesi
+const FORBIDDEN_PROJECT_IDS = ["varlik-operasyonlari-ed334"]; // yanlışlıkla kullanılan boş proje
 
 const projectIdOf = (env = process.env) => String(env.FIREBASE_PROJECT_ID || EXPECTED_PROJECT_ID).trim();
 
@@ -33,7 +33,7 @@ function parseServiceAccount(env = process.env) {
   for (const k of ["project_id", "client_email", "private_key"]) if (!acc[k] || typeof acc[k] !== "string") return { ok: false, code: "MISSING_FIELD", message: `Hizmet hesabı JSON'unda "${k}" alanı eksik.` };
   acc.private_key = acc.private_key.replace(/\\n/g, "\n"); // Render'da \n kaçışlı gelebilir
   if (!/-----BEGIN PRIVATE KEY-----/.test(acc.private_key)) return { ok: false, code: "BAD_KEY", message: "Hizmet hesabı özel anahtarı (private_key) biçimi geçersiz." };
-  if (FORBIDDEN_PROJECT_IDS.includes(acc.project_id)) return { ok: false, code: "OLD_PROJECT", message: `Hizmet hesabı eski projeye (${acc.project_id}) ait. ${pid} projesinden yeni anahtar üretin.` };
+  if (FORBIDDEN_PROJECT_IDS.includes(acc.project_id)) return { ok: false, code: "OLD_PROJECT", message: `Hizmet hesabı yanlış projeye (${acc.project_id}) ait. ${pid} projesinden yeni anahtar üretin.` };
   if (acc.project_id !== pid) return { ok: false, code: "PROJECT_MISMATCH", message: `Hizmet hesabı "${acc.project_id}" projesine ait, ancak beklenen proje "${pid}".` };
   if (!acc.client_email.endsWith(`@${pid}.iam.gserviceaccount.com`)) return { ok: false, code: "EMAIL_MISMATCH", message: `Hizmet hesabı e-postası "${pid}" projesine ait görünmüyor.` };
   return { ok: true, account: acc };
@@ -69,7 +69,7 @@ function webConfig(env = process.env) {
   for (const [k, e] of Object.entries(WEB_REQUIRED)) { const v = String(env[e] || "").trim(); if (v) cfg[k] = v; else missing.push(e); }
   for (const [k, e] of Object.entries(WEB_OPTIONAL)) { const v = String(env[e] || "").trim(); if (v) cfg[k] = v; }
   if (cfg.projectId !== EXPECTED_PROJECT_ID) return { ok: false, missing: [], error: `FIREBASE_PROJECT_ID "${cfg.projectId}" geçersiz; beklenen "${EXPECTED_PROJECT_ID}".` };
-  for (const k of ["authDomain", "storageBucket"]) if (cfg[k] && FORBIDDEN_PROJECT_IDS.some(p => cfg[k].includes(p))) return { ok: false, missing: [], error: `${k} eski projeyi gösteriyor.` };
+  for (const k of ["authDomain", "storageBucket"]) if (cfg[k] && FORBIDDEN_PROJECT_IDS.some(p => cfg[k].includes(p))) return { ok: false, missing: [], error: `${k} yanlış projeyi gösteriyor.` };
   if (cfg.appId && !cfg.appId.includes(":web:")) return { ok: false, missing: [], error: "FIREBASE_WEB_APP_ID bir web uygulaması kimliği olmalı (1:...:web:...)." };
   return missing.length ? { ok: false, missing } : { ok: true, config: cfg };
 }

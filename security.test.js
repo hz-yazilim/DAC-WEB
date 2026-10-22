@@ -148,13 +148,13 @@ test("Token doğrulama: geçerli kabul; yanlış proje, süresi dolmuş, bozuk i
 // ---------- Firebase yapılandırması / e-posta girişi / sahiplik (bu sürümde eklendi) ----------
 test("Hizmet hesabı: eksik, bozuk JSON ve yanlış proje reddedilir; anahtar mesajda geçmez", () => {
   const FBI = require("./firebase-init");
-  const mk = (o = {}) => ({ type: "service_account", project_id: "varlik-operasyonlari-ed334", client_email: "x@varlik-operasyonlari-ed334.iam.gserviceaccount.com", private_key: "-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----\n", ...o });
+  const mk = (o = {}) => ({ type: "service_account", project_id: "assetops-ed334", client_email: "x@assetops-ed334.iam.gserviceaccount.com", private_key: "-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----\n", ...o });
   assert.equal(FBI.parseServiceAccount({}).code, "MISSING");
   assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: "{bozuk" }).code, "BAD_JSON");
-  const old = FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk({ project_id: "assetops-ed334", client_email: "x@assetops-ed334.iam.gserviceaccount.com" })) });
+  const old = FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk({ project_id: "varlik-operasyonlari-ed334", client_email: "x@varlik-operasyonlari-ed334.iam.gserviceaccount.com" })) });
   assert.equal(old.ok, false); assert.equal(old.code, "OLD_PROJECT"); assert.ok(!JSON.stringify(old).includes("SECRETKEY"));
   assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk({ project_id: "baska-proje" })) }).code, "PROJECT_MISMATCH");
-  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk()), FIREBASE_PROJECT_ID: "assetops-ed334" }).code, "BAD_PROJECT");
+  assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk()), FIREBASE_PROJECT_ID: "varlik-operasyonlari-ed334" }).code, "BAD_PROJECT");
   assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(mk()) }).ok, true);
   assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT_B64: Buffer.from(JSON.stringify(mk())).toString("base64") }).ok, true);
 });
@@ -162,9 +162,9 @@ test("Web yapılandırması: eksik değişkenler adıyla bildirilir, uydurulmaz"
   const FBI = require("./firebase-init");
   const r = FBI.webConfig({}); assert.equal(r.ok, false);
   assert.deepEqual(r.missing.sort(), ["FIREBASE_WEB_API_KEY", "FIREBASE_WEB_APP_ID", "FIREBASE_WEB_AUTH_DOMAIN", "FIREBASE_WEB_MESSAGING_SENDER_ID"]);
-  const ok = FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "varlik-operasyonlari-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" });
-  assert.equal(ok.ok, true); assert.equal(ok.config.projectId, "varlik-operasyonlari-ed334");
-  assert.equal(FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "assetops-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" }).ok, false);
+  const ok = FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "assetops-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" });
+  assert.equal(ok.ok, true); assert.equal(ok.config.projectId, "assetops-ed334");
+  assert.equal(FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "varlik-operasyonlari-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" }).ok, false);
 });
 test("/api/firebase-config: env yokken 503 + eksik liste", async () => {
   for (const k of Object.keys(process.env)) if (k.startsWith("FIREBASE_WEB_")) delete process.env[k];
