@@ -1,6 +1,6 @@
 /* Digital Asset Center - Service Worker
  * Uygulama kabuğunu önbelleğe alır (çevrimdışı açılış). API ve Firebase istekleri asla önbelleğe alınmaz. */
-const CACHE = "dac-shell-v5";
+const CACHE = "dac-shell-v6";
 const SHELL = ["./", "index.html", "style.css", "app.js", "config.js", "plans.js", "login.js", "sw-register.js", "manifest.json", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
