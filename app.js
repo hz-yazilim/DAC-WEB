@@ -465,7 +465,7 @@ function showDetail(id){
   if(sco.length)h+=`<div class="card"><b>Skorlar</b>${sco.map(([k,v])=>`<div class="sc" style="--rc:${col(v)}"><span>${esc(SCL[k]||k)}</span><i><u style="width:${Math.min(100,v)}%"></u></i><span>${v}</span></div>`).join('')}</div>`;
   const f=r.findings||[];
   h+=`<div class="card"><b>Bulgular (${f.length})</b>${f.length?f.map(x=>`<div class="find"><span class="badge ${sev(x)}">${sevL[sev(x)]}</span><span>${esc(finT(x))}</span></div>`).join(''):'<div class="hint">Sorun bulunmadı</div>'}</div>`;
-  h+=`<div class="card"><b>Detaylı analiz</b><table>${flat(sa).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v===true?'evet':v===false?'hayır':v??'-')}</td></tr>`).join('')}</table><details><summary>Ham veri (JSON)</summary><pre>${esc(JSON.stringify(r,null,2))}</pre></details></div>
+  h+=`<div class="card"><b>Detaylı analiz</b><table>${flat(sa).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v===true?'evet':v===false?'hayır':v??'-')}</td></tr>`).join('')}</table></div>
   <button class="btn p w" data-act="rescan" data-id="${id}">${ic('refresh-cw')} Yeniden Tara</button>`;
  }
  $('#box').innerHTML=h;$('#modal').classList.add('on');icons();
