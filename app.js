@@ -340,7 +340,7 @@ function reports(){
  <div class="card">${rows?`<table><tr><td>Kategori</td><td>Adet</td><td>Ort. skor</td></tr>${rows}</table>`:'<div class="empty">Henüz varlık yok</div>'}</div>
  ${worst.length?`<div class="card"><b>Dikkat gerektiren varlıklar</b>${worst.map(assetRow).join('')}</div>`:''}
  ${Object.keys(tot).length?`<div class="card"><b>Abonelik maliyeti</b><div class="chips" style="margin-top:10px">${Object.entries(tot).map(([c,n])=>`<span class="badge ok">${sym(n,c)} / ay</span><span class="badge mu">${sym(n*12,c)} / yıl</span>`).join('')}</div></div>`:''}
- <div class="acts"><button class="btn" data-act="csv">${ic('download')} CSV indir</button><button class="btn" data-act="json">${ic('download')} JSON indir</button><button class="btn" onclick="print()">${ic('printer')} Yazdır</button></div>`}
+ <div class="acts"><button class="btn" data-act="csv">${ic('download')} CSV indir</button><button class="btn" data-act="json">${ic('download')} JSON indir</button><button class="btn" data-act="print">${ic('printer')} Yazdır</button></div>`}
 function listPage(k){const L=LISTS[k],ps=planState(),lim=k==='team'?ps.p.team:null;
  return`<h2>${L.title}</h2><p class="sub">${S[k].length} kayıt${lim?` • bu pakette en fazla ${lim}`:''}</p><div class="card"><form data-form="list" data-k="${k}">${L.f.map(([n,p],i)=>`<input class="field" name="${n}" placeholder="${p}" ${i?'':'required'}>`).join('')}<button class="btn p w" type="submit">${ic('plus')} Ekle</button></form></div>
  <div class="card">${S[k].length?S[k].map(x=>`<div class="item"><div class="ico">${ic(L.icon)}</div><div class="g"><b>${esc(x[L.f[0][0]])}</b><span>${L.f.slice(1).map(([n])=>esc(x[n])).filter(Boolean).join(' • ')}</span></div><button class="btn s d" data-act="dellist" data-k="${k}" data-id="${x.id}">${ic('trash-2')}</button></div>`).join(''):`<div class="empty">Kayıt yok</div>`}</div>`}
@@ -521,7 +521,7 @@ document.addEventListener('click',async e=>{
  else if(act==='dellist'){const k=b.dataset.k;S[k]=S[k].filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();render()}
  else if(act==='logout'){window.dacLogout&&window.dacLogout()}
  else if(act==='wipe'){if(confirm('Bu cihazdaki yerel veriler silinecek. Bulut kopyası durur ve bir sonraki girişte geri yüklenir. Emin misiniz?')){localStorage.removeItem(KEY);location.hash='';location.reload()}}
- else if(act==='csv'){const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;dl('varliklar.csv','\ufeff'+['Ad;Tür;Hedef;Skor;Durum;Son tarama',...S.assets.map(a=>[a.name,CATS[a.cat].label,a.target,sc(a)??'',SL[a.result?.status]||a.result?.status||'',fmt(a.lastScan)].map(q).join(';'))].join('\n'),'text/csv;charset=utf-8')}
+ else if(act==='print'){window.print()}else if(act==='csv'){const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;dl('varliklar.csv','\ufeff'+['Ad;Tür;Hedef;Skor;Durum;Son tarama',...S.assets.map(a=>[a.name,CATS[a.cat].label,a.target,sc(a)??'',SL[a.result?.status]||a.result?.status||'',fmt(a.lastScan)].map(q).join(';'))].join('\n'),'text/csv;charset=utf-8')}
  else if(act==='json')dl('varliklar.json',JSON.stringify(S.assets,null,2),'application/json');
  else if(act==='backup'){const {billing,plan,planEnd,trialStart,provider,...rest}=st;dl(`dac-yedek-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({version:11,exportedAt:new Date().toISOString(),assets:S.assets,scans:S.scans,team:S.team,projects:S.projects,settings:rest},null,2),'application/json')}
  else if(act==='import')$('#imp').click();

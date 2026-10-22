@@ -46,25 +46,45 @@ const app = express();
 const SEC = require("./security");
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
+// Yanıt sıkıştırma (gzip/br): "compression" paketi yüklüyse etkinleşir
+try { app.use(require("compression")()); } catch (e) { console.warn("compression paketi yok: npm install compression"); }
 app.use(require("helmet")({
-  // Google ile giriş penceresi (popup) için COOP gevşetildi; CSP önce "report-only" başlar (CSP_MODE=enforce ile zorunlu yapılır)
+  // Google ile giriş penceresi (popup) için COOP gevşetildi
   crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
   crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "same-site" },
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  strictTransportSecurity: { maxAge: 63072000, includeSubDomains: true, preload: true },
+  xContentTypeOptions: true,
+  // CSP artık varsayılan olarak ZORUNLU. Sorun çıkarsa geçici olarak CSP_MODE=report ile rapor moduna alınabilir.
   contentSecurityPolicy: {
-    reportOnly: process.env.CSP_MODE !== "enforce",
+    reportOnly: process.env.CSP_MODE === "report",
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://www.gstatic.com", "https://apis.google.com", "https://www.googletagmanager.com"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      // 'unsafe-inline' kaldırıldı: tüm script'ler harici dosyada (login.js, sw-register.js, app.js ...)
+      scriptSrc: ["'self'", "https://cdn.jsdelivr.net", "https://www.gstatic.com", "https://apis.google.com", "https://www.googletagmanager.com"],
+      scriptSrcAttr: ["'none'"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com"],
+      styleSrcAttr: ["'unsafe-inline'"], // app.js dinamik stil nitelikleri (style="color:...") kullanıyor
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'", "https://*.onrender.com", "https://*.googleapis.com", "https://*.google-analytics.com", "https://*.analytics.google.com", "https://*.googletagmanager.com", "https://*.firebaseio.com", "https://*.firebaseapp.com", "https://www.gstatic.com"],
       frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.iyzipay.com", "https://js.stripe.com"],
       formAction: ["'self'", "https://*.iyzipay.com", "https://checkout.stripe.com"],
-      objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"]
+      manifestSrc: ["'self'"], workerSrc: ["'self'"],
+      objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"],
+      upgradeInsecureRequests: []
     }
   }
 }));
+// Helmet'in vermediği başlıklar + ek sertleştirme
+app.use((req, res, next) => {
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(self), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), interest-cohort=()");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.removeHeader("Server");
+  next();
+});
 app.use(require("cors")(SEC.corsOptions));
 const jsonParser = express.json({ limit: "256kb", verify: (req, res, buf) => { req.rawBody = buf; } });
 app.use((req, res, next) => (req.path === "/api/state" ? next() : jsonParser(req, res, next)));
@@ -2063,10 +2083,16 @@ function forFirestore(v, depth = 0) {
 }
 
 // ===== Site dosyalarını aynı sunucudan yayınla =====
-const STATIC_FILES = ["index.html", "style.css", "app.js", "config.js", "plans.js", "manifest.json", "icon-192.png", "icon-512.png"];
-STATIC_FILES.forEach(f => app.get("/" + f, (q, r) => r.sendFile(path.join(__dirname, f))));
+const STATIC_FILES = ["index.html", "style.css", "app.js", "config.js", "plans.js", "login.js", "sw-register.js", "manifest.json", "icon-192.png", "icon-512.png"];
+const STATIC_CACHE = { "index.html": "no-cache", "manifest.json": "public, max-age=3600" };
+STATIC_FILES.forEach(f => app.get("/" + f, (q, r) => { r.set("Cache-Control", STATIC_CACHE[f] || "public, max-age=86400, stale-while-revalidate=604800"); r.sendFile(path.join(__dirname, f)); }));
+const SITE_URL = String(process.env.SITE_URL || "https://dac-web-tfqf.onrender.com").replace(/\/$/, "");
+app.get("/robots.txt", (q, r) => { r.type("text/plain").set("Cache-Control", "public, max-age=86400").send(`User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${SITE_URL}/sitemap.xml\n`); });
+app.get("/sitemap.xml", (q, r) => { r.type("application/xml").set("Cache-Control", "public, max-age=86400").send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${SITE_URL}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>\n`); });
+const securityTxt = (q, r) => { const exp = new Date(Date.now() + 365 * 864e5).toISOString(); r.type("text/plain").set("Cache-Control", "public, max-age=86400").send(`Contact: ${process.env.SECURITY_CONTACT || "mailto:security@example.com"}\nExpires: ${exp}\nPreferred-Languages: tr, en\nCanonical: ${SITE_URL}/.well-known/security.txt\n`); };
+app.get("/.well-known/security.txt", securityTxt); app.get("/security.txt", securityTxt);
 app.get("/sw.js", (q, r) => { r.set({ "Cache-Control": "no-cache", "Service-Worker-Allowed": "/" }); r.type("application/javascript").sendFile(path.join(__dirname, "sw.js")); });
-app.get("/", (q, r) => r.sendFile(path.join(__dirname, "index.html")));
+app.get("/", (q, r) => { r.set("Cache-Control", "no-cache"); r.sendFile(path.join(__dirname, "index.html")); });
 
 const payments = require("./payments")({ app, db, admin, http: axios });
 require("./user-state")({ app, db, verifyUser: payments.verifyUser });
