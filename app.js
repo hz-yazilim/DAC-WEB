@@ -71,7 +71,7 @@ team:{title:'Ekip Yönetimi',icon:'users',f:[['name','Ad Soyad'],['email','Email
 projects:{title:'Müşteri Projeleri',icon:'briefcase',f:[['name','Proje adı'],['client','Müşteri'],['note','Not']]}
 };
 let KEY='dac_v1',S=null,U=null,PAYCFG=null,DEFERRED=null,HEALTH_TRIED=false;
-const blank=()=>({assets:[],scans:[],team:[],projects:[],settings:{org:'HZ Yazılım',plan:'trial',apiUrl:'',trialStart:Date.now(),alertBelow:50,currency:/^tr/i.test(navigator.language)?'TRY':'USD',cycle:'monthly',billing:{}}});
+const blank=()=>({assets:[],scans:[],team:[],projects:[],settings:{org:'',plan:'trial',apiUrl:'',trialStart:Date.now(),alertBelow:50,currency:/^tr/i.test(navigator.language)?'TRY':'USD',cycle:'monthly',billing:{}}});
 const save=np=>{if(S){localStorage.setItem(KEY,JSON.stringify(S));if(!np)schedulePush()}};
 
 /* ---------- bulut senkronu (users/{uid}/state/app, sunucu üzerinden) ----------
@@ -586,6 +586,8 @@ window.dacStart=u=>{
  const st=S.settings=Object.assign({},blank().settings,S.settings||{});
  if(!P.PAID.includes(st.plan))st.plan='trial';   // eski yerel "free/pro" değerleri deneme sayılır
  st.billing=st.billing||{};
+ // Şirket adı her kullanıcı için kendi hesabından gelir (ad/e-posta); sabit bir şirket adı yok. Kullanıcı Ayarlar'dan değiştirebilir.
+ if(!String(st.org||'').trim()||(st.org==='HZ Yazılım'&&!S.settingsAt))st.org=String(u.displayName||(u.email||'').split('@')[0]||'').trim().slice(0,60)||'Şirketim';
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.assets=Array.isArray(S.assets)?S.assets.filter(a=>a&&typeof a==='object'&&CATS[a.cat]&&typeof a.id==='string'):[];S.scans=Array.isArray(S.scans)?S.scans.filter(x=>x&&!x.mock):[];S.team=Array.isArray(S.team)?S.team:[];S.projects=Array.isArray(S.projects)?S.projects:[];
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
