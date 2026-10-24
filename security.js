@@ -7,7 +7,7 @@
  */
 "use strict";
 const crypto = require("crypto");
-const PLANS = require("../public/js/plans");
+const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 
 // NODE_ENV yalnızca "development" veya "test" ise geliştirme sayılır. Başka her durum ÜRETİM'dir.
 const isProd = () => !["development", "test"].includes(String(process.env.NODE_ENV || "").toLowerCase());

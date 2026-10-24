@@ -35,15 +35,19 @@ const tlsMod = require("tls");
 const zlib = require("zlib");
 const crypto = require("crypto");
 const path = require("path");
+const fs = require("fs");
+// Dosyalar klasörlü (server/, public/) da düz (hepsi aynı klasörde) da yüklenmiş olsa çalışsın
+const STRUCT = fs.existsSync(path.join(__dirname, "public"));
+const SRV = (n) => require(fs.existsSync(path.join(__dirname, "server", n + ".js")) ? "./server/" + n : "./" + n);
 
 // Firebase OPSİYONEL: geçerli hizmet hesabı yoksa sunucu sadece tarama yapar (ayrıntı: firebase-init.js).
-const FB = require("./server/firebase-init");
+const FB = SRV("firebase-init");
 const fbInit = FB.initFirebase(admin);
 let db = fbInit.db;
 const firebaseStatus = fbInit.status;
 
 const app = express();
-const SEC = require("./server/security");
+const SEC = SRV("security");
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 // Yanıt sıkıştırma (gzip/br): "compression" paketi yüklüyse etkinleşir
@@ -2144,7 +2148,7 @@ function forFirestore(v, depth = 0) {
 }
 
 // ===== Site dosyalarını aynı sunucudan yayınla (yalnızca public/ klasörü; sunucu kodu asla yayınlanmaz) =====
-const PUBLIC_DIR = path.join(__dirname, "public");
+const PUBLIC_DIR = STRUCT ? path.join(__dirname, "public") : __dirname;
 const LEGAL_PAGES = { "/kvkk": "kvkk.html", "/gizlilik": "gizlilik.html", "/kullanim-kosullari": "kullanim-kosullari.html", "/cerez-politikasi": "cerez-politikasi.html", "/mesafeli-satis": "mesafeli-satis.html", "/iade-iptal": "iade-iptal.html", "/iletisim": "iletisim.html", "/kabul-edilebilir-kullanim": "kabul-edilebilir-kullanim.html" };
 const SITE_URL = String(process.env.SITE_URL || "https://dac-web-tfqf.onrender.com").replace(/\/$/, "");
 app.get("/robots.txt", (q, r) => { r.type("text/plain").set("Cache-Control", "public, max-age=86400").send(`User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${SITE_URL}/sitemap.xml\n`); });
@@ -2154,7 +2158,8 @@ const securityTxt = (q, r) => { const exp = new Date(Date.now() + 365 * 864e5).t
 app.get("/.well-known/security.txt", securityTxt); app.get("/security.txt", securityTxt);
 app.get("/sw.js", (q, r) => { r.set({ "Cache-Control": "no-cache", "Service-Worker-Allowed": "/" }); r.type("application/javascript").sendFile(path.join(PUBLIC_DIR, "sw.js")); });
 app.get("/", (q, r) => { r.set("Cache-Control", "no-cache"); r.sendFile(path.join(PUBLIC_DIR, "index.html")); });
-Object.entries(LEGAL_PAGES).forEach(([route, file]) => app.get(route, (q, r) => { r.set("Cache-Control", "no-cache"); r.sendFile(path.join(PUBLIC_DIR, "legal", file)); }));
+Object.entries(LEGAL_PAGES).forEach(([route, file]) => app.get(route, (q, r) => { r.set("Cache-Control", "no-cache"); r.sendFile(STRUCT ? path.join(PUBLIC_DIR, "legal", file) : path.join(__dirname, file)); }));
+if (STRUCT) {
 // Eski (düz klasör) adreslerden yeni konumlara kalıcı yönlendirme: eski önbellekli sayfalar/sekmeler kırılmasın
 const LEGACY_URLS = { "/style.css": "/css/style.css", "/app.js": "/js/app.js", "/login.js": "/js/login.js", "/config.js": "/js/config.js", "/plans.js": "/js/plans.js", "/company.js": "/js/company.js", "/legal.js": "/js/legal.js",
   "/cookie-consent.js": "/js/cookie-consent.js", "/sw-register.js": "/js/sw-register.js", "/lucide.min.js": "/js/lucide.min.js", "/icon-192.png": "/icons/icon-192.png", "/icon-512.png": "/icons/icon-512.png", "/index.html": "/" };
@@ -2165,9 +2170,22 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
   const base = path.basename(file);
   res.setHeader("Cache-Control", base === "index.html" ? "no-cache" : base === "manifest.json" ? "public, max-age=3600" : "public, max-age=86400, stale-while-revalidate=604800");
 } }));
+} else {
+  // Düz yerleşim: yalnızca bu izin listesindeki dosyalar yayınlanır (sunucu kodu asla yayınlanmaz)
+  const FLAT_OK = new Set(["style.css", "app.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "lucide.min.js", "manifest.json", "icon-192.png", "icon-512.png",
+    "inter-latin.woff2", "inter-latin-ext.woff2", "jbmono-400-latin.woff2", "jbmono-400-ext.woff2", "jbmono-500-latin.woff2", "jbmono-500-ext.woff2"]);
+  app.get("/index.html", (q, r) => r.redirect(301, "/"));
+  app.use((req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
+    const m = /^\/(?:(?:css|js|fonts|icons)\/)?([A-Za-z0-9._-]+)$/.exec(req.path);
+    if (!m || !FLAT_OK.has(m[1])) return next();
+    res.set("Cache-Control", m[1] === "manifest.json" ? "public, max-age=3600" : "public, max-age=86400, stale-while-revalidate=604800");
+    res.sendFile(path.join(__dirname, m[1]));
+  });
+}
 
-const payments = require("./server/payments")({ app, db, admin, http: axios });
-require("./server/user-state")({ app, db, admin, verifyUser: payments.verifyUser });
+const payments = SRV("payments")({ app, db, admin, http: axios });
+SRV("user-state")({ app, db, admin, verifyUser: payments.verifyUser });
 
 // Tarayıcı için herkese açık Firebase web yapılandırması (Render ortam değişkenlerinden; kodda sabit değer yok)
 app.get("/api/firebase-config", (req, res) => {

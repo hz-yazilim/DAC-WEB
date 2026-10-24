@@ -4247,7 +4247,7 @@ def plan_price(plan_id, currency, cycle):
 
 def _verify_plans_against_js():
     try:
-        src = open(os.path.join(BASE_DIR, "public", "js", "plans.js"), encoding="utf-8").read()
+        src = open(os.path.join(BASE_DIR, "public", "js", "plans.js") if os.path.isdir(os.path.join(BASE_DIR, "public")) else os.path.join(BASE_DIR, "plans.js"), encoding="utf-8").read()
         for pid, p in PLANS.items():
             m = re.search(rf'{pid}:\s*{{[^}}]*?assets:\s*(\w+)[^}}]*?priceTRY:\s*([\d.]+)[^}}]*?priceUSD:\s*([\d.]+)', src, re.S)
             if not m:
@@ -4840,7 +4840,8 @@ def route_guard(fn):
 # ---------- Statik dosyalar (YALNIZCA izin listesi) ----------
 LEGAL_PAGES = {"/kvkk": "kvkk.html", "/gizlilik": "gizlilik.html", "/kullanim-kosullari": "kullanim-kosullari.html", "/cerez-politikasi": "cerez-politikasi.html", "/mesafeli-satis": "mesafeli-satis.html",
                "/iade-iptal": "iade-iptal.html", "/iletisim": "iletisim.html", "/kabul-edilebilir-kullanim": "kabul-edilebilir-kullanim.html"}
-PUBLIC_DIR = os.path.join(BASE_DIR, "public")
+STRUCT = os.path.isdir(os.path.join(BASE_DIR, "public"))  # False: dosyalar düz (klasörsüz) yüklenmiş
+PUBLIC_DIR = os.path.join(BASE_DIR, "public") if STRUCT else BASE_DIR
 STATIC_CACHE = {"index.html": "no-cache", "manifest.json": "public, max-age=3600"}
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json", ".png": "image/png", ".woff2": "font/woff2"}
 LEGACY_URLS = {"/style.css": "/css/style.css", "/app.js": "/js/app.js", "/login.js": "/js/login.js", "/config.js": "/js/config.js", "/plans.js": "/js/plans.js", "/company.js": "/js/company.js", "/legal.js": "/js/legal.js",
@@ -4854,6 +4855,17 @@ for _f in LEGAL_PAGES.values():
 def _scan_public() -> dict:
     """public/ altındaki dosyaların izin listesi (nokta ile başlayanlar hariç). Sunucu kodu bu klasörde değildir."""
     m = {}
+    if not STRUCT:  # düz yerleşim: yalnızca açıkça izin verilen dosyalar
+        sub = {".css": "css", ".js": "js", ".woff2": "fonts", ".png": "icons"}
+        for f in ("style.css", "app.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "lucide.min.js", "manifest.json", "icon-192.png", "icon-512.png",
+                  "inter-latin.woff2", "inter-latin-ext.woff2", "jbmono-400-latin.woff2", "jbmono-400-ext.woff2", "jbmono-500-latin.woff2", "jbmono-500-ext.woff2"):
+            full = os.path.join(BASE_DIR, f)
+            if os.path.isfile(full):
+                m["/" + f] = full
+                d = sub.get(os.path.splitext(f)[1])
+                if d:
+                    m[f"/{d}/{f}"] = full
+        return m
     for root, dirs, files in os.walk(PUBLIC_DIR):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
@@ -4876,7 +4888,7 @@ def _register_legal():
     for route, f in LEGAL_PAGES.items():
         def make(name):
             async def h():
-                return send_file(os.path.join(PUBLIC_DIR, "legal", name), "no-cache")
+                return send_file(os.path.join(PUBLIC_DIR, "legal", name) if STRUCT else os.path.join(BASE_DIR, name), "no-cache")
             return h
         app.add_api_route(route, make(f), methods=["GET"], include_in_schema=False)
 
@@ -5437,7 +5449,7 @@ async def _run_scan(request, uid, user, asset_id, asset_type, handler, name, tar
 async def static_catch_all(full_path: str):
     """Tüm API ve sayfa rotalarından SONRA: eski adresleri yönlendirir, public/ içindeki dosyaları sunar, gerisi 404."""
     p = "/" + full_path
-    if p in LEGACY_URLS:
+    if STRUCT and p in LEGACY_URLS:
         return RedirectResponse(LEGACY_URLS[p], status_code=301)
     full = STATIC_MAP.get(p)
     if not full or p in ("/index.html", "/sw.js"):

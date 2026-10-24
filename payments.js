@@ -8,7 +8,7 @@
  *   ENFORCE_PLANS=true (opsiyonel: süresi biten deneme kullanıcılarının taramasını sunucuda da engeller)
  */
 const crypto = require("crypto");
-const PLANS = require("../public/js/plans");
+const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 const SEC = require("./security");
 
 module.exports = function initPayments({ app, db, admin, http }) {
