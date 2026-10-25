@@ -167,3 +167,12 @@ details.raw summary{font-weight:600;color:var(--tx)}
 .bktabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
 textarea.field{resize:vertical;min-height:110px;font-family:inherit}
 .btns .btn[disabled],.btn[disabled]{opacity:.5;pointer-events:none}
+
+/* V13.2: yönetici paneli — e-posta/UID tam görünsün (kırpma yok), yazılar küçük */
+#adm-body .item{flex-wrap:wrap;gap:8px;font-size:12px}
+#adm-body .item .g{flex:1 1 220px}
+#adm-body .item .g b{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;font-size:12.5px;font-weight:600}
+#adm-body .item .g span{display:block;font-size:10.5px;overflow-wrap:anywhere;word-break:break-all}
+#adm-body .badge{font-size:10.5px}
+#adm-body .btn.s{font-size:11px;padding:5px 9px}
+.bktabs .btn.s{font-size:12px}

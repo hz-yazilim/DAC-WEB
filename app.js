@@ -1021,8 +1021,9 @@ document.addEventListener('click',async e=>{
 const ADMTABS=[['overview','Genel Bakış'],['users','Kullanıcılar'],['jobs','Tarama Kuyruğu'],['errors','Sistem Hataları'],['audit','İşlem Kayıtları'],['admins','Yetkili Hesaplar'],['health','Sağlık'],['platform','AI ve Altyapı']];
 const admPath={overview:'/api/admin/overview',users:'/api/admin/users',jobs:'/api/admin/jobs',errors:'/api/admin/errors',audit:'/api/admin/audit',admins:'/api/admin/admins',health:'/api/admin/health',platform:'/api/admin/platform'};
 async function admLoad(tab){BK.tab=tab;const qs=tab==='users'?'?'+new URLSearchParams({q:BK.adm.uq||'',status:BK.adm.us||'all'}):'';try{BK.adm[tab]=await bkApi('GET',admPath[tab]+qs);BK.adm.err=null}catch(e){BK.adm.err=e.message}}
-function adminPage(){if(!BK.adm[BK.tab]&&!BK.adm.err)admLoad(BK.tab).then(admPaint);return`<div class="mh"><h2>Yönetici Paneli</h2><button class="btn s" data-act="adm-refresh">${ic('refresh-cw')} Yenile</button></div><div class="bktabs">${ADMTABS.map(([k,l])=>`<button class="btn s${BK.tab===k?' p':''}" data-act="adm-tab" data-id="${k}">${esc(l)}</button>`).join('')}</div><div id="adm-body">${admBody()}</div>`}
-function admPaint(){const el=$('#adm-body');if(el){el.innerHTML=admBody();icons()}}
+function adminPage(){if(!BK.adm[BK.tab]&&!BK.adm.err)admLoad(BK.tab).then(admPaint);return`<div class="mh"><h2>Yönetici Paneli</h2><button class="btn s" data-act="adm-refresh">${ic('refresh-cw')} Yenile</button></div><div class="bktabs" id="adm-tabs">${admTabs()}</div><div id="adm-body">${admBody()}</div>`}
+const admTabs=()=>ADMTABS.map(([k,l])=>`<button class="btn s${BK.tab===k?' p':''}" data-act="adm-tab" data-id="${k}">${esc(l)}</button>`).join('');
+function admPaint(){const t=$('#adm-tabs');if(t)t.innerHTML=admTabs();const el=$('#adm-body');if(el){el.innerHTML=admBody();icons()}}
 const av=x=>x&&x.available===false?`<span class="hint">Veri yok: ${esc(x.reason||'')}</span>`:x&&x.value!=null?String(x.value):'-';
 const kv=(l,v)=>`<div class="item"><div class="g"><b>${esc(l)}</b></div><span>${v}</span></div>`;
 const ms=x=>x==null?'-':x+' ms';
@@ -1049,7 +1050,7 @@ function admBody(){
 }
 async function admAct(act,id,b){
  if(act==='adm-refresh'){await admLoad(BK.tab);return admPaint()}
- if(act==='adm-tab'){await admLoad(id);return admPaint()}
+ if(act==='adm-tab'){BK.tab=id;BK.adm.err=null;admPaint();await admLoad(id);return admPaint()}
  if(act==='adm-search'){BK.adm.uq=$('#adm-uq').value.trim();BK.adm.us=$('#adm-us').value;await admLoad('users');return admPaint()}
  if(act==='adm-user'){const j=await bkApi('GET','/api/admin/users/'+encodeURIComponent(id));const u=j.user;$('#adm-detail').innerHTML=`<div class="card"><b>${esc(u.email||u.uid)}</b>${kv('UID',esc(u.uid))}${kv('Kayıt',esc(u.createdAt||'-'))}${kv('Son giriş',esc(u.lastSignInAt||'-'))}${kv('Yönetici',u.isAdmin?'Evet':'Hayır')}${kv('Varlık sayısı',j.assets.available?j.assets.count:'Veri yok')}${kv('Paket',j.plan?esc(j.plan.plan):'Veri yok')}${Object.entries(j.assets.byType||{}).map(([k,n])=>kv(k,n)).join('')}</div>`;return}
  if(act==='adm-disable'){const dis=b.dataset.v==='1';if(!confirm(dis?'Kullanıcı devre dışı bırakılsın mı? Oturumları kapatılır.':'Kullanıcı yeniden etkinleştirilsin mi?'))return;await bkApi('POST','/api/admin/users/'+encodeURIComponent(id)+'/disable',{disabled:dis});toast('Güncellendi');await admLoad('users');return admPaint()}
