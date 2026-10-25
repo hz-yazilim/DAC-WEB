@@ -15,7 +15,11 @@ module.exports = function initPayments({ app, db, admin, http }) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
   const stripeKey = () => process.env.STRIPE_SECRET_KEY || null;
   const iyziReady = () => !!(process.env.IYZICO_API_KEY && process.env.IYZICO_SECRET_KEY);
-  const status = () => ({ stripe: !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET, iyzico: iyziReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true" });
+  // Ödeme sağlayıcısı (iyzico / Stripe) henüz bağlı değilse "Satın al" paketi doğrudan etkinleştirir.
+  // Ödeme anahtarlarını Render > Environment'a ekleyince bu mod o para birimi için OTOMATİK kapanır; tamamen kapatmak için ALLOW_FREE_ACTIVATION=false yazın.
+  const freeMode = () => process.env.ALLOW_FREE_ACTIVATION !== "false";
+  const providerReady = (currency) => (currency === "USD" ? !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET : iyziReady());
+  const status = () => ({ stripe: !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET, iyzico: iyziReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true", free: freeMode() });
   const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
 
   // ---------- Kullanıcı doğrulama ----------
@@ -95,6 +99,16 @@ module.exports = function initPayments({ app, db, admin, http }) {
     const P = PLANS.PLANS[plan]; const amount = PLANS.price(plan, currency === "USD" ? "USD" : "TRY", cycle);
     const back = returnUrlOf(req);
     const label = `Digital Asset Center - ${P.name} (${cycle === "yearly" ? "Yıllık" : "Aylık"})`;
+
+    // Ödeme henüz entegre değil: paketi doğrudan ver (kart bilgisi istenmez). Sağlayıcı bağlanınca bu blok devre dışı kalır.
+    if (!providerReady(currency === "USD" ? "USD" : "TRY") && freeMode()) {
+      const cur = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
+      const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === plan ? cur.periodEnd : Date.now();
+      const periodEnd = startFrom + (cycle === "yearly" ? 365 : 30) * 864e5;
+      await activate(u.uid, { plan, status: "active", provider: "manual", currency: currency === "USD" ? "USD" : "TRY", cycle, periodEnd, free: true });
+      await db.collection("orders").add({ uid: u.uid, plan, cycle, currency: currency === "USD" ? "USD" : "TRY", amount, status: "activated-free", consentVersion: LEGAL_VERSION, createdAt: Date.now() });
+      return res.json({ success: true, activated: true, plan, periodEnd, provider: "manual" });
+    }
 
     if (currency === "USD") {
       if (!stripeKey()) throw fail(503, "USD ödemesi henüz yapılandırılmadı (STRIPE_SECRET_KEY).");

@@ -130,3 +130,33 @@ label.hint{display:block;margin:2px 0 6px 4px}
 .flinks{margin-top:14px;font-size:12px;color:var(--mu);line-height:1.9;text-align:center}.flinks a{text-decoration:underline}.flinks a:hover{color:var(--tx)}
 .legalbox{margin-top:12px;font-size:12px;color:var(--mu);line-height:1.9}.legalbox a{text-decoration:underline}
 @media print{#ckbar,.lhead,.lfoot,.draft-banner{display:none}.legal p,.legal li{color:#000}body{background:#fff;color:#000}}
+
+/* ---------- v13: tür bazlı analiz ekranları ---------- */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 14px}
+.tile{background:#0a1124;border:1px solid var(--bd);border-radius:14px;padding:12px 14px;border-left:4px solid var(--bd);min-width:0}
+.tile span{display:block;font:12px var(--mono);color:var(--mu);margin-bottom:4px}
+.tile b{display:block;font:700 18px var(--mono);word-break:break-word}
+.tile.ok{border-left-color:var(--ok)}.tile.wn{border-left-color:var(--wn)}.tile.bd{border-left-color:var(--bad)}
+.card.an .ah{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.card.an .hint{margin:-2px 0 8px}
+.chk{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #1b2742;font-size:14px}
+.chk:last-of-type{border-bottom:0}
+.chk i{flex:none;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font:700 12px var(--mono);font-style:normal;background:#1b2742;color:var(--mu)}
+.chk.ok i{background:#10b98122;color:var(--ok)}.chk.wn i{background:#f59e0b22;color:var(--wn)}.chk.bd i{background:#ef444422;color:var(--bad)}
+.chk span{min-width:0;word-break:break-word}.chk small{display:block;font:12px var(--mono);color:var(--mu);margin-top:2px}
+table.kv td:first-child{width:40%}
+.mu2{color:var(--mu)}.ok2{color:var(--ok)}.bd2{color:var(--bad)}
+.chipl{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.cp{font:12px var(--mono);border:1px solid var(--bd);border-radius:14px;padding:4px 10px;background:#0a1124;word-break:break-all}
+.cp.ok{color:var(--ok);border-color:#10b98155}.cp.wn{color:var(--wn);border-color:#f59e0b55}.cp.bd{color:var(--bad);border-color:#ef444455}
+.spark{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.find2{margin:6px 0}.find2 .find{margin:0;border-radius:10px 10px 0 0}
+.fix{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;background:#0c1a33;border:1px solid #1b2742;border-top:0;border-radius:0 0 10px 10px;font-size:13px;color:#b9c7e2}
+.fix i[data-lucide],.fix svg{width:15px;height:15px;margin-top:2px;color:var(--wn)}
+.find2:not(:has(.fix)) .find{border-radius:10px}
+details.raw summary{font-weight:600;color:var(--tx)}
+@media(min-width:700px){.tiles{grid-template-columns:repeat(4,1fr)}}
+
+/* paket satın alma */
+.paynote{margin-top:10px;padding:10px 12px;border-radius:12px;border:1px dashed #f59e0b66;background:#f59e0b11;font-size:13px;color:#fcd34d}
+.find .badge{flex:none;align-self:flex-start}

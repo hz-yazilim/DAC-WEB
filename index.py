@@ -4582,8 +4582,14 @@ stripe_key = lambda: env("STRIPE_SECRET_KEY") or None
 iyzi_ready = lambda: bool(env("IYZICO_API_KEY") and env("IYZICO_SECRET_KEY"))
 
 
+# Ödeme sağlayıcısı henüz bağlı değilse "Satın al" paketi doğrudan etkinleştirir (ALLOW_FREE_ACTIVATION=false ile kapatılır;
+# iyzico / Stripe anahtarları eklenince o para birimi için otomatik devre dışı kalır).
+free_mode = lambda: env("ALLOW_FREE_ACTIVATION") != "false"
+provider_ready = lambda cur: (bool(stripe_key()) and bool(env("STRIPE_WEBHOOK_SECRET"))) if cur == "USD" else iyzi_ready()
+
+
 def payments_status() -> J:
-    return J(stripe=bool(stripe_key()) and bool(env("STRIPE_WEBHOOK_SECRET")), iyzico=iyzi_ready(), auth=bool(FB.db), enforced=env("ENFORCE_PLANS") == "true")
+    return J(stripe=bool(stripe_key()) and bool(env("STRIPE_WEBHOOK_SECRET")), iyzico=iyzi_ready(), auth=bool(FB.db), enforced=env("ENFORCE_PLANS") == "true", free=free_mode())
 
 
 def to_form(obj, prefix="", out=None):
@@ -4933,7 +4939,7 @@ app.add_api_route("/security.txt", _security_txt, methods=["GET"], include_in_sc
 @app.get("/health")
 async def health():
     p = payments_status()
-    return jres({"ok": True, "version": SCANNER_VERSION, "payments": {"stripe": p.stripe, "iyzico": p.iyzico}, "timestamp": iso(datetime.now(timezone.utc))}, headers={"Cache-Control": "no-store"})
+    return jres({"ok": True, "version": SCANNER_VERSION, "payments": {"stripe": p.stripe, "iyzico": p.iyzico, "free": p.free}, "timestamp": iso(datetime.now(timezone.utc))}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/firebase-config")
@@ -5136,6 +5142,15 @@ async def checkout(request: Request):
     amount = plan_price(plan, "USD" if currency == "USD" else "TRY", cycle)
     back = return_url_of(request, body)
     label = f"Digital Asset Center - {P.name} ({'Yıllık' if cycle == 'yearly' else 'Aylık'})"
+    cur_code = "USD" if currency == "USD" else "TRY"
+    if not provider_ready(cur_code) and free_mode():
+        # Ödeme henüz entegre değil: paketi doğrudan ver (kart bilgisi istenmez)
+        prev = (await get_doc("subscriptions", u.uid)) or {}
+        start_from = prev["periodEnd"] if prev.get("status") == "active" and (prev.get("periodEnd") or 0) > now_ms() and prev.get("plan") == plan else now_ms()
+        period_end = start_from + (365 if cycle == "yearly" else 30) * 86400000
+        await activate(u.uid, {"plan": plan, "status": "active", "provider": "manual", "currency": cur_code, "cycle": cycle, "periodEnd": period_end, "free": True})
+        await asyncio.to_thread(lambda: FB.db.collection("orders").add({"uid": u.uid, "plan": plan, "cycle": cycle, "currency": cur_code, "amount": amount, "status": "activated-free", "consentVersion": LEGAL_VERSION, "createdAt": now_ms()}))
+        return jres({"success": True, "activated": True, "plan": plan, "periodEnd": period_end, "provider": "manual"})
     if currency == "USD":
         if not stripe_key():
             raise HttpError(503, "USD ödemesi henüz yapılandırılmadı (STRIPE_SECRET_KEY).")
@@ -5291,6 +5306,28 @@ ip_limit = Limiter(env_int("SCAN_RATE_LIMIT", 60), 5 * 60 * 1000)
 user_limit = Limiter(env_int("SCAN_USER_RATE_LIMIT", 30), 5 * 60 * 1000)
 concurrency = Concurrency(env_int("SCAN_CONCURRENCY_PER_USER", 2), env_int("SCAN_CONCURRENCY_GLOBAL", 8))
 ASSET_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+@app.delete("/api/assets/{asset_id}")
+@route_guard
+async def api_delete_asset(request: Request, asset_id: str):
+    """Arayüzden silinen varlığın sunucudaki güncel kaydını da siler (kota sayacında kalmasın). Tarama geçmişi (assetChecks) saklanır."""
+    if not ip_limit(client_ip(request)):
+        return err(429, "Çok fazla istek. Biraz sonra tekrar deneyin.")
+    user = await authenticate(request)
+    if not user_limit(user.uid):
+        return err(429, "Çok fazla istek. Biraz sonra tekrar deneyin.")
+    if not ASSET_ID_RE.match(asset_id or "") or len(asset_id) > 200:
+        return err(400, "Geçersiz varlık kimliği")
+    if not FB.db:
+        return err(503, "Veritabanı yapılandırılmamış")
+    data = await get_doc("assets", asset_id)
+    if data is None:
+        return jres({"success": True, "deleted": False})
+    if data.get("ownerId") != user.uid:
+        return err(403, "Bu varlık size ait değil.")
+    await asyncio.to_thread(lambda: _doc("assets", asset_id).delete())
+    return jres({"success": True, "deleted": True})
 
 
 @app.post("/api/scan")

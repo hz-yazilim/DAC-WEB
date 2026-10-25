@@ -66,7 +66,7 @@ test("Gövde boyut sınırı: 256kb üstü reddedilir", async () => {
 test("/health: hassas yapılandırma bilgisi sızdırmaz", async () => {
   const s = await listen(require("../index")); const j = await (await call(s, "GET", "/health")).json();
   assert.deepEqual(Object.keys(j).sort(), ["ok", "payments", "timestamp", "version"]);
-  assert.deepEqual(Object.keys(j.payments).sort(), ["iyzico", "stripe"]); s.close();
+  assert.deepEqual(Object.keys(j.payments).sort(), ["free", "iyzico", "stripe"]); s.close();
 });
 test("Güvenlik başlıkları ve CORS: izinsiz origin CORS başlığı almaz", async () => {
   const s = await listen(require("../index"));
@@ -243,7 +243,7 @@ test("/api/scan: targetUrl metin değilse 400", async () => {
 test("Hesap uç noktaları ve ödeme: token yoksa reddedilir", async () => {
   delete process.env.DEV_AUTH_BYPASS;
   const s = await listen(require("../index"));
-  for (const [m, p] of [["GET", "/api/account/export"], ["DELETE", "/api/account"], ["POST", "/api/consent"], ["POST", "/api/checkout"], ["GET", "/api/state"]]) {
+  for (const [m, p] of [["GET", "/api/account/export"], ["DELETE", "/api/account"], ["POST", "/api/consent"], ["POST", "/api/checkout"], ["GET", "/api/state"], ["DELETE", "/api/assets/abc"]]) {
     const r = await call(s, m, p, { body: m === "GET" ? undefined : {} });
     assert.ok([401, 503].includes(r.status), `${m} ${p} -> ${r.status}`); await r.arrayBuffer();
   }
@@ -297,4 +297,40 @@ test("Dosya yapısı: HTML/CSS/SW içindeki her yerel varlık yolu gerçekten me
     if (f.endsWith("manifest.json")) for (const m of src.matchAll(/"src":\s*"([^"]+)"/g)) if (!exists(m[1])) bad.push("manifest -> " + m[1]);
   }
   assert.deepEqual(bad, []);
+});
+
+// ---------- Satın al: ödeme sağlayıcısı bağlı değilken paket doğrudan verilir ----------
+function memDb() {
+  const data = {}; let n = 0;
+  const col = (c) => ({
+    doc: (id) => { id = id || `auto${++n}`; const k = `${c}/${id}`; return { id, get: async () => ({ exists: k in data, data: () => data[k] }), set: async (d, o) => { data[k] = o && o.merge ? { ...(data[k] || {}), ...d } : d; } }; },
+    add: async (d) => { const k = `${c}/auto${++n}`; data[k] = d; return { id: k }; }
+  });
+  return { data, collection: col };
+}
+async function payApp(db) {
+  const express = require("express"); const app = express(); app.use(express.json());
+  const admin = { apps: [1], auth: () => ({ verifyIdToken: async () => ({ uid: "u1", email: "a@b.com", email_verified: true, firebase: { sign_in_provider: "google.com" } }) }) };
+  const pay = require("../server/payments")({ app, db, admin, http: null });
+  return { s: await listen(app), pay };
+}
+const checkoutBody = { plan: "freelance", cycle: "monthly", currency: "TRY", billing: {}, consent: { distanceSales: true, withdrawalWaiver: true } };
+test("Satın al: iyzico/Stripe yokken paket doğrudan etkinleşir (kart istenmez)", async () => {
+  delete process.env.IYZICO_API_KEY; delete process.env.IYZICO_SECRET_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.ALLOW_FREE_ACTIVATION;
+  const db = memDb(); const { s, pay } = await payApp(db);
+  const r = await call(s, "POST", "/api/checkout", { headers: { Authorization: "Bearer x", Origin: "http://localhost:3000" }, body: checkoutBody });
+  const j = await r.json(); assert.equal(r.status, 200); assert.equal(j.activated, true); assert.equal(j.plan, "freelance");
+  assert.equal(db.data["subscriptions/u1"].status, "active"); assert.ok(db.data["subscriptions/u1"].periodEnd > Date.now());
+  assert.equal((await pay.getEntitlement("u1")).plan, "freelance"); s.close();
+});
+test("Satın al: onay kutuları işaretlenmediyse paket verilmez", async () => {
+  const db = memDb(); const { s } = await payApp(db);
+  const r = await call(s, "POST", "/api/checkout", { headers: { Authorization: "Bearer x", Origin: "http://localhost:3000" }, body: { ...checkoutBody, consent: { distanceSales: true } } });
+  assert.equal(r.status, 400); assert.equal(db.data["subscriptions/u1"], undefined); s.close();
+});
+test("Satın al: ALLOW_FREE_ACTIVATION=false ise sağlayıcı yokken paket verilmez", async () => {
+  process.env.ALLOW_FREE_ACTIVATION = "false";
+  const db = memDb(); const { s } = await payApp(db);
+  const r = await call(s, "POST", "/api/checkout", { headers: { Authorization: "Bearer x", Origin: "http://localhost:3000" }, body: checkoutBody });
+  assert.equal(r.status, 503); assert.equal(db.data["subscriptions/u1"], undefined); delete process.env.ALLOW_FREE_ACTIVATION; s.close();
 });

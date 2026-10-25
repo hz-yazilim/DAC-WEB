@@ -2289,7 +2289,21 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   return res.json({ success: true, scanStatus, assetId, checkId, saved, saveError: saveError ? "Sonuç kaydedilemedi" : null, errors: scanErrors, result: assetUpdate });
 });
 
-app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico }, timestamp: new Date().toISOString() }); });
+// Varlık silme: kullanıcı arayüzden sildiğinde sunucudaki güncel kayıt da silinir (yoksa kota sayacında kalır). Tarama geçmişi (assetChecks) saklanır.
+app.delete("/api/assets/:id", scanGuard, async (req, res) => {
+  const id = String(req.params.id || "");
+  if (!/^[A-Za-z0-9_-]{1,200}$/.test(id)) return res.status(400).json({ success: false, error: "Geçersiz varlık kimliği" });
+  if (!db) return res.status(503).json({ success: false, error: "Veritabanı yapılandırılmamış" });
+  try {
+    const ref = db.collection("assets").doc(id); const snap = await ref.get();
+    if (!snap.exists) return res.json({ success: true, deleted: false });
+    if (snap.data().ownerId !== req.user.uid) return res.status(403).json({ success: false, code: "FORBIDDEN", error: "Bu varlık size ait değil." });
+    await ref.delete();
+    res.json({ success: true, deleted: true });
+  } catch (e) { console.error("Varlık silme hatası:", e.message); res.status(503).json({ success: false, error: "Silinemedi, tekrar deneyin." }); }
+});
+
+app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico, free: p.free }, timestamp: new Date().toISOString() }); });
 // JSON ayrıştırma vb. hatalar için düzgün yanıt
 // Tüm rotalardan SONRA: bilinmeyen adresler için JSON 404 (Python sürümüyle aynı biçim)
 app.use((q, r) => r.status(404).json({ success: false, error: "Bulunamadı" }));
