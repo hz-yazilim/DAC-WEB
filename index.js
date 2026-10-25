@@ -48,6 +48,13 @@ const firebaseStatus = fbInit.status;
 
 const app = express();
 const SEC = SRV("security");
+const METRICS = SRV("metrics").createMetrics();       // API gecikme (P50/P95/P99), hata oranı, kuyruk/tarama süreleri
+const SCORING = SRV("scoring");                       // merkezi skor ağırlıkları ve kritik bulgu sınırı
+const VALID = SRV("validators");                      // domain / URL / telefon doğrulama
+const AI = SRV("ai-provider");                        // AI mimarisi (şimdilik devre dışı) + dönemsel rapor modeli
+const BILLING = SRV("billing-catalog");               // para birimi / kur adaptörü / affiliate hazırlığı (etkin değil)
+const JOBLIB = SRV("jobs");                           // kalıcı toplu tarama kuyruğu
+const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 // Yanıt sıkıştırma (gzip/br): "compression" paketi yüklüyse etkinleşir
@@ -92,13 +99,14 @@ app.use((req, res, next) => {
   next();
 });
 app.use(require("cors")(SEC.corsOptions));
+app.use(METRICS.middleware("/api"));
 const globalApiLimit = SEC.makeLimiter(SEC.int(process.env.API_RATE_LIMIT, 600), 5 * 60 * 1000);
 app.use("/api", (req, res, next) => (globalApiLimit(req.ip) ? next() : res.status(429).json({ success: false, error: "Çok fazla istek. Biraz sonra tekrar deneyin." })));
 const jsonParser = express.json({ limit: "256kb", verify: (req, res, buf) => { req.rawBody = buf; } });
 app.use((req, res, next) => (req.path === "/api/state" ? next() : jsonParser(req, res, next)));
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 const PORT = process.env.PORT || 3000;
-const SCANNER_VERSION = "v12.0";
+const SCANNER_VERSION = "v13.1";
 
 const UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const UA_BOT = "Mozilla/5.0 (compatible; DigitalAssetCenterBot/12.0; +https://dac-web-yefr.onrender.com)";
@@ -1655,9 +1663,8 @@ async function scanWebsite(targetUrl, extra = {}) {
   const bs = verOf("Bootstrap"); if (bs && /^[1-3]\./.test(bs)) cSec.add(false, 2, "finding_web_old_bootstrap_warning", "basliklar");
   const wp = verOf("WordPress"); if (tech.find(t => t.name === "WordPress") && wp && parseFloat(wp) < 6.0) cSec.add(false, 5, "finding_web_old_wordpress_warning", "basliklar");
   // --- skor ---
-  const gs = { availability: cAv.score(), security: cSec.score(), seo: cSeo.score(), performance: cPerf.score() }; const W = { availability: 35, security: 25, seo: 20, performance: 20 };
-  let tw = 0, ts = 0; for (const k in gs) if (gs[k] != null) { tw += W[k]; ts += W[k] * gs[k]; }
-  let overall = tw ? Math.round(ts / tw) : null;
+  const gs = { availability: cAv.score(), security: cSec.score(), seo: cSeo.score(), performance: cPerf.score() };
+  let overall = SCORING.webLegacyOverall(gs); // ağırlıklar scoring.js > WEB_LEGACY_WEIGHTS (davranış değişmedi)
   const all = sortFindings([...cAv.findings(), ...cSec.findings(), ...cSeo.findings(), ...cPerf.findings(), ...extraF, ...seoInfo]);
   if (overall != null) {
     if (all.some(f => /web_suspended|web_app_error|web_server_error|web_redirect_loop|web_tls_error|web_no_https|web_status_\d+_critical/.test(f))) overall = Math.min(overall, 35);
@@ -1665,6 +1672,8 @@ async function scanWebsite(targetUrl, extra = {}) {
     if (all.includes("finding_web_ssl_expired_critical")) overall = Math.min(overall, 25);
     if (all.includes("finding_seo_noindex_critical") || all.includes("finding_seo_robots_blocks_all_critical")) overall = Math.min(overall, 60);
   }
+  // Bileşik skor (SEO %35 + Güvenlik %50 + Performans %15; kritik bulguda 75 sınırı) — ayrıntı ve gerekçe: scoring.js
+  const composite = SCORING.computeComposite({ seo: gs.seo, security: gs.security, performance: gs.performance }, all);
   const down = main.status >= 500 || (main.status >= 400 && ![401, 403].includes(main.status)) || state.includes("suspended");
   const status = down ? (main.status >= 500 || state.includes("suspended") ? "DOWN" : "CRITICAL") : statusFromScore(overall ?? 0);
   const securityHeaders = { hsts: !!main.headers["strict-transport-security"], csp: !!main.headers["content-security-policy"], xFrame: !!main.headers["x-frame-options"], xContentType: !!main.headers["x-content-type-options"], referrerPolicy: !!main.headers["referrer-policy"], permissionsPolicy: !!(main.headers["permissions-policy"] || main.headers["feature-policy"]) };
@@ -1677,7 +1686,7 @@ async function scanWebsite(targetUrl, extra = {}) {
     tls: tlsDet ? { protocol: tlsDet.protocol, cipher: tlsDet.cipher?.name, daysRemaining: Math.floor((new Date(tlsDet.cert.valid_to) - Date.now()) / 864e5), issuer: tlsDet.cert.issuer?.O || tlsDet.cert.issuer?.CN, http2: tlsi?.alpn === "h2" } : null,
     content: { htmlKB: Math.round(A.htmlBytes / 102.4) / 10, images: A.images.total, scripts: A.scripts.length, stylesheets: A.stylesheets.length, thirdPartyHosts: A.thirdPartyHosts.length, links: A.links },
     performance: { ttfbMs: main.ttfb, compression: main.encoding, measuredWeightKB: Math.round((perf.weight || 0) / 102.4) / 10, renderBlockingScripts: perf.blocking },
-    scores: { availability: gs.availability, security: gs.security, seo: gs.seo, performance: gs.performance, overall }
+    scores: { availability: gs.availability, security: gs.security, seo: gs.seo, performance: gs.performance, overall, composite: composite.score, compositeDetail: { rawScore: composite.rawScore, complete: composite.complete, coverage: composite.coverage, capped: composite.capped, missing: composite.missing } }
   };
   const commonAnalysis = { analyzerVersion: V, executionTimeMs: Date.now() - startedAt, findings: all, scannedAt: new Date().toISOString(), score: overall, status, target: url };
   return { data: { assetType: "WEB", commonAnalysis, specificAnalysis: specific, analysisMeta: { scannerVersion: V, analyzer: "web" } }, findings: all, errors, statusHint: status,
@@ -2215,6 +2224,53 @@ const scanGuard = [
   (req, res, next) => (userLimit(req.user.uid) ? next() : tooMany(res))
 ];
 
+// Tek bir taramayı çalıştırır ve sonucu kaydeder. Hem POST /api/scan hem toplu tarama kuyruğu AYNI çekirdeği kullanır
+// (doğrulama, sahiplik ve kota denetimleri çağıran tarafta yapılır).
+async function executeScan({ uid, assetId, assetType, handler, targetUrl, extra, name, ip }) {
+  const scanStartedAt = Date.now(); let findings = [], scanErrors = [], typeData = {}, statusHint = null, failed = false, scanConfidence = null;
+  try {
+    const result = await withTimeout(Promise.resolve(handler({ targetUrl, extra })), SCAN_TIMEOUT_MS, "Tarama");
+    typeData = result?.data || {}; findings = Array.isArray(result?.findings) ? result.findings : [];
+    if (Array.isArray(result?.errors)) scanErrors.push(...result.errors); statusHint = result?.statusHint || null; scanConfidence = result?.confidence ?? null;
+  } catch (e) {
+    console.error(`[${assetType}] tarama hatası:`, e && e.stack || e);
+    findings.push(/zaman aşımı/i.test(e?.message || "") ? "finding_scan_timeout_warning" : "finding_scan_error"); scanErrors.push(e?.message || "Unknown"); statusHint = "ERROR"; failed = true;
+  }
+  const noData = !typeData || !typeData.commonAnalysis;
+  const healthResult = computeHealth(findings); const confidence = scanConfidence != null ? scanConfidence : computeConfidence(findings, scanErrors.length > 0);
+  const scoreUnavailable = failed || noData || typeData.commonAnalysis.score == null;
+  let finalHealthScore = scoreUnavailable ? null : typeData.commonAnalysis.score; let finalHealthLevel = "BELİRSİZ";
+  if (finalHealthScore != null) finalHealthLevel = finalHealthScore >= 80 ? "YEŞİL" : finalHealthScore >= 50 ? "SARI" : "KIRMIZI";
+  let finalStatus = noData || failed ? "ERROR" : (statusHint || typeData.commonAnalysis.status || defaultStatusFromHealth(finalHealthLevel));
+  const timedOut = failed && scanErrors.some(m => /zaman aşımı/i.test(String(m)));
+  const scanStatus = timedOut ? "TIMEOUT" : (failed || noData) ? "FAILED" : scanErrors.length ? "PARTIAL" : "COMPLETED";
+  const nowIso = new Date().toISOString();
+  const assetUpdate = { assetId, scanStatus, assetType, type: assetType, ...typeData, findings, healthLevel: finalHealthLevel, healthScore: finalHealthScore, confidence, status: finalStatus, latencyMs: Date.now() - scanStartedAt, lastCheck: nowIso, updatedAt: nowIso };
+  if (name) assetUpdate.name = String(name).slice(0, 200); if (targetUrl) assetUpdate.targetUrl = targetUrl.slice(0, 2048); assetUpdate.ownerId = uid; // sahip bilgisi yalnızca doğrulanmış oturumdan gelir
+  let saved = false, checkId = null, saveError = null;
+  if (db) {
+    try {
+      const ts = admin.firestore.FieldValue.serverTimestamp(); const doc = forFirestore({ ...assetUpdate, lastCheck: undefined, updatedAt: undefined });
+      await withTimeout((async () => {
+        await db.collection("assets").doc(assetId).set({ ...doc, target: typeData?.commonAnalysis?.target ?? targetUrl ?? null, scannedAt: ts, lastCheck: ts, updatedAt: ts, auto: false, nextScanAt: Date.now() + ALERTS.intervalMs(assetType), scanExtra: forFirestore(extra), ...(ACTIVE_PROBE_TYPES.includes(assetType) ? { authorizationConfirmed: true } : {}) }, { merge: true }); // scannedAt/target: Firestore'daki mevcut varlık belge yapısıyla uyum
+        const checkRef = db.collection("assetChecks").doc(); checkId = checkRef.id;
+        await checkRef.set(forFirestore({ assetId, checkId, type: assetType, targetUrl: targetUrl || null, errors: scanErrors, findings, healthScore: finalHealthScore, healthLevel: finalHealthLevel, confidence, latencyMs: Date.now() - scanStartedAt, status: finalStatus, scanStatus, ownerId: uid, scannerVersion: typeData?.analysisMeta?.scannerVersion || null, scores: typeData?.specificAnalysis?.scores || null, checkedAt: ts, ...(ACTIVE_PROBE_TYPES.includes(assetType) ? { authorizationConfirmed: true, authorizationIp: ip || null } : {}) }) );
+      })(), 8000, "Firestore");
+      saved = true;
+    } catch (e) { saveError = e?.message || "Firestore hatası"; console.error("Firestore kayıt hatası:", saveError); }
+  }
+  METRICS.observe("scanDurationMs", Date.now() - scanStartedAt); METRICS.observe("scan." + scanStatus, 1);
+  return { scanStatus, assetId, checkId, saved, saveError, scanErrors, assetUpdate };
+}
+const dateIso = (d) => (d instanceof Date ? d.toISOString() : d || null);
+// Kuyruk için küçük sonuç özeti (domain bitişi yalnızca RDAP'tan gelen kayıttan okunur; tarih uydurulmaz)
+function scanSummary(out, assetType) {
+  const u = out.assetUpdate || {}, reg = (u.specificAnalysis && u.specificAnalysis.registration) || {};
+  const base = { scanStatus: out.scanStatus, score: u.healthScore ?? null, status: u.status || null, latencyMs: u.latencyMs ?? null };
+  if (assetType === "DOMAIN" || assetType === "EMAIL") Object.assign(base, { expiresAt: dateIso(reg.expiresAt), remainingDays: Number.isFinite(reg.remainingDays) ? reg.remainingDays : null, expirySource: reg.source || null });
+  return base;
+}
+
 app.post("/api/scan", scanGuard, async (req, res) => {
   const body = req.body || {}; const { assetId, type, name, notes } = body; const uid = req.user.uid;
   const targetUrl = typeof body.targetUrl === "string" ? body.targetUrl.trim().slice(0, 2048) : "";
@@ -2255,38 +2311,8 @@ app.post("/api/scan", scanGuard, async (req, res) => {
       }
     } catch (e) { console.error("Sahiplik/kota kontrolü hatası:", e.message); return res.status(503).json({ success: false, error: "Veritabanına ulaşılamadı, tekrar deneyin." }); }
   }
-  const scanStartedAt = Date.now(); let findings = [], scanErrors = [], typeData = {}, statusHint = null, failed = false, scanConfidence = null;
-  try {
-    const result = await withTimeout(Promise.resolve(handler({ targetUrl, extra })), SCAN_TIMEOUT_MS, "Tarama");
-    typeData = result?.data || {}; findings = Array.isArray(result?.findings) ? result.findings : [];
-    if (Array.isArray(result?.errors)) scanErrors.push(...result.errors); statusHint = result?.statusHint || null; scanConfidence = result?.confidence ?? null;
-  } catch (e) {
-    console.error(`[${assetType}] tarama hatası:`, e && e.stack || e);
-    findings.push(/zaman aşımı/i.test(e?.message || "") ? "finding_scan_timeout_warning" : "finding_scan_error"); scanErrors.push(e?.message || "Unknown"); statusHint = "ERROR"; failed = true;
-  }
-  const noData = !typeData || !typeData.commonAnalysis;
-  const healthResult = computeHealth(findings); const confidence = scanConfidence != null ? scanConfidence : computeConfidence(findings, scanErrors.length > 0);
-  const scoreUnavailable = failed || noData || typeData.commonAnalysis.score == null;
-  let finalHealthScore = scoreUnavailable ? null : typeData.commonAnalysis.score; let finalHealthLevel = "BELİRSİZ";
-  if (finalHealthScore != null) finalHealthLevel = finalHealthScore >= 80 ? "YEŞİL" : finalHealthScore >= 50 ? "SARI" : "KIRMIZI";
-  let finalStatus = noData || failed ? "ERROR" : (statusHint || typeData.commonAnalysis.status || defaultStatusFromHealth(finalHealthLevel));
-  const timedOut = failed && scanErrors.some(m => /zaman aşımı/i.test(String(m)));
-  const scanStatus = timedOut ? "TIMEOUT" : (failed || noData) ? "FAILED" : scanErrors.length ? "PARTIAL" : "COMPLETED";
-  const nowIso = new Date().toISOString();
-  const assetUpdate = { assetId, scanStatus, assetType, type: assetType, ...typeData, findings, healthLevel: finalHealthLevel, healthScore: finalHealthScore, confidence, status: finalStatus, latencyMs: Date.now() - scanStartedAt, lastCheck: nowIso, updatedAt: nowIso };
-  if (name) assetUpdate.name = String(name).slice(0, 200); if (targetUrl) assetUpdate.targetUrl = targetUrl.slice(0, 2048); assetUpdate.ownerId = uid; // sahip bilgisi yalnızca doğrulanmış oturumdan gelir
-  let saved = false, checkId = null, saveError = null;
-  if (db) {
-    try {
-      const ts = admin.firestore.FieldValue.serverTimestamp(); const doc = forFirestore({ ...assetUpdate, lastCheck: undefined, updatedAt: undefined });
-      await withTimeout((async () => {
-        await db.collection("assets").doc(assetId).set({ ...doc, target: typeData?.commonAnalysis?.target ?? targetUrl ?? null, scannedAt: ts, lastCheck: ts, updatedAt: ts, auto: false, nextScanAt: Date.now() + ALERTS.intervalMs(assetType), scanExtra: forFirestore(extra), ...(ACTIVE_PROBE_TYPES.includes(assetType) ? { authorizationConfirmed: true } : {}) }, { merge: true }); // scannedAt/target: Firestore'daki mevcut varlık belge yapısıyla uyum
-        const checkRef = db.collection("assetChecks").doc(); checkId = checkRef.id;
-        await checkRef.set(forFirestore({ assetId, checkId, type: assetType, targetUrl: targetUrl || null, errors: scanErrors, findings, healthScore: finalHealthScore, healthLevel: finalHealthLevel, confidence, latencyMs: Date.now() - scanStartedAt, status: finalStatus, scanStatus, ownerId: uid, scannerVersion: typeData?.analysisMeta?.scannerVersion || null, scores: typeData?.specificAnalysis?.scores || null, checkedAt: ts, ...(ACTIVE_PROBE_TYPES.includes(assetType) ? { authorizationConfirmed: true, authorizationIp: req.ip || null } : {}) }) );
-      })(), 8000, "Firestore");
-      saved = true;
-    } catch (e) { saveError = e?.message || "Firestore hatası"; console.error("Firestore kayıt hatası:", saveError); }
-  }
+  const out = await executeScan({ uid, assetId, assetType, handler, targetUrl, extra, name, ip: req.ip });
+  const { scanStatus, checkId, saved, saveError, scanErrors, assetUpdate } = out;
   if (scanStatus === "FAILED" || scanStatus === "TIMEOUT") {
     return res.status(scanStatus === "TIMEOUT" ? 504 : 502).json({ success: false, scanStatus, assetId, checkId, saved, error: scanStatus === "TIMEOUT" ? "Tarama zaman aşımına uğradı. Hedef yanıt vermiyor olabilir." : "Tarama tamamlanamadı. Hedefe ulaşılamadı veya analiz sırasında hata oluştu.", errors: scanErrors });
   }
@@ -2374,7 +2400,7 @@ app.all("/api/cron/scan", async (req, res) => {
   const secret = process.env.CRON_SECRET; if (!secret) return res.status(404).json({ success: false, error: "Bulunamadı" });
   const given = String(req.headers["x-cron-secret"] || req.query.key || ""); const a = Buffer.from(given), b = Buffer.from(secret);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(403).json({ success: false, error: "Yetkisiz" });
-  res.json({ success: true, ...(await runDueScans()) });
+  res.json({ success: true, ...(await runDueScans()), queue: await JOBS.tick().catch(() => null) });
 });
 // Otomatik taramaların sonuçlarını arayüze taşır: since (ms) sonrasında güncellenen varlıkların son sonucu
 app.get("/api/assets/latest", scanGuard, async (req, res) => {
@@ -2391,6 +2417,109 @@ app.get("/api/assets/latest", scanGuard, async (req, res) => {
   } catch (e) { console.error("latest:", e.message); res.status(503).json({ success: false, error: "Sonuçlar alınamadı" }); }
 });
 
+// ===== Toplu tarama kuyruğu (kalıcı) =====
+// İşler tek bir uzun HTTP isteğine bağlanmaz: POST /api/jobs işi kaydeder ve hemen döner; işleyici arka planda çalışır (jobs.js).
+// Firestore varsa durum (scanJobs / scanJobItems) sunucu yeniden başlasa da korunur; yoksa bellek deposu kullanılır ve persistent:false bildirilir.
+const nonRetriable = (code, message) => Object.assign(new Error(message), { code, retriable: false });
+async function queueScanItem(item) {
+  const uid = item.ownerId, assetType = item.type, handler = TYPE_HANDLERS[assetType], assetId = item.assetId;
+  if (!handler) throw nonRetriable("UNSUPPORTED_TYPE", `Desteklenmeyen tür: ${assetType}`);
+  if (ACTIVE_PROBE_TYPES.includes(assetType) && item.consent !== true) throw nonRetriable("CONSENT_REQUIRED", "Bu tarama türü için yetki beyanı gerekir.");
+  const host = hostOf(item.targetUrl); if (!host) throw nonRetriable("INVALID_TARGET", "Geçerli bir hedef adres yok");
+  try { await assertPublicHost(host); } catch (e) { throw nonRetriable("BLOCKED_TARGET", e.message); } // SSRF: özel/yerel/metadata adresleri
+  if (SEC.enforcePlans() && uid !== "dev-user" && !db && process.env.ALLOW_SCAN_WITHOUT_DB !== "true") throw nonRetriable("NO_DATABASE", "Sunucu yapılandırması eksik (veritabanı).");
+  let ent = null;
+  if (SEC.enforcePlans() && uid !== "dev-user" && db) {
+    try { ent = await payments.getEntitlement(uid); } catch (e) { throw Object.assign(new Error(e.message || "Paket bilgisi alınamadı"), { code: "ENTITLEMENT_UNAVAILABLE", retriable: true }); }
+    if (ent.plan === "expired") throw nonRetriable("PLAN_REQUIRED", "Deneme süresi bitti; paket gerekli.");
+  }
+  if (db) {
+    let claim; try { claim = await SEC.claimAsset(db, assetId, uid); } catch (e) { throw Object.assign(new Error("Veritabanına ulaşılamadı"), { code: "DB_UNAVAILABLE", retriable: true }); }
+    if (!claim.ok) throw nonRetriable("FORBIDDEN", claim.legacy ? "Bu kayıt sistem/eski veridir." : "Bu varlık size ait değil.");
+    if (ent) { const q = await SEC.checkAssetQuota(db, uid, ent.plan, claim.isNew); if (!q.ok) { if (claim.isNew) await db.collection("assets").doc(assetId).delete().catch(() => {}); throw nonRetriable("QUOTA_EXCEEDED", `Paket varlık limiti doldu (${q.limit}).`); } }
+  }
+  const out = await executeScan({ uid, assetId, assetType, handler, targetUrl: item.targetUrl, extra: item.extra || {}, name: item.name, ip: null });
+  if (out.scanStatus === "FAILED" || out.scanStatus === "TIMEOUT") throw Object.assign(new Error(out.scanStatus === "TIMEOUT" ? "Tarama zaman aşımına uğradı" : "Tarama tamamlanamadı"), { code: out.scanStatus === "TIMEOUT" ? "TIMEOUT" : "SCAN_FAILED", retriable: true });
+  return { scanStatus: out.scanStatus, summary: scanSummary(out, assetType) };
+}
+const JOBS = JOBLIB.createJobs({
+  store: db ? JOBLIB.firestoreStore(db) : JOBLIB.memoryStore(), scanItem: queueScanItem, metrics: METRICS,
+  config: { concurrency: SEC.int(process.env.JOB_CONCURRENCY, 3), perUser: SEC.int(process.env.JOB_PER_USER_CONCURRENCY, 2), timeoutMs: SCAN_TIMEOUT_MS, maxAttempts: SEC.int(process.env.JOB_MAX_ATTEMPTS, 3), maxItemsPerJob: SEC.int(process.env.JOB_MAX_ITEMS, 1000), maxActiveJobsPerUser: SEC.int(process.env.JOB_MAX_ACTIVE_PER_USER, 5), maxQueuedPerUser: SEC.int(process.env.JOB_MAX_QUEUED_PER_USER, 3000), backoffBaseMs: SEC.int(process.env.JOB_BACKOFF_MS, 30000) }
+});
+const HOST_TYPES = ["DOMAIN", "EMAIL", "SSL_CERTIFICATE", "HOSTING", "SERVER"];
+const URL_TYPES = ["WEBSITE", "WEB", "SEO", "SECURITY", "PERFORMANCE", "UPTIME", "API", "ANALYTICS"];
+function cleanBulkItem(x, authorized) {
+  if (!x || typeof x !== "object" || Array.isArray(x)) return { error: "Geçersiz kayıt" };
+  const assetId = x.assetId, type = String(x.type || "").toUpperCase();
+  if (typeof assetId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(assetId)) return { error: "assetId geçersiz" };
+  if (![...HOST_TYPES, ...URL_TYPES].includes(type)) return { error: `Toplu taramada desteklenmeyen tür: ${type}` };
+  if (ACTIVE_PROBE_TYPES.includes(type) && !authorized) return { error: "Bu tür için yetki beyanı (consent) gerekir" };
+  if (typeof x.target !== "string") return { error: "target metin olmalı" };
+  let targetUrl;
+  if (URL_TYPES.includes(type)) { const r = VALID.normalizeUrl(x.target); if (!r.ok) return { error: r.error }; targetUrl = r.url; }
+  else if (type === "SERVER" && net.isIP(x.target.trim())) targetUrl = x.target.trim();
+  else { const r = VALID.normalizeDomain(x.target); if (!r.ok) return { error: r.error }; targetUrl = r.domain; }
+  const extra = {}; if (type === "ANALYTICS" && typeof x.extra?.measurementId === "string" && /^G-[A-Z0-9]{4,20}$/i.test(x.extra.measurementId)) extra.measurementId = x.extra.measurementId;
+  const port = x.extra && Number.isInteger(x.extra.port) ? x.extra.port : null; if (port && port > 0 && port < 65536 && ["SSL_CERTIFICATE", "SERVER"].includes(type)) extra.port = port;
+  return { item: { assetId, type, targetUrl, name: typeof x.name === "string" && x.name.trim() ? x.name.trim().slice(0, 200) : (URL_TYPES.includes(type) ? hostOf(targetUrl) : targetUrl), extra, consent: authorized === true } };
+}
+const jobIpLimit = SEC.makeLimiter(SEC.int(process.env.JOB_IP_RATE_LIMIT, 1200), 5 * 60 * 1000);
+const jobReadLimit = SEC.makeLimiter(SEC.int(process.env.JOB_READ_RATE_LIMIT, 600), 5 * 60 * 1000);
+const jobWriteLimit = SEC.makeLimiter(SEC.int(process.env.JOB_WRITE_RATE_LIMIT, 20), 10 * 60 * 1000);
+const jobRead = [(req, res, next) => (jobIpLimit(req.ip) ? next() : tooMany(res)), scanGuard[1], (req, res, next) => (jobReadLimit(req.user.uid) ? next() : tooMany(res))];
+const jobWrite = [...jobRead, (req, res, next) => (jobWriteLimit(req.user.uid) ? next() : tooMany(res, "Çok fazla toplu işlem. Biraz bekleyin."))];
+const jobWrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { const code = e.status || 500; if (code >= 500) { console.error("jobs:", e.message); METRICS.recordError({ source: "jobs", status: code, path: req.path, message: e.message }); } res.status(code).json({ success: false, ...(e.code ? { code: e.code } : {}), error: code >= 500 ? "Sunucu hatası" : e.message }); } };
+const pubJob = (j) => ({ id: j.id, label: j.label, status: j.status, total: j.total, counts: j.counts, createdAt: j.createdAt, startedAt: j.startedAt, finishedAt: j.finishedAt, cancelRequested: !!j.cancelRequested, persistent: !!j.persistent });
+const jobId = (req) => { const id = String(req.params.id || ""); if (!/^job_[A-Za-z0-9_-]{6,40}$/.test(id)) throw Object.assign(new Error("Geçersiz iş kimliği"), { status: 400 }); return id; };
+
+app.post("/api/jobs", jobWrite, jobWrap(async (req, res) => {
+  const body = req.body || {}; if (!Array.isArray(body.items)) return res.status(400).json({ success: false, error: "items dizisi gerekli" });
+  const authorized = body.consent === true, seen = new Set(), items = [], rejected = [];
+  body.items.forEach((x, i) => { const r = cleanBulkItem(x, authorized); if (r.error) return rejected.push({ index: i, error: r.error }); if (seen.has(r.item.assetId)) return rejected.push({ index: i, error: "Aynı assetId iki kez gönderildi" }); seen.add(r.item.assetId); items.push(r.item); });
+  if (!items.length) return res.status(400).json({ success: false, error: "Geçerli hedef yok", rejected: rejected.slice(0, 50) });
+  if (SEC.enforcePlans() && req.user.uid !== "dev-user" && db) { const e = await payments.getEntitlement(req.user.uid).catch(() => null); if (e && e.plan === "expired") return res.status(402).json({ success: false, code: "PLAN_REQUIRED", error: "Deneme süreniz bitti. Devam etmek için bir paket seçin." }); }
+  const job = await JOBS.createJob({ ownerId: req.user.uid, items, label: typeof body.label === "string" ? body.label : "Toplu tarama", source: body.source === "domains-overview" ? "domains-overview" : "bulk" });
+  res.status(201).json({ success: true, job: pubJob(job), accepted: items.length, rejected: rejected.slice(0, 100), rejectedCount: rejected.length });
+}));
+app.get("/api/jobs", jobRead, jobWrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, persistent: JOBS._store.persistent, jobs: (await JOBS.listJobs(req.user.uid, Math.min(100, +req.query.limit || 30))).map(pubJob) }); }));
+app.get("/api/jobs/:id", jobRead, jobWrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, job: pubJob(await JOBS.getJob(jobId(req), req.user.uid)) }); }));
+app.get("/api/jobs/:id/items", jobRead, jobWrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, ...(await JOBS.queryItems(jobId(req), req.user.uid, req.query)) }); }));
+app.get("/api/jobs/:id/export.csv", jobRead, jobWrap(async (req, res) => {
+  const all = await JOBS.queryItems(jobId(req), req.user.uid, { ...req.query, page: 1, pageSize: 200 }); let rows = all.items;
+  for (let p = 2; rows.length < all.total && p <= 20; p++) rows = rows.concat((await JOBS.queryItems(jobId(req), req.user.uid, { ...req.query, page: p, pageSize: 200 })).items);
+  res.set({ "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="toplu-tarama.csv"' }); res.type("text/csv").send(JOBLIB.itemsToCsv(rows));
+}));
+app.post("/api/jobs/:id/cancel", jobWrite, jobWrap(async (req, res) => { const r = await JOBS.cancelJob(jobId(req), req.user.uid); res.json({ success: true, canceled: r.canceled, job: pubJob(r.job) }); }));
+app.post("/api/jobs/:id/retry", jobWrite, jobWrap(async (req, res) => { const ids = Array.isArray(req.body && req.body.itemIds) ? req.body.itemIds.filter((x) => typeof x === "string").slice(0, 1000) : null; res.json({ success: true, ...(await JOBS.retryItems(jobId(req), req.user.uid, { itemIds: ids, includeCanceled: req.body && req.body.includeCanceled === true })) }); }));
+app.post("/api/jobs/:id/items/cancel", jobWrite, jobWrap(async (req, res) => { const ids = Array.isArray(req.body && req.body.itemIds) ? req.body.itemIds.filter((x) => typeof x === "string").slice(0, 1000) : []; res.json({ success: true, ...(await JOBS.cancelItems(jobId(req), req.user.uid, ids)) }); }));
+
+// ===== Raporlar ve bileşik skor (AI'siz) =====
+app.get("/api/reports/period", scanGuard, jobWrap(async (req, res) => {
+  if (!db) return res.status(503).json({ success: false, error: "Veritabanı yapılandırılmamış" });
+  const type = req.query.type === "yearly" ? "yearly" : "monthly", year = parseInt(req.query.year, 10) || new Date().getUTCFullYear(), month = Math.min(12, Math.max(1, parseInt(req.query.month, 10) || new Date().getUTCMonth() + 1));
+  if (year < 2020 || year > 2100) return res.status(400).json({ success: false, error: "Geçersiz yıl" });
+  const snap = await db.collection("assetChecks").where("ownerId", "==", req.user.uid).limit(5000).get();
+  const checks = snap.docs.map((d) => { const x = d.data(); return { assetId: x.assetId, type: x.type, healthScore: x.healthScore, findings: x.findings, checkedAt: x.checkedAt && x.checkedAt.toMillis ? x.checkedAt.toMillis() : null }; });
+  res.json({ success: true, report: AI.buildPeriodReport(checks, { periodType: type, year, month }) });
+}));
+app.get("/api/scores/hosts", scanGuard, jobWrap(async (req, res) => {
+  if (!db) return res.status(503).json({ success: false, error: "Veritabanı yapılandırılmamış" });
+  const snap = await db.collection("assets").where("ownerId", "==", req.user.uid).limit(1000).get(); const by = new Map();
+  for (const d of snap.docs) { const a = d.data(); const h = hostOf(a.targetUrl || a.target || ""); if (!h) continue; if (!by.has(h)) by.set(h, []); by.get(h).push(a); }
+  res.json({ success: true, weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, hosts: [...by].map(([host, list]) => ({ host, ...SCORING.compositeForHost(list), assets: list.length })).sort((a, b) => (a.score ?? 101) - (b.score ?? 101)) });
+}));
+
+// ===== Yönetici paneli (rol sunucuda doğrulanır: admin.js) =====
+async function getHealthDetail() {
+  const p = payments.status(), mem = process.memoryUsage(); let fsState = { configured: !!db, reachable: null, latencyMs: null };
+  if (db) { const t0 = Date.now(); try { await withTimeout(db.collection("adminRoles").limit(1).get(), 4000, "Firestore"); fsState = { configured: true, reachable: true, latencyMs: Date.now() - t0 }; } catch (e) { fsState = { configured: true, reachable: false, latencyMs: Date.now() - t0, error: String(e.message).slice(0, 120) }; } }
+  return { version: SCANNER_VERSION, node: process.version, environment: SEC.isProd() ? "production" : "development", uptimeSeconds: Math.round(process.uptime()), memoryMB: { rss: Math.round(mem.rss / 1048576), heapUsed: Math.round(mem.heapUsed / 1048576) },
+    firebase: { adminReady: !!firebaseStatus.ok, mode: firebaseStatus.mode || null }, firestore: fsState, auth: { verifiesTokens: !!p.auth },
+    payments: { stripe: p.stripe, iyzico: p.iyzico, freeMode: p.free }, autoScan: { enabled: AUTO_ENABLED && !!db, running: autoRunning, cronEndpoint: !!process.env.CRON_SECRET },
+    rdap: { bootstrapLoaded: rdapBoot.ok === true }, scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP }, ai: AI.status(), devBypassActive: SEC.devBypass() };
+}
+const ADMIN = SRV("admin")({ app, db, admin, verifyUser: payments.verifyUser, SEC, metrics: METRICS, jobs: JOBS, getHealth: getHealthDetail, platform: async () => ({ ai: AI.describe(), billing: BILLING.describe(PLANS), scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, legacyWebWeights: SCORING.WEB_LEGACY_WEIGHTS } }), getEntitlement: db ? payments.getEntitlement : null });
+
 app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico, free: p.free }, timestamp: new Date().toISOString() }); });
 // JSON ayrıştırma vb. hatalar için düzgün yanıt
 // Tüm rotalardan SONRA: bilinmeyen adresler için JSON 404 (Python sürümüyle aynı biçim)
@@ -2398,10 +2527,10 @@ app.use((q, r) => r.status(404).json({ success: false, error: "Bulunamadı" }));
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   const code = err.status && err.status >= 400 && err.status < 600 ? err.status : 400;
-  if (code >= 500) console.error("Sunucu hatası:", err && err.stack || err);
+  if (code >= 500) { console.error("Sunucu hatası:", err && err.stack || err); METRICS.recordError({ source: "express", status: code, path: req.path, message: err && err.message }); }
   res.status(code).json({ success: false, error: err.type === "entity.parse.failed" ? "Geçersiz JSON" : err.type === "entity.too.large" ? "İstek çok büyük" : code >= 500 ? "Sunucu hatası" : (err.message || "İstek hatası") });
 });
-process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e && e.stack || e));
+process.on("unhandledRejection", (e) => { console.error("unhandledRejection:", e && e.stack || e); METRICS.recordError({ source: "unhandledRejection", message: e && e.message || e }); });
 // Düşman hedeflerden gelen sahipsiz soket hataları süreci düşürmesin; ama kısa sürede tekrarlanıyorsa süreç bozuktur -> çık, Render yeniden başlatsın.
 const crashTimes = [];
 process.on("uncaughtException", (e) => {
@@ -2413,8 +2542,9 @@ if (require.main === module) {
   if (firebaseStatus.ok) console.log("Firebase hazır: proje " + firebaseStatus.projectId + " (" + firebaseStatus.mode + ")");
   if (SEC.isProd() && !db) console.warn("UYARI: Üretim modunda Firebase yapılandırılmamış; kimlik doğrulama gerektiren uç noktalar 503 döndürür.");
   if (SEC.devBypass()) console.warn("UYARI: DEV_AUTH_BYPASS aktif (yalnızca geliştirme). Üretimde ASLA kullanmayın.");
+  if (!process.env.NODE_TEST) JOBS.start();
   const server = app.listen(PORT, () => console.log(`Scanner ${SCANNER_VERSION} DEEP ${PORT} portunda (${SEC.isProd() ? "üretim" : "geliştirme"})`));
-  process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor"); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
+  process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor"); JOBS.stop().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
 }
 module.exports = app;
-module.exports._internals = { isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle };
+module.exports._internals = { JOBS, METRICS, executeScan, queueScanItem, scanSummary, rdapDate, toDateOrNull, cleanBulkItem, isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle };

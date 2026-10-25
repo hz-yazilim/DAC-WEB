@@ -378,11 +378,11 @@ function catPage(k){
  :`<form data-form="add" data-cat="${k}"><input class="field" name="t" placeholder="${v.ph}" required autocomplete="off"><input class="field" name="name" placeholder="Görünen ad (opsiyonel)">${k==='analytics'?'<input class="field" name="measurementId" placeholder="Ölçüm Kimliği (G-XXXXXXXXXX, opsiyonel)" autocomplete="off"><input class="field" name="propertyName" placeholder="Özellik (property) adı (opsiyonel)">':''}<button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form>`;
  return`<h2>${v.label}</h2><p class="sub">${v.desc}</p>
  <div class="card info"><b>${ic('list-checks','style="color:'+v.c+'"')} Ne taranır?</b><ul class="ul">${v.what.map(x=>`<li>${x}</li>`).join('')}</ul><div class="why"><b>Neden önemli?</b> ${v.why}</div>${v.hint?`<div class="hint" style="margin-top:8px">${ic('info')} ${v.hint}</div>`:''}</div>
- <div class="card"><b>Yeni ${v.label} ekle</b><div style="height:12px"></div>${form}</div>
+ <div class="card"><b>Yeni ${v.label} ekle</b><div style="height:12px"></div>${form}</div>${k==='domain'?domExtra():''}
  <div class="card"><div class="mh"><b>Varlıklar</b><span class="badge mu">${list.length}</span></div>${list.length?list.map(assetRow).join(''):`<div class="empty">Bu kategoride henüz varlık yok</div>`}</div>`;
 }
 function assets(){const q=($('#q')?.value||'').toLowerCase();const l=S.assets.filter(a=>!q||(a.name+a.target).toLowerCase().includes(q));
- return`<h2>Varlıklarım</h2><p class="sub">${S.assets.length} varlık</p><div class="card">${l.length?l.map(assetRow).join(''):`<div class="empty">Varlık yok. Sol menüden bir kategori seçip ekleyin.</div>`}</div>`}
+ return`<div class="mh"><h2>Varlıklarım</h2><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button></div><p class="sub">${S.assets.length} varlık</p><div class="card">${l.length?l.map(assetRow).join(''):`<div class="empty">Varlık yok. Sol menüden bir kategori seçip ekleyin.</div>`}</div>`}
 function history(){return`<div class="mh"><div><h2>Tarama Geçmişi</h2><p class="sub">${S.scans.length} kayıt • bu pakette son ${planState().p.history}</p></div>${S.scans.length?`<button class="btn s d" data-act="clearhist">Temizle</button>`:''}</div><div class="card">${S.scans.length?S.scans.map(scanRow).join(''):`<div class="empty">Henüz tarama yok</div>`}</div>`}
 function renewals(){
  const l=renewItems(),tot=costTotals();
@@ -452,7 +452,7 @@ function settings(){
  <div class="card"><form data-form="billing"><b>${ic('receipt')} Fatura bilgileri</b><div class="hint">TL ödemesi (iyzico) için ad soyad, adres ve şehir zorunludur.</div><div style="height:10px"></div>
  ${f('name','Ad Soyad','Ali Veli')}${f('company','Şirket ünvanı (opsiyonel)')}
  <div class="row2"><div>${f('email','Fatura e-postası','fatura@sirket.com','email')}</div><div>${f('phone','Telefon','+90 5xx xxx xx xx','tel')}</div></div>
- ${f('taxId','TC Kimlik / Vergi No','11 haneli')}${f('address','Adres','Mahalle, cadde, no')}
+ ${f('taxId','Vergi No (isteğe bağlı)','10 haneli')}${f('address','Adres','Mahalle, cadde, no')}
  <div class="row2"><div>${f('city','Şehir','İstanbul')}</div><div>${f('zip','Posta kodu')}</div></div>
  ${f('country','Ülke','Turkey')}
  <button class="btn p w" type="submit">Fatura bilgilerini kaydet</button></form></div>
@@ -763,8 +763,9 @@ function showDetail(id){
 }
 
 /* ---------- ana render ---------- */
-const NAV=()=>[['GENEL',[['dash','Genel Bakış','layout-grid']]],...GROUPS.map(([g,l])=>[l,Object.entries(CATS).filter(([,v])=>v.g===g).map(([k,v])=>['cat/'+k,v.label,v.icon])]),
- ['YÖNETİM',[['assets','Varlıklarım','database'],['history','Tarama Geçmişi','history'],['renewals','Yenileme Takvimi','calendar-clock'],['reports','Raporlar','bar-chart-3'],['team','Ekip Yönetimi','users'],['projects','Müşteri Projeleri','briefcase'],['plan','Paket ve Faturalandırma','credit-card'],['settings','Ayarlar','settings']]]];
+const NAV0=()=>[['GENEL',[['dash','Genel Bakış','layout-grid']]],...GROUPS.map(([g,l])=>[l,Object.entries(CATS).filter(([,v])=>v.g===g).map(([k,v])=>['cat/'+k,v.label,v.icon])]),
+ ['YÖNETİM',[['assets','Varlıklarım','database'],['history','Tarama Geçmişi','history'],['renewals','Yenileme Takvimi','calendar-clock'],['reports','Raporlar','bar-chart-3'],['team','Ekip Yönetimi','users'],['projects','Müşteri Projeleri','briefcase'],['bulk','Toplu Tarama','list-checks'],['plan','Paket ve Faturalandırma','credit-card'],['settings','Ayarlar','settings']]]];
+const NAV=()=>{const n=NAV0();if(BK.isAdmin)n.push(['SİSTEM',[['admin','Yönetici Paneli','shield']]]);return n};
 const icons=()=>window.lucide&&lucide.createIcons();
 function render(){
  if(!S)return;
@@ -776,8 +777,8 @@ function render(){
  <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="logout">${ic('log-out')} Çıkış</button></div></div></div>`;
  $('#av').textContent=S.settings.org.slice(0,2).toUpperCase();
  $('#dot').style.display=alerts().length?'block':'none';
- $('#view').innerHTML=p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='settings'?settings():dash();
- icons();
+ $('#view').innerHTML=p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='bulk'?bulkPage():p==='domains'?domainsPage():p==='admin'&&BK.isAdmin?adminPage():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='settings'?settings():dash();
+ icons();bkPoll();
 }
 
 /* ---------- olaylar ---------- */
@@ -867,7 +868,7 @@ window.dacStart=u=>{
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.assets=Array.isArray(S.assets)?S.assets.filter(a=>a&&typeof a==='object'&&CATS[a.cat]&&typeof a.id==='string'):[];S.scans=Array.isArray(S.scans)?S.scans.filter(x=>x&&!x.mock):[];S.team=Array.isArray(S.team)?S.team:[];S.projects=Array.isArray(S.projects)?S.projects:[];
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
- syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();
+ syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();
 };
 async function exportAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');busy(true);try{const r=await fetch(api+'/api/account/export',{headers:await authH()});const j=await r.json();if(!r.ok||!j.success)throw new Error(j.error||'Dışa aktarılamadı');dl('dac-verilerim-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(j,null,2));toast('Verileriniz indirildi')}catch(e){toast(e.message,'err')}busy(false)}
 async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');
@@ -878,4 +879,183 @@ async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu a
   toast('Hesabınız silindi');setTimeout(()=>{try{window.dacLogout&&window.dacLogout()}catch{}location.hash='';location.reload()},800)}catch(e){toast(e.message,'err')}busy(false)}
 // Üyelik onayı (giriş ekranındaki kutu) sunucuya kayıt olarak iletilir
 async function sendConsents(){let v=null;try{v=localStorage.getItem('dac_terms_pending')}catch{}if(!v)return;const api=apiUrl();if(!api)return;try{const h=await authH();if(!h.Authorization)return;for(const type of['terms','privacy']){const r=await fetch(api+'/api/consent',{method:'POST',headers:{'Content-Type':'application/json',...h},body:JSON.stringify({type,version:v})});if(!r.ok)return}localStorage.removeItem('dac_terms_pending')}catch{}}
-window.dacStop=()=>{syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+window.dacStop=()=>{BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+
+/* ---------- toplu tarama + admin (V13.1) ---------- */
+const BK={isAdmin:false,timer:null,jobs:[],job:null,rows:[],total:0,page:1,pageSize:50,q:'',st:'ALL',sort:'queuedAt',order:'asc',sel:new Set(),tab:'overview',adm:{},domJob:null,busy:false};
+const ST={PENDING:'Bekliyor',RETRYING:'Yeniden denenecek',RUNNING:'Çalışıyor',COMPLETED:'Tamamlandı',PARTIAL:'Kısmen tamamlandı',FAILED:'Başarısız',CANCELED:'İptal edildi'};
+const stTone=x=>x==='COMPLETED'?'ok':x==='FAILED'?'bd':x==='PARTIAL'||x==='RETRYING'?'wn':'mu';
+const BULKCATS=[['domain','Domain'],['ssl','SSL Sertifikası'],['hosting','Hosting'],['web','Web Sitesi'],['seo','SEO'],['performance','Performans'],['uptime','Uptime']];
+async function bkApi(method,path,body){
+ const api=apiUrl();if(!api)throw new Error('Sunucu adresi yok');
+ const r=await fetch(api+path,{method,headers:{'Content-Type':'application/json',...await authH()},body:body?JSON.stringify(body):undefined});
+ let j=null;try{j=await r.json()}catch{}
+ if(!r.ok||!j||j.success===false){const e=new Error((j&&j.error)||'İstek başarısız ('+r.status+')');e.status=r.status;e.code=j&&j.code;throw e}
+ return j;
+}
+async function bkInit(){try{const j=await bkApi('GET','/api/me/admin');if(j.admin&&!BK.isAdmin){BK.isAdmin=true;render()}}catch{}}
+const bkDomain=v=>{v=String(v).trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//,'').split(/[\/?#]/)[0].replace(/:\d{1,5}$/,'').replace(/\.$/,'').replace(/^www\./,'');return /^(?=.{4,253}$)([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$/.test(v)&&!/^[\d.]+$/.test(v)?v:null};
+const daysLeft=a=>{const e=a.result?.specificAnalysis?.registration?.expiresAt;if(!e)return null;const t=new Date(e).getTime();return isNaN(t)?null:Math.ceil((t-Date.now())/864e5)};
+const dayTxt=d=>d==null?'Bilinmiyor':d<0?Math.abs(d)+' gün geçti':d+' gün';
+
+/* ortak yenileme: varlıkları ve tarama durumlarını sunucudan çeker; YENİ TARAMA BAŞLATMAZ */
+async function refreshAll(){
+ busy(true);
+ try{await pullLatest(true);await bkLoadView()}catch(e){toast(e.message,'err')}
+ busy(false);render();toast('Güncellendi (yeni tarama başlatılmadı)');
+}
+async function bkLoadView(){
+ const r=(location.hash.slice(1)||'dash').split('/')[0];
+ if(r==='bulk'||r==='domains'){const j=await bkApi('GET','/api/jobs?limit=30');BK.jobs=j.jobs;const cur=BK.job?BK.jobs.find(x=>x.id===BK.job):null;if(r==='bulk'&&cur)await bkItems();}
+ if(r==='admin')await admLoad(BK.tab);
+}
+async function bkItems(){
+ if(!BK.job)return;const qs=new URLSearchParams({page:BK.page,pageSize:BK.pageSize,status:BK.st,q:BK.q,sort:BK.sort,order:BK.order});
+ const j=await bkApi('GET','/api/jobs/'+encodeURIComponent(BK.job)+'/items?'+qs);BK.rows=j.items;BK.total=j.total;
+}
+function bkPoll(){
+ const r=(location.hash.slice(1)||'dash').split('/')[0],on=['bulk','domains','admin'].includes(r);
+ if(!on){clearInterval(BK.timer);BK.timer=null;return}
+ if(BK.timer)return;
+ BK.timer=setInterval(async()=>{
+  const rr=(location.hash.slice(1)||'dash').split('/')[0];if(!['bulk','domains','admin'].includes(rr)||document.hidden||BK.busy)return;
+  try{await bkLoadView();const active=BK.jobs.some(j=>['PENDING','RUNNING'].includes(j.status));
+   if(rr==='domains'&&BK.domJob&&!active){await pullLatest(true);BK.domJob=null;}
+   if(rr==='admin'){admPaint()}else bkPaint();
+   if(rr!=='admin'&&!active&&BK.wasActive){BK.wasActive=false;await pullLatest(true);render()}BK.wasActive=active}catch{}
+ },3000);
+}
+function bkPaint(){const el=$('#bk-body');if(el)el.innerHTML=(location.hash.slice(1)||'').startsWith('domains')?domBody():bulkBody();icons()}
+
+/* --- Domain: Genel Tarama --- */
+function domExtra(){const n=S.assets.filter(a=>a.cat==='domain').length;return`<div class="card"><b>${ic('radar')} Genel Tarama</b><div class="hint" style="margin:6px 0 10px">Ekli ${n} domaini sırayla tarar ve bitişe en az kalandan en çok kalana doğru listeler. Tek tek varlık taramasındaki ayrıntılı analiz değişmez.</div><div class="btns"><button class="btn p" data-act="bk-domscan"${n?'':' disabled'}>${ic('radar')} Genel Tarama</button><a class="btn s" href="#domains">Listeyi gör</a><a class="btn s" href="#bulk">Toplu domain ekle</a></div></div>`}
+function domainsPage(){return`<div class="mh"><h2>Domain Bitiş Süreleri</h2><div class="btns"><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button><button class="btn p" data-act="bk-domscan">${ic('radar')} Genel Tarama</button></div></div><p class="sub">Bitişe en yakından en uzağa doğru sıralıdır. Bitiş tarihi yalnızca kayıt kuruluşunun (RDAP) verisinden gelir.</p><div id="bk-body">${domBody()}</div>`}
+function domBody(){
+ const doms=S.assets.filter(a=>a.cat==='domain').map(a=>({a,d:daysLeft(a)})).sort((x,y)=>(x.d==null)-(y.d==null)||(x.d??0)-(y.d??0));
+ const j=BK.jobs.filter(x=>x.source!==undefined||true).find(x=>BK.domJob&&x.id===BK.domJob);
+ const prog=j?`<div class="card"><div class="mh"><b>Tarama sürüyor</b><span class="badge ${stTone(j.status)}">${esc(ST[j.status]||j.status)}</span></div>${bkBar(j)}</div>`:'';
+ if(!doms.length)return prog+'<div class="card"><div class="empty">Ekli domain yok. Domain sayfasından ekleyin.</div></div>';
+ return prog+`<div class="card">${doms.map(({a,d})=>`<div class="item"><div class="ico" style="color:${CATS.domain.c}">${ic('link-2')}</div><div class="g"><b>${esc(a.name)}</b></div><span class="badge ${d==null?'mu':dayTone(d)}">${esc(dayTxt(d))}</span></div>`).join('')}</div>`;
+}
+async function bkDomScan(){
+ if(!gate())return;const doms=S.assets.filter(a=>a.cat==='domain');if(!doms.length)return toast('Ekli domain yok','warn');
+ busy(true);BK.busy=true;
+ try{let last=null;for(let i=0;i<doms.length;i+=1000){const items=doms.slice(i,i+1000).map(a=>({assetId:a.id,type:'DOMAIN',target:a.target,name:a.name}));const j=await bkApi('POST','/api/jobs',{items,label:'Genel domain taraması',source:'domains-overview'});last=j.job.id}
+  BK.domJob=last;BK.wasActive=true;toast('Genel tarama kuyruğa alındı');location.hash='domains';await bkLoadView()}
+ catch(e){toast(e.status===402?'Paket gerekli: '+e.message:e.message,'err');if(e.status===402)location.hash='plan'}
+ BK.busy=false;busy(false);render();
+}
+
+/* --- Toplu tarama sayfası --- */
+const bkBar=j=>{const done=j.total-j.counts.PENDING-j.counts.RETRYING-j.counts.RUNNING,pc=j.total?Math.round(done/j.total*100):0;return`<div class="bkbar"><i style="width:${pc}%"></i></div><div class="hint">${done}/${j.total} bitti • ${j.counts.RUNNING} çalışıyor • ${j.counts.PENDING+j.counts.RETRYING} bekliyor • ${j.counts.FAILED} başarısız</div>`};
+function bulkPage(){
+ const opts=BULKCATS.map(([k,l])=>`<option value="${k}">${esc(l)}</option>`).join('');
+ return`<div class="mh"><h2>Toplu Tarama</h2><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button></div><p class="sub">Yüzlerce hedefi tek seferde ekleyin. İşler sunucuda sırayla çalışır; sayfayı kapatabilirsiniz.</p>
+ <div class="card"><form data-bkform="import"><b>Toplu ekle</b><div style="height:10px"></div><select class="field" name="cat">${opts}</select>
+ <textarea class="field" name="text" rows="6" placeholder="Her satıra bir adres (veya virgülle ayırın). CSV de yapıştırabilirsiniz." required></textarea>
+ <input class="field" type="file" accept=".csv,.txt,text/plain,text/csv" data-bkfile>
+ <button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form></div>
+ <div id="bk-body">${bulkBody()}</div>`;
+}
+function bulkBody(){
+ const jl=BK.jobs.length?BK.jobs.map(j=>`<div class="item"><div class="g"><b>${esc(j.label)}</b><span>${esc(fmt(j.createdAt))} • ${j.total} hedef${j.persistent?'':' • kalıcı değil'}</span>${bkBar(j)}</div><span class="badge ${stTone(j.status==='PENDING'||j.status==='RUNNING'?'':j.status)}">${esc(ST[j.status]||j.status)}</span><div class="acts"><button class="btn s" data-act="bk-open" data-id="${esc(j.id)}">Aç</button>${['PENDING','RUNNING'].includes(j.status)?`<button class="btn s d" data-act="bk-cancel" data-id="${esc(j.id)}">İptal</button>`:''}</div></div>`).join(''):'<div class="empty">Henüz toplu iş yok</div>';
+ return`<div class="card"><div class="mh"><b>İşler</b><span class="badge mu">${BK.jobs.length}</span></div>${jl}</div>${BK.job?bkDetail():''}`;
+}
+function bkDetail(){
+ const j=BK.jobs.find(x=>x.id===BK.job);if(!j)return'';const pages=Math.max(1,Math.ceil(BK.total/BK.pageSize));
+ const chips=Object.entries(j.counts).filter(([,n])=>n>0).map(([k,n])=>`<span class="badge ${stTone(k)}">${esc(ST[k]||k)}: ${n}</span>`).join(' ');
+ const so=[['queuedAt','Sıra'],['name','Ad'],['status','Durum'],['score','Skor'],['remainingDays','Kalan gün'],['duration','Süre']].map(([v,l])=>`<option value="${v}"${BK.sort===v?' selected':''}>${esc(l)}</option>`).join('');
+ const fo=['ALL','PENDING','RUNNING','COMPLETED','PARTIAL','FAILED','CANCELED'].map(v=>`<option value="${v}"${BK.st===v?' selected':''}>${esc(v==='ALL'?'Tümü':ST[v])}</option>`).join('');
+ const rows=BK.rows.map(r=>`<div class="item"><input type="checkbox" data-bksel="${esc(r.id)}"${BK.sel.has(r.id)?' checked':''} aria-label="Seç"><div class="g"><b>${esc(r.name)}</b><span>${esc(r.targetUrl)}${r.error?' • '+esc(r.error.message):''}${r.attempts>1?' • '+r.attempts+'. deneme':''}</span></div>${r.result&&r.result.remainingDays!=null?`<span class="badge ${dayTone(r.result.remainingDays)}">${esc(dayTxt(r.result.remainingDays))}</span>`:''}${r.result&&r.result.score!=null?`<span class="badge ${tone(r.result.score)}">${r.result.score}/100</span>`:''}<span class="badge ${stTone(r.status)}">${esc(ST[r.status]||r.status)}</span></div>`).join('')||'<div class="empty">Kayıt yok</div>';
+ return`<div class="card"><div class="mh"><b>${esc(j.label)}</b><div class="btns"><button class="btn s" data-act="bk-csv">${ic('download')} CSV</button><button class="btn s" data-act="bk-retry">${ic('rotate-cw')} Seçilenleri yeniden dene</button><button class="btn s d" data-act="bk-itemcancel">Seçilenleri iptal et</button></div></div><div style="margin:8px 0">${chips}</div>
+ <div class="row2"><input class="field" data-bkq placeholder="Ara (ad veya adres)" value="${esc(BK.q)}"><select class="field" data-bkst>${fo}</select></div>
+ <div class="row2"><select class="field" data-bksort>${so}</select><button class="btn s" data-act="bk-order">${BK.order==='asc'?'Artan ↑':'Azalan ↓'}</button></div>
+ <label class="hint"><input type="checkbox" data-bkall> Bu sayfadakilerin tümünü seç (${BK.sel.size} seçili)</label>${rows}
+ <div class="mh" style="margin-top:10px"><button class="btn s" data-act="bk-prev"${BK.page<=1?' disabled':''}>Önceki</button><span class="hint">Sayfa ${BK.page}/${pages} • ${BK.total} kayıt</span><button class="btn s" data-act="bk-next"${BK.page>=pages?' disabled':''}>Sonraki</button></div></div>`;
+}
+async function bkImport(f){
+ if(!gate())return;const d=Object.fromEntries(new FormData(f)),cat=d.cat,api=CATS[cat].api,seen=new Set(),items=[];let bad=0,existing=0,added=0;
+ const cells=String(d.text||'').split(/[\n,;\t]/).map(x=>x.trim().replace(/^"|"$/g,'')).filter(Boolean);
+ if(cells.length&&/^(domain|alan ?ad[ıi]|host|url|site)$/i.test(cells[0]))cells.shift();
+ if(cells.length>2000)return toast('En fazla 2000 hedef girin','err');
+ const ps=planState(),room=limitOf(ps)-S.assets.length;
+ for(const raw of cells){const host=bkDomain(raw);if(!host){bad++;continue}
+  const target=URLCATS.includes(cat)?proto(raw.includes('/')?raw:host):host,key=normKey(cat,target);if(seen.has(key))continue;seen.add(key);
+  let a=S.assets.find(x=>x.cat===cat&&x.key===key);
+  if(a)existing++;else{if(added>=room){bad++;continue}a={id:uid(),cat,target:host,key,name:host,extra:{},createdAt:Date.now()};S.assets.push(a);added++}
+  items.push({assetId:a.id,type:api,target:URLCATS.includes(cat)?target:host,name:a.name})}
+ if(!items.length){return toast(bad?'Geçerli hedef bulunamadı ('+bad+' hatalı veya limit dışı)':'Hedef yok','err')}
+ save();busy(true);BK.busy=true;
+ try{let last=null;for(let i=0;i<items.length;i+=1000){const j=await bkApi('POST','/api/jobs',{items:items.slice(i,i+1000),label:'Toplu '+CATS[cat].label,source:'bulk'});last=j.job.id}
+  BK.job=last;BK.page=1;BK.sel=new Set();BK.wasActive=true;toast(`${items.length} hedef kuyruğa alındı (${added} yeni, ${existing} mevcut, ${bad} atlandı)`);f.reset();await bkLoadView()}
+ catch(e){toast(e.message,'err');if(e.status===402)location.hash='plan'}
+ BK.busy=false;busy(false);render();
+}
+document.addEventListener('submit',e=>{const f=e.target.closest('[data-bkform]');if(!f)return;e.preventDefault();if(f.dataset.bkform==='import')bkImport(f)});
+document.addEventListener('change',async e=>{
+ const t=e.target;
+ if(t.matches('[data-bkfile]')){const file=t.files&&t.files[0];if(!file)return;if(file.size>1e6)return toast('Dosya 1 MB'+"'"+'dan küçük olmalı','err');const r=new FileReader();r.onload=()=>{const ta=$('[name=text]');if(ta)ta.value=String(r.result||'')};r.readAsText(file)}
+ else if(t.matches('[data-bkst]')){BK.st=t.value;BK.page=1;await bkItems().catch(x=>toast(x.message,'err'));bkPaint()}
+ else if(t.matches('[data-bksort]')){BK.sort=t.value;BK.page=1;await bkItems().catch(x=>toast(x.message,'err'));bkPaint()}
+ else if(t.matches('[data-bksel]')){t.checked?BK.sel.add(t.dataset.bksel):BK.sel.delete(t.dataset.bksel)}
+ else if(t.matches('[data-bkall]')){BK.rows.forEach(r=>t.checked?BK.sel.add(r.id):BK.sel.delete(r.id));bkPaint()}
+});
+document.addEventListener('input',e=>{if(e.target.matches('[data-bkq]')){clearTimeout(BK.qt);const v=e.target.value;BK.qt=setTimeout(async()=>{BK.q=v;BK.page=1;await bkItems().catch(()=>{});bkPaint();const i=$('[data-bkq]');if(i){i.focus();i.setSelectionRange(v.length,v.length)}},350)}});
+document.addEventListener('click',async e=>{
+ const b=e.target.closest('[data-act^="bk-"],[data-act^="adm-"]');if(!b)return;const act=b.dataset.act,id=b.dataset.id;
+ try{
+  if(act==='bk-refresh')return refreshAll();
+  if(act==='bk-domscan')return bkDomScan();
+  if(act==='bk-open'){BK.job=id;BK.page=1;BK.sel=new Set();await bkItems();return bkPaint()}
+  if(act==='bk-prev'||act==='bk-next'){BK.page+=act==='bk-next'?1:-1;await bkItems();return bkPaint()}
+  if(act==='bk-order'){BK.order=BK.order==='asc'?'desc':'asc';await bkItems();return bkPaint()}
+  if(act==='bk-cancel'){if(!confirm('Bekleyen taramalar iptal edilsin mi?'))return;const j=await bkApi('POST','/api/jobs/'+encodeURIComponent(id)+'/cancel');toast(j.canceled+' tarama iptal edildi');await bkLoadView();return bkPaint()}
+  if(act==='bk-retry'){const ids=[...BK.sel];if(!ids.length)return toast('Önce kayıt seçin','warn');const j=await bkApi('POST','/api/jobs/'+encodeURIComponent(BK.job)+'/retry',{itemIds:ids,includeCanceled:true});toast(j.requeued+' kayıt yeniden sıraya alındı (yalnızca başarısız/iptal edilenler)');BK.sel=new Set();await bkLoadView();return bkPaint()}
+  if(act==='bk-itemcancel'){const ids=[...BK.sel];if(!ids.length)return toast('Önce kayıt seçin','warn');const j=await bkApi('POST','/api/jobs/'+encodeURIComponent(BK.job)+'/items/cancel',{itemIds:ids});toast(j.canceled+' kayıt iptal edildi');BK.sel=new Set();await bkLoadView();return bkPaint()}
+  if(act==='bk-csv'){const qs=new URLSearchParams({status:BK.st,q:BK.q,sort:BK.sort,order:BK.order});const r=await fetch(apiUrl()+'/api/jobs/'+encodeURIComponent(BK.job)+'/export.csv?'+qs,{headers:await authH()});if(!r.ok)throw new Error('CSV indirilemedi');return dl('toplu-tarama.csv',await r.text(),'text/csv')}
+  if(act.startsWith('adm-'))return admAct(act,id,b)
+ }catch(x){toast(x.message,'err')}
+});
+
+/* --- Yönetici paneli (tüm veriler sunucudan; gerçek veri yoksa "veri yok" yazılır) --- */
+const ADMTABS=[['overview','Genel Bakış'],['users','Kullanıcılar'],['jobs','Tarama Kuyruğu'],['errors','Sistem Hataları'],['audit','İşlem Kayıtları'],['admins','Yetkili Hesaplar'],['health','Sağlık'],['platform','AI ve Altyapı']];
+const admPath={overview:'/api/admin/overview',users:'/api/admin/users',jobs:'/api/admin/jobs',errors:'/api/admin/errors',audit:'/api/admin/audit',admins:'/api/admin/admins',health:'/api/admin/health',platform:'/api/admin/platform'};
+async function admLoad(tab){BK.tab=tab;const qs=tab==='users'?'?'+new URLSearchParams({q:BK.adm.uq||'',status:BK.adm.us||'all'}):'';try{BK.adm[tab]=await bkApi('GET',admPath[tab]+qs);BK.adm.err=null}catch(e){BK.adm.err=e.message}}
+function adminPage(){if(!BK.adm[BK.tab]&&!BK.adm.err)admLoad(BK.tab).then(admPaint);return`<div class="mh"><h2>Yönetici Paneli</h2><button class="btn s" data-act="adm-refresh">${ic('refresh-cw')} Yenile</button></div><div class="bktabs">${ADMTABS.map(([k,l])=>`<button class="btn s${BK.tab===k?' p':''}" data-act="adm-tab" data-id="${k}">${esc(l)}</button>`).join('')}</div><div id="adm-body">${admBody()}</div>`}
+function admPaint(){const el=$('#adm-body');if(el){el.innerHTML=admBody();icons()}}
+const av=x=>x&&x.available===false?`<span class="hint">Veri yok: ${esc(x.reason||'')}</span>`:x&&x.value!=null?String(x.value):'-';
+const kv=(l,v)=>`<div class="item"><div class="g"><b>${esc(l)}</b></div><span>${v}</span></div>`;
+const ms=x=>x==null?'-':x+' ms';
+function admBody(){
+ const d=BK.adm[BK.tab];if(BK.adm.err)return`<div class="card"><div class="empty">${esc(BK.adm.err)}</div></div>`;if(!d)return'<div class="card"><div class="empty">Yükleniyor…</div></div>';
+ if(BK.tab==='overview'){const u=d.users,a=d.api,q=d.queue,sc=d.scans,h=d.health||{};const lat=a.latencyMs||{};
+  return`<div class="card">${kv('Toplam kullanıcı',u.available===false?av(u):u.total)}${kv('Aktif / devre dışı',u.available===false?'-':u.active+' / '+u.disabled)}${kv('Son 30 gün aktif',u.available===false?'-':u.activeLast30Days)}${kv('Kayıtlı varlık',av(d.assets))}</div>
+  <div class="card"><b>Taramalar (kalıcı)</b>${kv('Toplam',av(sc.total))}${kv('Son 24 saat',av(sc.last24h))}${kv('Başarılı',av(sc.completed))}${kv('Kısmen',av(sc.partial))}${kv('Başarısız',av(sc.failed))}${kv('Zaman aşımı',av(sc.timedOut))}</div>
+  <div class="card"><b>Kuyruk</b>${kv('Bekleyen',q.pending)}${kv('Devam eden',q.running)}${kv('Tamamlanan',q.items.COMPLETED)}${kv('Kısmen tamamlanan',q.items.PARTIAL)}${kv('Başarısız',q.items.FAILED)}${kv('İptal edilen',q.items.CANCELED)}${kv('Kalıcı depo',q.engine&&q.engine.persistent?'Evet (Firestore)':'<b>Hayır (bellek)</b>')}</div>
+  <div class="card"><b>API (son ${a.windowMinutes} dk, yeniden başlayınca sıfırlanır)</b>${kv('İstek',a.requests)}${kv('P50',ms(lat.p50))}${kv('P95',ms(lat.p95))}${kv('P99',ms(lat.p99))}${kv('5xx hata oranı',a.errorRate5xx==null?'-':'%'+a.errorRate5xx)}${kv('Kuyruk bekleme P95',ms(d.timings.queueWaitMs&&d.timings.queueWaitMs.p95))}${kv('Tarama süresi P95',ms(d.timings.scanDurationMs&&d.timings.scanDurationMs.p95))}</div>
+  <div class="card"><b>Backend</b>${kv('Sürüm',esc(h.version||'-'))}${kv('Firestore',h.firestore&&h.firestore.reachable?'Bağlı ('+ms(h.firestore.latencyMs)+')':'<b>Bağlı değil</b>')}</div>`}
+ if(BK.tab==='users'){const rows=(d.users||[]).map(u=>`<div class="item"><div class="g"><b>${esc(u.email||u.uid)}</b><span>${esc(u.uid)} • ${u.assetCount==null?'varlık: -':u.assetCount+' varlık'} • ${esc(u.lastSignInAt||'giriş yok')}</span></div><span class="badge ${u.disabled?'bd':'ok'}">${u.disabled?'Devre dışı':'Aktif'}</span><div class="acts"><button class="btn s" data-act="adm-user" data-id="${esc(u.uid)}">Detay</button><button class="btn s d" data-act="adm-disable" data-id="${esc(u.uid)}" data-v="${u.disabled?'0':'1'}">${u.disabled?'Etkinleştir':'Devre dışı bırak'}</button></div></div>`).join('')||'<div class="empty">Kullanıcı yok</div>';
+  return`<div class="card"><div class="row2"><input class="field" id="adm-uq" placeholder="E-posta, ad veya UID" value="${esc(BK.adm.uq||'')}"><select class="field" id="adm-us"><option value="all">Tümü</option><option value="active"${BK.adm.us==='active'?' selected':''}>Aktif</option><option value="disabled"${BK.adm.us==='disabled'?' selected':''}>Devre dışı</option></select></div><button class="btn p w" data-act="adm-search">Ara</button></div><div class="card">${rows}</div><div id="adm-detail"></div>`}
+ if(BK.tab==='jobs')return`<div class="card">${kv('Motor',d.engine.persistent?'Kalıcı (Firestore)':'<b>Kalıcı değil (bellek)</b>')}${kv('Çalışan / eşzamanlılık',d.engine.running+' / '+d.engine.concurrency)}</div><div class="card">${(d.jobs||[]).map(j=>`<div class="item"><div class="g"><b>${esc(j.label)}</b><span>${esc(j.ownerId)} • ${j.total} hedef • ${esc(fmt(j.createdAt))}</span></div><span class="badge ${stTone(j.status==='PENDING'||j.status==='RUNNING'?'':j.status)}">${esc(ST[j.status]||j.status)}</span><div class="acts"><button class="btn s" data-act="adm-jretry" data-id="${esc(j.id)}">Başarısızları yeniden dene</button><button class="btn s d" data-act="adm-jcancel" data-id="${esc(j.id)}">İptal</button></div></div>`).join('')||'<div class="empty">İş yok</div>'}</div>`;
+ if(BK.tab==='errors')return`<div class="card"><div class="hint">Bellek içi kayıt: sunucu yeniden başlayınca silinir. Hassas veriler maskelenir.</div>${(d.errors||[]).map(x=>`<div class="item"><div class="g"><b>${esc(x.source)}${x.status?' '+x.status:''}</b><span>${esc(x.at)} ${esc(x.path||'')}</span><span>${esc(x.message)}</span></div></div>`).join('')||'<div class="empty">Kayıtlı hata yok</div>'}</div>`;
+ if(BK.tab==='audit')return d.available===false?`<div class="card"><div class="empty">Veri yok: ${esc(d.reason||'')}</div></div>`:`<div class="card">${(d.entries||[]).map(x=>`<div class="item"><div class="g"><b>${esc(x.action)}</b><span>${esc(new Date(x.at).toLocaleString('tr-TR'))} • ${esc(x.adminEmail||x.adminUid)} → ${esc(x.target||'-')}</span></div></div>`).join('')||'<div class="empty">Kayıt yok</div>'}</div>`;
+ if(BK.tab==='admins')return`<div class="card"><form data-admform="grant"><b>Yönetici ekle</b><div class="hint">Kullanıcı DAC'a giriş yapmış ve e-postasını doğrulamış olmalı.</div><input class="field" name="email" type="email" placeholder="E-posta" required><button class="btn p w" type="submit">Yönetici yap</button></form></div><div class="card">${(d.admins||[]).map(x=>`<div class="item"><div class="g"><b>${esc(x.email||x.uid)}</b><span>${esc(x.source)}</span></div>${x.removable?`<button class="btn s d" data-act="adm-revoke" data-id="${esc(x.uid)}">Yetkiyi kaldır</button>`:'<span class="badge mu">Render ayarı</span>'}</div>`).join('')}<div class="hint">${esc(d.note||'')}</div></div>`;
+ if(BK.tab==='health'){const h=d.health||{};return`<div class="card">${kv('Sürüm',esc(h.version))}${kv('Ortam',esc(h.environment))}${kv('Çalışma süresi',Math.round((h.uptimeSeconds||0)/60)+' dk')}${kv('Bellek (RSS)',(h.memoryMB&&h.memoryMB.rss)+' MB')}${kv('Firebase Admin',h.firebase&&h.firebase.adminReady?'Hazır':'Yok')}${kv('Firestore',h.firestore&&h.firestore.reachable?'Bağlı':'Bağlı değil')}${kv('Stripe / iyzico',(h.payments&&h.payments.stripe?'Açık':'Kapalı')+' / '+(h.payments&&h.payments.iyzico?'Açık':'Kapalı'))}${kv('Otomatik tarama',h.autoScan&&h.autoScan.enabled?'Açık':'Kapalı')}${kv('Dış cron ucu',h.autoScan&&h.autoScan.cronEndpoint?'Tanımlı':'Tanımsız')}${kv('RDAP verisi',h.rdap&&h.rdap.bootstrapLoaded?'Yüklü':'Henüz yüklenmedi')}${kv('Geliştirme bypass',h.devBypassActive?'<b>AÇIK (kapatın)</b>':'Kapalı')}</div>`}
+ if(BK.tab==='platform'){const ai=d.ai||{},bl=d.billing||{},st=ai.status||{};return`<div class="card"><b>AI</b>${kv('Durum',st.enabled?'Etkin':'<b>Devre dışı</b>')}<div class="hint">${esc(st.reason||'')}</div>${kv('Kayıtlı sağlayıcı',esc((st.registeredProviders||[]).join(', ')||'yok'))}${kv('Kullanım kaydı',ai.usageModel?ai.usageModel.recordsWritten:0)}<div class="hint">Rapor veri modeli: ${esc((ai.reportModel&&ai.reportModel.schema)||'')} (aylık/yıllık, AI'siz çalışır)</div></div>
+ <div class="card"><b>Para birimleri</b>${(bl.currencies||[]).map(c=>kv(c.code+' '+c.name,c.enabled?'Fiyatlı':'Fiyat tanımlı değil')).join('')}<div class="hint">${esc((bl.rateProvider&&bl.rateProvider.note)||'')}</div></div>
+ <div class="card"><b>Affiliate</b>${kv('Durum',bl.affiliate&&bl.affiliate.enabled?'Etkin':'Devre dışı')}<div class="hint">${esc((bl.affiliate&&bl.affiliate.note)||'')}</div></div>
+ <div class="card"><b>Skor ağırlıkları</b>${Object.entries((d.scoring&&d.scoring.weights)||{}).map(([k,v])=>kv(k.toUpperCase(),'%'+v)).join('')}${kv('Kritik bulgu üst sınırı',d.scoring&&d.scoring.criticalCap)}</div>`}
+ return'';
+}
+async function admAct(act,id,b){
+ if(act==='adm-refresh'){await admLoad(BK.tab);return admPaint()}
+ if(act==='adm-tab'){await admLoad(id);return admPaint()}
+ if(act==='adm-search'){BK.adm.uq=$('#adm-uq').value.trim();BK.adm.us=$('#adm-us').value;await admLoad('users');return admPaint()}
+ if(act==='adm-user'){const j=await bkApi('GET','/api/admin/users/'+encodeURIComponent(id));const u=j.user;$('#adm-detail').innerHTML=`<div class="card"><b>${esc(u.email||u.uid)}</b>${kv('UID',esc(u.uid))}${kv('Kayıt',esc(u.createdAt||'-'))}${kv('Son giriş',esc(u.lastSignInAt||'-'))}${kv('Yönetici',u.isAdmin?'Evet':'Hayır')}${kv('Varlık sayısı',j.assets.available?j.assets.count:'Veri yok')}${kv('Paket',j.plan?esc(j.plan.plan):'Veri yok')}${Object.entries(j.assets.byType||{}).map(([k,n])=>kv(k,n)).join('')}</div>`;return}
+ if(act==='adm-disable'){const dis=b.dataset.v==='1';if(!confirm(dis?'Kullanıcı devre dışı bırakılsın mı? Oturumları kapatılır.':'Kullanıcı yeniden etkinleştirilsin mi?'))return;await bkApi('POST','/api/admin/users/'+encodeURIComponent(id)+'/disable',{disabled:dis});toast('Güncellendi');await admLoad('users');return admPaint()}
+ if(act==='adm-revoke'){if(!confirm('Yönetici yetkisi kaldırılsın mı?'))return;await bkApi('DELETE','/api/admin/admins/'+encodeURIComponent(id));toast('Yetki kaldırıldı');await admLoad('admins');return admPaint()}
+ if(act==='adm-jretry'){const j=await bkApi('POST','/api/admin/jobs/'+encodeURIComponent(id)+'/retry',{});toast(j.requeued+' başarısız kayıt yeniden sıraya alındı');await admLoad('jobs');return admPaint()}
+ if(act==='adm-jcancel'){if(!confirm('İş iptal edilsin mi?'))return;const j=await bkApi('POST','/api/admin/jobs/'+encodeURIComponent(id)+'/cancel',{});toast(j.canceled+' kayıt iptal edildi');await admLoad('jobs');return admPaint()}
+}
+document.addEventListener('submit',async e=>{const f=e.target.closest('[data-admform]');if(!f)return;e.preventDefault();try{await bkApi('POST','/api/admin/admins',{email:String(new FormData(f).get('email')||'').trim()});toast('Yönetici eklendi');await admLoad('admins');admPaint()}catch(x){toast(x.message,'err')}});
+window.addEventListener('hashchange',()=>setTimeout(async()=>{bkPoll();const r=(location.hash.slice(1)||'dash').split('/')[0];if(r==='bulk'||r==='domains'){try{await bkLoadView();bkPaint()}catch{}}},0));

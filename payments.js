@@ -30,7 +30,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
     // VERIFY_REVOKED=true: iptal edilmiş/çıkış yapılmış oturumlar da reddedilir (her istekte ek bir Firebase çağrısı yapar)
     let t; try { t = await admin.auth().verifyIdToken(m[1], process.env.VERIFY_REVOKED === "true"); } catch { throw fail(401, "Oturum doğrulanamadı, tekrar giriş yapın."); }
     SEC.assertEmailVerified(t); // şifreli hesapta doğrulanmamış e-posta → 403 EMAIL_NOT_VERIFIED
-    return { uid: t.uid, email: t.email || null, name: t.name || null };
+    return { uid: t.uid, email: t.email || null, name: t.name || null, emailVerified: t.email_verified === true };
   }
 
   // ---------- Yetki: abonelik > deneme > süresi dolmuş ----------
@@ -93,6 +93,12 @@ module.exports = function initPayments({ app, db, admin, http }) {
     // 6502 sayılı Kanun / Mesafeli Sözleşmeler Yönetmeliği: ön bilgilendirme + satış sözleşmesi onayı ve anında ifa edilen dijital hizmette cayma hakkı beyanı
     if (!consent || consent.distanceSales !== true || consent.withdrawalWaiver !== true) throw fail(400, "Ödeme için Ön Bilgilendirme Formu, Mesafeli Satış Sözleşmesi ve cayma hakkı beyanını onaylamalısınız.");
     if (!u.email && !(billing && billing.email)) throw fail(400, "Ödeme için e-posta adresi gerekli.");
+    // Sunucu tarafı fatura alanı doğrulaması (TC kimlik numarası toplanmaz; yalnızca isteğe bağlı 10 haneli vergi no)
+    if (billing && typeof billing === "object") {
+      const V = (() => { try { return require("./validators"); } catch { return require("./server/validators"); } })();
+      if (billing.phone) { const r = V.normalizePhone(String(billing.phone)); if (!r.ok) throw fail(400, "Telefon: " + r.error); billing.phone = r.phone; }
+      if (billing.taxId) { const r = V.normalizeTaxId(billing.taxId); if (!r.ok) throw fail(400, "Vergi no: " + r.error); billing.taxId = r.taxId; }
+    }
     if (!PLANS.PAID.includes(plan)) throw fail(400, "Geçersiz paket.");
     if (!["monthly", "yearly"].includes(cycle)) throw fail(400, "Geçersiz dönem.");
     await db.collection("consents").add({ uid: u.uid, type: "distance-sales", version: LEGAL_VERSION, granted: true, plan: String(plan).slice(0, 30), at: Date.now(), ip: req.ip || null, ua: String(req.headers["user-agent"] || "").slice(0, 200) });
@@ -136,7 +142,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
     const result = await new Promise((resolve, reject) => iyzi.checkoutFormInitialize.create({
       locale: "tr", conversationId: orderRef.id, price: priceStr, paidPrice: priceStr, currency: "TRY", basketId: orderRef.id,
       paymentGroup: "PRODUCT", callbackUrl: selfUrl(req) + "/api/iyzico/callback", enabledInstallments: [1],
-      buyer: { id: u.uid, name: first, surname, email: String(billing.email || u.email).slice(0, 120), identityNumber: String(billing.taxId || "").replace(/\D/g, "").length === 11 ? String(billing.taxId).replace(/\D/g, "") : "11111111111", registrationAddress: address, ip: clientIp(req), city, country: billing.country || "Turkey", ...(billing.phone ? { gsmNumber: billing.phone } : {}) },
+      buyer: { id: u.uid, name: first, surname, email: String(billing.email || u.email).slice(0, 120), identityNumber: "11111111111", registrationAddress: address, ip: clientIp(req), city, country: billing.country || "Turkey", ...(billing.phone ? { gsmNumber: billing.phone } : {}) },
       shippingAddress: addr, billingAddress: addr,
       basketItems: [{ id: plan + "_" + cycle, name: label, category1: "Yazılım", itemType: "VIRTUAL", price: priceStr }]
     }, (err, r) => (err ? reject(err) : resolve(r))));

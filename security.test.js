@@ -3,21 +3,27 @@ process.env.NODE_ENV = "development";
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
-const SEC = require("../server/security");
-const PUB = (...p) => require("path").join(__dirname, "..", "public", ...p);
+const _p = require("path"), _fs = require("fs");
+// Hem düz yerleşim (GitHub/Render'daki mevcut hâl) hem klasörlü yerleşim (server/, public/, tests/) için çalışır.
+const ROOT = _fs.existsSync(_p.join(__dirname, "index.js")) ? __dirname : _p.join(__dirname, "..");
+const LOAD = (n) => require(_fs.existsSync(_p.join(ROOT, "server", n + ".js")) ? _p.join(ROOT, "server", n) : _p.join(ROOT, n));
+const PUB = (...a) => _fs.existsSync(_p.join(ROOT, "public")) ? _p.join(ROOT, "public", ...a) : _p.join(ROOT, _p.basename(a[a.length - 1]));
+const INDEX = _p.join(ROOT, "index");
+const STRUCTURED = _fs.existsSync(_p.join(ROOT, "public"));
+const SEC = LOAD("security");
 
 function listen(app) { return new Promise(r => { const s = http.createServer(app).listen(0, () => r(s)); }); }
 const call = (s, method, path, opts = {}) => fetch(`http://127.0.0.1:${s.address().port}${path}`, { method, headers: { "Content-Type": "application/json", ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined });
 
 // ---------- SSRF ----------
 test("SSRF: özel/yerel IP adresleri engellenir", () => {
-  const { isPrivateIp } = require("../index")._internals;
+  const { isPrivateIp } = require(INDEX)._internals;
   for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "224.0.0.1"])
     assert.equal(isPrivateIp(ip), true, ip);
   for (const ip of ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111", "2001:4860:4860::8888"]) assert.equal(isPrivateIp(ip), false, ip);
 });
 test("SSRF: IPv6 ile gizlenmiş yerel adresler engellenir (URL ayrıştırıcının ürettiği biçimler dahil)", () => {
-  const { isPrivateIp } = require("../index")._internals;
+  const { isPrivateIp } = require(INDEX)._internals;
   for (const u of ["http://[::ffff:127.0.0.1]/", "http://[::ffff:10.0.0.5]/", "http://[::ffff:169.254.169.254]/", "http://[::127.0.0.1]/", "http://[64:ff9b::7f00:1]/", "http://[2002:7f00:1::]/", "http://2130706433/", "http://127.1/"]) {
     const h = new URL(u).hostname.replace(/^\[|\]$/g, "");
     assert.equal(isPrivateIp(h), true, u + " -> " + h);
@@ -25,7 +31,7 @@ test("SSRF: IPv6 ile gizlenmiş yerel adresler engellenir (URL ayrıştırıcın
   assert.equal(isPrivateIp("::ffff:8.8.8.8"), false);
 });
 test("SSRF: localhost, metadata ve .internal adresleri reddedilir", async () => {
-  const { assertPublicHost } = require("../index")._internals;
+  const { assertPublicHost } = require(INDEX)._internals;
   for (const h of ["localhost", "foo.localhost", "169.254.169.254", "metadata.google.internal", "[::1]", "127.0.0.1"])
     await assert.rejects(() => assertPublicHost(h), /engellendi|yapılamaz/, h);
 });
@@ -39,37 +45,37 @@ test("Üretimde sahte kullanıcı ASLA oluşmaz (NODE_ENV=production + DEV_AUTH_
 });
 test("/api/scan: token yoksa reddedilir (geliştirmede bypass kapalıyken)", async () => {
   delete process.env.DEV_AUTH_BYPASS;
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   const r = await call(s, "POST", "/api/scan", { body: { assetId: "a1", type: "WEBSITE", targetUrl: "https://example.com" } });
   assert.ok([401, 503].includes(r.status), "durum: " + r.status); // Firebase yok → 503, token yok → 401
   s.close();
 });
 test("/api/scan: geliştirmede bypass açıkken özel IP hedefi yine reddedilir (400)", async () => {
   process.env.DEV_AUTH_BYPASS = "true";
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   const r = await call(s, "POST", "/api/scan", { body: { assetId: "a1", type: "WEBSITE", targetUrl: "http://169.254.169.254/" } });
   assert.equal(r.status, 400); s.close(); delete process.env.DEV_AUTH_BYPASS;
 });
 test("/api/scan: geçersiz tür ve geçersiz assetId 400 döner", async () => {
   process.env.DEV_AUTH_BYPASS = "true";
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   assert.equal((await call(s, "POST", "/api/scan", { body: { assetId: "a1", type: "HACK", targetUrl: "https://example.com" } })).status, 400);
   assert.equal((await call(s, "POST", "/api/scan", { body: { assetId: "../x", type: "WEBSITE", targetUrl: "https://example.com" } })).status, 400);
   s.close(); delete process.env.DEV_AUTH_BYPASS;
 });
 test("Gövde boyut sınırı: 256kb üstü reddedilir", async () => {
   process.env.DEV_AUTH_BYPASS = "true";
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   const r = await call(s, "POST", "/api/scan", { body: { assetId: "a1", type: "WEBSITE", targetUrl: "https://example.com", extra: { x: "a".repeat(300000) } } });
   assert.equal(r.status, 413); s.close(); delete process.env.DEV_AUTH_BYPASS;
 });
 test("/health: hassas yapılandırma bilgisi sızdırmaz", async () => {
-  const s = await listen(require("../index")); const j = await (await call(s, "GET", "/health")).json();
+  const s = await listen(require(INDEX)); const j = await (await call(s, "GET", "/health")).json();
   assert.deepEqual(Object.keys(j).sort(), ["ok", "payments", "timestamp", "version"]);
   assert.deepEqual(Object.keys(j.payments).sort(), ["free", "iyzico", "stripe"]); s.close();
 });
 test("Güvenlik başlıkları ve CORS: izinsiz origin CORS başlığı almaz", async () => {
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   const r = await call(s, "GET", "/health", { headers: { Origin: "https://evil.example" } });
   assert.equal(r.headers.get("access-control-allow-origin"), null);
   assert.equal(r.headers.get("x-powered-by"), null);
@@ -114,7 +120,7 @@ test("Kota: deneme paketi 3 varlıkla sınırlı", async () => {
 // ---------- Ödeme: Stripe imzası ----------
 test("Stripe webhook imza doğrulaması: geçerli kabul, bozuk/eski ret", () => {
   const crypto = require("crypto");
-  const { verifyStripeSignature } = require("../server/payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
+  const { verifyStripeSignature } = LOAD("payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
   const raw = Buffer.from('{"id":"evt_1"}'), secret = "whsec_test", t = Math.floor(Date.now() / 1000);
   const sig = crypto.createHmac("sha256", secret).update(`${t}.`).update(raw).digest("hex");
   assert.equal(verifyStripeSignature(raw, `t=${t},v1=${sig}`, secret), true);
@@ -123,7 +129,7 @@ test("Stripe webhook imza doğrulaması: geçerli kabul, bozuk/eski ret", () => 
   assert.equal(verifyStripeSignature(Buffer.from("x"), `t=${t},v1=${sig}`, secret), false);
 });
 test("Paket fiyatları tutarlı (yıllık = 10 ay)", () => {
-  const P = require("../public/js/plans"); assert.equal(P.price("kobi", "TRY", "yearly"), Math.round(4999.99 * 10 * 100) / 100);
+  const P = require(PUB("js/plans.js")); assert.equal(P.price("kobi", "TRY", "yearly"), Math.round(4999.99 * 10 * 100) / 100);
   assert.equal(P.price("yok", "TRY", "monthly"), null);
 });
 
@@ -148,7 +154,7 @@ test("Token doğrulama: geçerli kabul; yanlış proje, süresi dolmuş, bozuk i
 
 // ---------- Firebase yapılandırması / e-posta girişi / sahiplik (bu sürümde eklendi) ----------
 test("Hizmet hesabı: eksik, bozuk JSON ve yanlış proje reddedilir; anahtar mesajda geçmez", () => {
-  const FBI = require("../server/firebase-init");
+  const FBI = LOAD("firebase-init");
   const mk = (o = {}) => ({ type: "service_account", project_id: "assetops-ed334", client_email: "x@assetops-ed334.iam.gserviceaccount.com", private_key: "-----BEGIN PRIVATE KEY-----\nSECRETKEY\n-----END PRIVATE KEY-----\n", ...o });
   assert.equal(FBI.parseServiceAccount({}).code, "MISSING");
   assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT: "{bozuk" }).code, "BAD_JSON");
@@ -160,7 +166,7 @@ test("Hizmet hesabı: eksik, bozuk JSON ve yanlış proje reddedilir; anahtar me
   assert.equal(FBI.parseServiceAccount({ FIREBASE_SERVICE_ACCOUNT_B64: Buffer.from(JSON.stringify(mk())).toString("base64") }).ok, true);
 });
 test("Web yapılandırması: eksik değişkenler adıyla bildirilir, uydurulmaz", () => {
-  const FBI = require("../server/firebase-init");
+  const FBI = LOAD("firebase-init");
   const r = FBI.webConfig({}); assert.equal(r.ok, false);
   assert.deepEqual(r.missing.sort(), ["FIREBASE_WEB_API_KEY", "FIREBASE_WEB_APP_ID", "FIREBASE_WEB_AUTH_DOMAIN", "FIREBASE_WEB_MESSAGING_SENDER_ID"]);
   const ok = FBI.webConfig({ FIREBASE_WEB_API_KEY: "k", FIREBASE_WEB_AUTH_DOMAIN: "assetops-ed334.firebaseapp.com", FIREBASE_WEB_APP_ID: "1:1:web:1", FIREBASE_WEB_MESSAGING_SENDER_ID: "1" });
@@ -169,7 +175,7 @@ test("Web yapılandırması: eksik değişkenler adıyla bildirilir, uydurulmaz"
 });
 test("/api/firebase-config: env yokken 503 + eksik liste", async () => {
   for (const k of Object.keys(process.env)) if (k.startsWith("FIREBASE_WEB_")) delete process.env[k];
-  const s = await listen(require("../index")); const r = await call(s, "GET", "/api/firebase-config");
+  const s = await listen(require(INDEX)); const r = await call(s, "GET", "/api/firebase-config");
   assert.equal(r.status, 503); s.close();
 });
 test("E-posta/şifre hesabı doğrulanmadan reddedilir; Google ve doğrulanmış hesap geçer", () => {
@@ -184,23 +190,23 @@ test("Sahipsiz mevcut belge devredilmez (ALLOW_CLAIM_LEGACY_ASSETS kapalıyken)"
   const r = await SEC.claimAsset(db, "legacy", "bob"); assert.equal(r.ok, false); assert.equal(r.legacy, true);
 });
 test("Kullanıcı durumu: geçersiz yapı reddedilir, plan/apiUrl buluta yazılmaz, __proto__ temizlenir", () => {
-  const { sanitizeState } = require("../server/user-state");
+  const { sanitizeState } = LOAD("user-state");
   assert.throws(() => sanitizeState(null)); assert.throws(() => sanitizeState({ assets: "x" })); assert.throws(() => sanitizeState({ assets: [{ nope: 1 }] }));
   const o = sanitizeState(JSON.parse('{"assets":[{"id":"a1","__proto__":{"x":1}}],"settings":{"plan":"enterprise","apiUrl":"http://x","org":"A"}}'));
   assert.equal(o.settings.plan, undefined); assert.equal(o.settings.apiUrl, undefined); assert.equal(o.settings.org, "A"); assert.equal({}.x, undefined);
 });
 test("/api/state: token yoksa reddedilir", async () => {
-  delete process.env.DEV_AUTH_BYPASS; const s = await listen(require("../index"));
+  delete process.env.DEV_AUTH_BYPASS; const s = await listen(require(INDEX));
   const r = await call(s, "GET", "/api/state"); assert.ok([401, 503].includes(r.status), "durum: " + r.status); s.close();
 });
 test("ANALYTICS tarayıcısı: etiket ve ölçüm kimliği eşleşmesi, canlı veri alanları null", async () => {
-  const { scanAnalytics } = require("../index")._internals; assert.equal(typeof scanAnalytics, "function");
+  const { scanAnalytics } = require(INDEX)._internals; assert.equal(typeof scanAnalytics, "function");
 });
 
 // ===== v13 sertleştirme testleri =====
 test("SSRF: IP-literal ve yerel adlar engellenir; HTTP istemcisi bağlantı kurmadan reddeder", async () => {
   delete process.env.ALLOW_PRIVATE_TARGETS;
-  const I = require("../index")._internals;
+  const I = require(INDEX)._internals;
   for (const h of ["127.0.0.1", "169.254.169.254", "10.1.2.3", "192.168.0.1", "172.16.5.5", "::1", "[::1]", "localhost", "foo.localhost", "db.internal", "::ffff:127.0.0.1", "0.0.0.0", "100.64.0.1"]) assert.equal(I.blockedHost(h), true, h);
   for (const h of ["example.com", "8.8.8.8", "1.1.1.1"]) assert.equal(I.blockedHost(h), false, h);
   // yönlendirme zinciriyle gelebilecek adresler: ağ trafiği oluşmadan hata döner
@@ -210,24 +216,24 @@ test("SSRF: IP-literal ve yerel adlar engellenir; HTTP istemcisi bağlantı kurm
   }
 });
 test("HTML ayrıştırıcı: düşman girdiler doğrusal sürede biter (ReDoS yok)", () => {
-  const I = require("../index")._internals;
+  const I = require(INDEX)._internals;
   const bad = { meta: "<meta ".repeat(250000), script: "<script ".repeat(180000), h1: "<h1>".repeat(300000), title: "<title>".repeat(200000), lt: "<".repeat(1500000), comment: "<!--".repeat(300000), a: "<a href=".repeat(150000) };
   for (const [k, v] of Object.entries(bad)) { const t = Date.now(); I.analyzeHtml(v, "https://x.com/"); assert.ok(Date.now() - t < 6000, `${k} ${Date.now() - t}ms`); }
 });
 test("HTML ayrıştırıcı: normal sayfada beklenen alanlar çıkar", () => {
-  const I = require("../index")._internals;
+  const I = require(INDEX)._internals;
   const A = I.analyzeHtml('<!doctype html><html lang="tr"><head><title>Merhaba &amp; dünya</title><meta name="description" content="Açıklama"><link rel="canonical" href="https://x.com/"><script type="application/ld+json">{"@type":"Organization"}</script></head><body><h1>Başlık <b>bir</b></h1><img src="a.png"><a href="https://e.com/" rel="nofollow">e</a><script>var a=1<2;</script><script src="https://cdn.x/a.js"></script><form action="http://x.com/p"><input type="password"></form><!-- <h1>gizli</h1> --></body></html>', "https://x.com/");
   assert.equal(A.title, "Merhaba & dünya"); assert.equal(A.htmlLang, "tr"); assert.deepEqual(A.h1, ["Başlık bir"]); assert.equal(A.h1Count, 1);
   assert.equal(A.images.missingAlt, 1); assert.equal(A.inlineScripts, 2); /* JSON-LD + satır içi script */ assert.equal(A.externalScriptsNoSri, 1); assert.deepEqual(A.jsonld.types, ["Organization"]);
   assert.equal(A.insecureForm, true); assert.equal(A.hasPasswordField, true); assert.equal(A.metaDescription, "Açıklama"); assert.equal(A.canonical, "https://x.com/");
 });
 test("decodeEntities: çift çözümleme yok (&amp;lt; -> &lt;)", () => {
-  const I = require("../index")._internals;
+  const I = require(INDEX)._internals;
   assert.equal(I.decodeEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;"); assert.equal(I.decodeEntities("a &lt; b &amp; c"), "a < b & c");
 });
 test("/api/scan: Sunucu/Güvenlik taraması yetki beyanı olmadan 400 CONSENT_REQUIRED", async () => {
   process.env.DEV_AUTH_BYPASS = "true";
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   for (const type of ["SERVER", "SECURITY"]) {
     const r = await call(s, "POST", "/api/scan", { body: { assetId: "a1", type, targetUrl: "https://example.com" } });
     assert.equal(r.status, 400); assert.equal((await r.json()).code, "CONSENT_REQUIRED");
@@ -236,13 +242,13 @@ test("/api/scan: Sunucu/Güvenlik taraması yetki beyanı olmadan 400 CONSENT_RE
 });
 test("/api/scan: targetUrl metin değilse 400", async () => {
   process.env.DEV_AUTH_BYPASS = "true";
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   const r = await call(s, "POST", "/api/scan", { body: { assetId: "a1", type: "WEBSITE", targetUrl: { toString: "x" } } });
   assert.equal(r.status, 400); s.close(); delete process.env.DEV_AUTH_BYPASS;
 });
 test("Hesap uç noktaları ve ödeme: token yoksa reddedilir", async () => {
   delete process.env.DEV_AUTH_BYPASS;
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   for (const [m, p] of [["GET", "/api/account/export"], ["DELETE", "/api/account"], ["POST", "/api/consent"], ["POST", "/api/checkout"], ["GET", "/api/state"], ["DELETE", "/api/assets/abc"], ["POST", "/api/push/subscribe"], ["POST", "/api/push/test"], ["GET", "/api/assets/latest"]]) {
     const r = await call(s, m, p, { body: m === "GET" ? undefined : {} });
     assert.ok([401, 503].includes(r.status), `${m} ${p} -> ${r.status}`); await r.arrayBuffer();
@@ -250,13 +256,13 @@ test("Hesap uç noktaları ve ödeme: token yoksa reddedilir", async () => {
   s.close();
 });
 test("Stripe imzası: ASCII dışı / hatalı biçimli imza istisna fırlatmaz", () => {
-  const { verifyStripeSignature } = require("../server/payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
+  const { verifyStripeSignature } = LOAD("payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
   const t = Math.floor(Date.now() / 1000);
   assert.equal(verifyStripeSignature(Buffer.from("{}"), `t=${t},v1=${"é".repeat(64)}`, "whsec_x"), false);
   assert.equal(verifyStripeSignature(Buffer.from("{}"), `t=${t},v1=zz`, "whsec_x"), false);
 });
 test("Yasal sayfalar ve yerel varlıklar yayınlanır; üçüncü taraf CDN/font yok", async () => {
-  const fs = require("fs"); const s = await listen(require("../index"));
+  const fs = require("fs"); const s = await listen(require(INDEX));
   for (const p of ["/kvkk", "/gizlilik", "/cerez-politikasi", "/kullanim-kosullari", "/mesafeli-satis", "/iade-iptal", "/iletisim", "/kabul-edilebilir-kullanim", "/js/lucide.min.js", "/fonts/inter-latin.woff2", "/js/company.js", "/js/cookie-consent.js", "/js/legal.js", "/css/style.css", "/icons/icon-192.png", "/manifest.json", "/sw.js"]) {
     const r = await call(s, "GET", p); assert.equal(r.status, 200, p); await r.arrayBuffer();
   }
@@ -275,16 +281,17 @@ test("Yasal sayfalar: şirket bilgileri tek kaynaktan, zorunlu belgeler mevcut",
 });
 
 test("Dosya yapısı: sunucu kodu ve gizli dosyalar HTTP ile yayınlanmaz; eski adresler yönlendirilir", async () => {
-  const s = await listen(require("../index"));
+  const s = await listen(require(INDEX));
   for (const p of ["/index.js", "/index.py", "/package.json", "/server/security.js", "/server/payments.js", "/firestore.rules", "/.env", "/.gitignore", "/tests/security.test.js", "/docs/RAPOR_ve_EKSIKLIK_LISTESI.md", "/public/index.html", "/../index.js", "/%2e%2e/index.js", "/js/../../index.js"]) {
     const r = await call(s, "GET", p); assert.ok([301, 400, 404].includes(r.status) && !(r.headers.get("content-type") || "").includes("javascript"), `${p} -> ${r.status}`); await r.arrayBuffer();
   }
+  if (!STRUCTURED) { s.close(); return; } // düz yerleşimde eski adres yönlendirmesi yoktur (dosyalar kökten sunulur)
   for (const [from, to] of [["/style.css", "/css/style.css"], ["/app.js", "/js/app.js"], ["/kvkk.html", "/legal/kvkk.html"], ["/inter-latin.woff2", "/fonts/inter-latin.woff2"], ["/icon-192.png", "/icons/icon-192.png"]]) {
     const r = await fetch(`http://127.0.0.1:${s.address().port}${from}`, { redirect: "manual" }); assert.equal(r.status, 301, from); assert.equal(r.headers.get("location"), to); await r.arrayBuffer();
   }
   s.close();
 });
-test("Dosya yapısı: HTML/CSS/SW içindeki her yerel varlık yolu gerçekten mevcut", () => {
+test("Dosya yapısı: HTML/CSS/SW içindeki her yerel varlık yolu gerçekten mevcut", { skip: !STRUCTURED && "düz yerleşimde public/ klasörü yok" }, () => {
   const fs = require("fs"), path = require("path"), root = path.join(__dirname, "..", "public");
   const files = []; (function walk(d) { for (const f of fs.readdirSync(d)) { const p = path.join(d, f); fs.statSync(p).isDirectory() ? walk(p) : files.push(p); } })(root);
   const exists = (u) => { u = u.split("?")[0].split("#")[0]; if (!u || u === "/") return true; if (/^\/(kvkk|gizlilik|cerez-politikasi|kullanim-kosullari|kabul-edilebilir-kullanim|mesafeli-satis|iade-iptal|iletisim|health|api\/|\.well-known\/)/.test(u)) return true; return fs.existsSync(path.join(root, u)); };
@@ -311,7 +318,7 @@ function memDb() {
 async function payApp(db) {
   const express = require("express"); const app = express(); app.use(express.json());
   const admin = { apps: [1], auth: () => ({ verifyIdToken: async () => ({ uid: "u1", email: "a@b.com", email_verified: true, firebase: { sign_in_provider: "google.com" } }) }) };
-  const pay = require("../server/payments")({ app, db, admin, http: null });
+  const pay = LOAD("payments")({ app, db, admin, http: null });
   return { s: await listen(app), pay };
 }
 const checkoutBody = { plan: "freelance", cycle: "monthly", currency: "TRY", billing: {}, consent: { distanceSales: true, withdrawalWaiver: true } };
@@ -337,11 +344,11 @@ test("Satın al: ALLOW_FREE_ACTIVATION=false ise sağlayıcı yokken paket veril
 
 // ---------- Otomatik tarama aralıkları ve bildirim kararları ----------
 test("alerts: erişim türleri 5 saatte, ağır taramalar haftada bir taranır", () => {
-  const A = require("../server/alerts");
+  const A = LOAD("alerts");
   assert.equal(A.intervalMs("UPTIME"), 5 * 36e5); assert.equal(A.intervalMs("SSL_CERTIFICATE"), 24 * 36e5); assert.equal(A.intervalMs("SECURITY"), 168 * 36e5);
 });
 test("alerts: çökme bir kez bildirilir, düzelince 'yeniden çalışıyor' gelir", () => {
-  const A = require("../server/alerts");
+  const A = LOAD("alerts");
   let r = A.decide({ type: "WEBSITE", name: "Site", prev: { status: "ACTIVE" }, next: { status: "DOWN", findings: ["web_down_critical"], data: {} } });
   assert.deepEqual(r.notes.map((n) => n.kind), ["down"]);
   r = A.decide({ type: "WEBSITE", name: "Site", prev: { status: "DOWN" }, next: { status: "DOWN", findings: ["web_down_critical"], data: {} } });
@@ -350,7 +357,7 @@ test("alerts: çökme bir kez bildirilir, düzelince 'yeniden çalışıyor' gel
   assert.deepEqual(r.notes.map((n) => n.kind), ["up"]);
 });
 test("alerts: SSL/alan adı bitişi her eşikte bir kez bildirilir, yenilenince sıfırlanır", () => {
-  const A = require("../server/alerts"); const mk = (d) => ({ specificAnalysis: { cert: { daysRemaining: d } } });
+  const A = LOAD("alerts"); const mk = (d) => ({ specificAnalysis: { cert: { daysRemaining: d } } });
   let r = A.decide({ type: "SSL_CERTIFICATE", name: "x", prev: {}, next: { status: "ACTIVE", findings: [], data: mk(25) } });
   assert.equal(r.notes.length, 1); assert.equal(r.expiryLevel, 30);
   r = A.decide({ type: "SSL_CERTIFICATE", name: "x", prev: { expiryLevel: 30 }, next: { status: "ACTIVE", findings: [], data: mk(20) } }); assert.equal(r.notes.length, 0);
@@ -359,12 +366,12 @@ test("alerts: SSL/alan adı bitişi her eşikte bir kez bildirilir, yenilenince 
   const d = A.decide({ type: "DOMAIN", name: "d", prev: {}, next: { status: "ACTIVE", findings: [], data: { specificAnalysis: { registration: { remainingDays: 2 } } } } }); assert.match(d.notes[0].title, /Alan adı 2 gün/);
 });
 test("alerts: yalnızca YENİ kritik bulgular bildirilir", () => {
-  const A = require("../server/alerts");
+  const A = LOAD("alerts");
   const r = A.decide({ type: "SECURITY", name: "s", prev: { status: "ACTIVE", findings: ["a_critical"] }, next: { status: "ACTIVE", findings: ["a_critical", "security_exposed_env_critical", "b_warning"], data: {} } });
   assert.equal(r.notes.length, 1); assert.match(r.notes[0].title, /1 yeni kritik/);
 });
 test("cron ucu: CRON_SECRET yokken kapalı, yanlış anahtarla 403", async () => {
-  const app = require("../index"); const s = await listen(app);
+  const app = require(INDEX); const s = await listen(app);
   delete process.env.CRON_SECRET; let r = await call(s, "POST", "/api/cron/scan"); assert.equal(r.status, 404);
   process.env.CRON_SECRET = "dogru-anahtar-123"; r = await call(s, "POST", "/api/cron/scan?key=yanlis"); assert.equal(r.status, 403);
   delete process.env.CRON_SECRET; s.close();

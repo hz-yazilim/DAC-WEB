@@ -160,3 +160,10 @@ details.raw summary{font-weight:600;color:var(--tx)}
 /* paket satın alma */
 .paynote{margin-top:10px;padding:10px 12px;border-radius:12px;border:1px dashed #f59e0b66;background:#f59e0b11;font-size:13px;color:#fcd34d}
 .find .badge{flex:none;align-self:flex-start}
+
+/* V13.1: toplu tarama ve yönetici paneli */
+.bkbar{height:6px;border-radius:4px;background:rgba(127,127,127,.2);overflow:hidden;margin:6px 0}
+.bkbar i{display:block;height:100%;background:#10b981;transition:width .4s}
+.bktabs{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+textarea.field{resize:vertical;min-height:110px;font-family:inherit}
+.btns .btn[disabled],.btn[disabled]{opacity:.5;pointer-events:none}

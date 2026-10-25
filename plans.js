@@ -22,14 +22,18 @@
       features: ["Sınırsız varlık", "Tüm tarama türleri", "Sınırsız ekip kaydı", "Son 5000 tarama geçmişi", "Yenileme takvimi ve maliyet raporu", "Özel destek hattı"]
     }
   };
+  Object.keys(PLANS).forEach(function (k) { PLANS[k].prices = { TRY: PLANS[k].priceTRY, USD: PLANS[k].priceUSD }; }); // priceTRY/priceUSD geriye dönük uyumluluk için korunur
   var CFG = {
     PLANS: PLANS,
     PAID: ["freelance", "kobi", "enterprise"],
     TRIAL_DAYS: 3,
     YEARLY_MONTHS: 10, // yıllık ödemede 12 ay yerine 10 ay ücret (2 ay bedava)
+    // Fiyatlar para birimi koduyla saklanır (PLANS[x].prices). EUR gibi fiyatı tanımlanmamış para birimi için null döner (uydurma fiyat yok).
+    CURRENCIES: ["TRY", "USD", "EUR"],
     price: function (planId, currency, cycle) {
       var p = PLANS[planId]; if (!p) return null;
-      var base = currency === "USD" ? p.priceUSD : p.priceTRY;
+      var cur = currency || "TRY"; var base = p.prices && p.prices[cur] != null ? p.prices[cur] : null;
+      if (base == null) return null;
       var m = cycle === "yearly" ? CFG.YEARLY_MONTHS : 1;
       return Math.round(base * m * 100) / 100;
     }

@@ -133,7 +133,7 @@ async function verifyFirebaseToken(token, projectId, opts = {}) {
   const now = Math.floor(Date.now() / 1000);
   if (!(payload.exp > now) || payload.iat > now + 300 || payload.aud !== projectId || payload.iss !== "https://securetoken.google.com/" + projectId || !payload.sub) throw bad();
   assertEmailVerified(payload);
-  return { uid: payload.sub, email: payload.email || null, name: payload.name || null };
+  return { uid: payload.sub, email: payload.email || null, name: payload.name || null, emailVerified: payload.email_verified === true };
 }
 
 module.exports = { assertEmailVerified, verifyFirebaseToken, isProd, devBypass, enforcePlans, corsOptions, allowedOrigins, authenticate, makeLimiter, makeConcurrency, claimAsset, checkAssetQuota, int };

@@ -76,3 +76,35 @@ Bilinen farklar (Node'a göre): OCSP stapling bilgisi okunamaz (`ocspStapling: n
 2. Zip'i bilgisayarınızda **açın**; zip'in içinde sarmalayıcı klasör yoktur, dosyalar doğrudan kök düzeyindedir. **Açılan her şeyi** (klasörler dahil) GitHub'a sürükleyin. Gizli dosyalar (`.github`, `.gitignore`, `.env.example`) görünmüyorsa dosya yöneticisinde "gizli dosyaları göster"i açın.
 3. Render: **Root Directory boş**, Build `npm install`, Start `node index.js` (değişmedi).
 4. Tarayıcıda Ctrl+F5 (servis çalışanı önbelleği v8'e yükselir; eski adresler 301 ile yeni konumlara yönlenir).
+
+
+---
+# V13.1 EKİ — Tam proje denetimi ve geliştirme raporu
+
+## Sürüm bilgisi (ZIP'ten doğrulandı)
+`package.json`: 13.0.0 → **13.1.0**; `index.js` başlığı v12.0 → `SCANNER_VERSION` **v13.1**; arayüz başlığı "v11". Talimattaki "V10.3.0" ZIP'te **bulunmuyor**; sürüm bilgileri daha önce tutarsızdı.
+
+## Test sonuçları (gerçek çalıştırma)
+`npm test`: **82 test, 81 geçti, 0 başarısız, 1 atlandı** (klasörlü yerleşime özel varlık-yolu testi). Ayrıca `npm run check` 26 dosya hatasız; gerçek sunucu açılıp 300 istekle ölçüldü (P50 20 ms, P95 43 ms, P99 82 ms, hata 0 %; yerel makine, 10 eşzamanlı). Arayüz geçici jsdom ile duman testinden geçti (proje bağımlılığına eklenmedi). Eski test dosyası düz yerleşimde zaten **çalışmıyordu** (`../server/..` yolları); düzeltildi.
+
+## Özellik durumu
+| Özellik | Durum |
+|---|---|
+| Tarama motorları, SSRF (bağlantı anı DNS denetimi, yönlendirmede yeniden doğrulama, boyut/süre sınırı), ödeme, bildirim | Çalışıyor, mevcut testlerle doğrulandı (değiştirilmedi) |
+| Admin paneli (API + arayüz) | Çalışıyor: sahte Firebase ile 14 test + arayüz duman testi. **Gerçek Firebase ile denenmedi** |
+| Toplu tarama kuyruğu | Çalışıyor: 250 öğe, yeniden başlatma kurtarma, yeniden deneme, iptal, izolasyon (bellek ve sahte Firestore ile). **Gerçek Firestore/internet taraması denenmedi** |
+| Genel Tarama (domain) | Çalışıyor (arayüz duman testi); gerçek RDAP bitiş tarihi canlıda doğrulanmalı |
+| Skor modülü | Çalışıyor, testli. WEB'in eski "overall" skoru **aynen korundu**; yeni bileşik skor `scores.composite` olarak eklendi |
+| Girdi doğrulama | Sunucu tarafı: toplu iş + fatura telefon/vergi no. Diğer eski formlar mevcut denetimleriyle kaldı |
+| AI / Gemini | Bilinçli **devre dışı** (anahtar istenmiyor, çağrı yok) |
+| Para birimi / affiliate | Altyapı hazır, **etkin değil**; EUR için fiyat tanımlı değil, kur sağlayıcısı yok |
+| Python (`index.py`) | **Güncellenmedi** (admin/kuyruk yalnızca Node'da). Python servisi kullanılıyorsa bu özellikler orada yok |
+
+## Yapılmayanlar / dikkat
+1. **"8" ve "minimum 100" hedefi**: anlamı belirtilmediği için **uygulanmadı**. Neyi ifade ettiğini bildirirseniz eklenir.
+2. P95 için "mevcut test aracı" ZIP'te yoktu; `loadtest.js` eklendi.
+3. iyzico canlıda alıcı kimlik no isteyebilir; TC alanı kaldırıldığı için sabit değer gönderiliyor (eskiden de kullanıcı girmezse böyleydi). iyzico ile teyit edin.
+4. Metrikler ve hata halkası **bellek içi**: yeniden başlayınca sıfırlanır (panelde belirtilir). Hız sınırları çoklu örnekte Redis ister.
+5. Gerçek tarayıcıda (mobil dahil) görsel kontrol, gerçek Firebase girişi, gerçek RDAP/DNS taraması yapılmadı.
+6. `ci.yml` kökte duruyor; GitHub'ın çalıştırması için `.github/workflows/ci.yml` yolunda olmalı.
+7. Yeni Firestore koleksiyonları: `scanJobs`, `scanJobItems`, `adminRoles`, `adminAudit` (kurallar zaten istemci erişimini kapatıyor; indeks gerekmez).
