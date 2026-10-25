@@ -777,7 +777,7 @@ function render(){
  <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="logout">${ic('log-out')} Çıkış</button></div></div></div>`;
  $('#av').textContent=S.settings.org.slice(0,2).toUpperCase();
  $('#dot').style.display=alerts().length?'block':'none';
- $('#view').innerHTML=p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='bulk'?bulkPage():p==='domains'?domainsPage():p==='admin'&&BK.isAdmin?adminPage():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='settings'?settings():dash();
+ $('#view').innerHTML=p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='bulk'?bulkPage():p==='whoami'?whoamiPage():p==='domains'?domainsPage():p==='admin'&&BK.isAdmin?adminPage():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='settings'?settings():dash();
  icons();bkPoll();
 }
 
@@ -1059,3 +1059,12 @@ async function admAct(act,id,b){
 }
 document.addEventListener('submit',async e=>{const f=e.target.closest('[data-admform]');if(!f)return;e.preventDefault();try{await bkApi('POST','/api/admin/admins',{email:String(new FormData(f).get('email')||'').trim()});toast('Yönetici eklendi');await admLoad('admins');admPaint()}catch(x){toast(x.message,'err')}});
 window.addEventListener('hashchange',()=>setTimeout(async()=>{bkPoll();const r=(location.hash.slice(1)||'dash').split('/')[0];if(r==='bulk'||r==='domains'){try{await bkLoadView();bkPaint()}catch{}}},0));
+
+/* --- Hesap/yetki teşhisi (#whoami): yalnızca kendi hesabınızın bilgisi --- */
+let WHO=null;
+function whoamiPage(){
+ if(!WHO){bkApi('GET','/api/me/admin').then(j=>{WHO=j;render()}).catch(e=>{WHO={error:e.message};render()});return'<h2>Hesap ve Yetki</h2><div class="card"><div class="empty">Yükleniyor…</div></div>'}
+ if(WHO.error)return`<h2>Hesap ve Yetki</h2><div class="card"><div class="empty">Sunucudan yanıt alınamadı: ${esc(WHO.error)}</div></div>`;
+ const y=WHO.you||{},c=WHO.configured||{};
+ return`<h2>Hesap ve Yetki</h2><p class="sub">Yönetici yetkisi için Render'a girmeniz gereken değer aşağıdaki UID'dir.</p><div class="card">${kv('UID',esc(y.uid))}${kv('E-posta',esc(y.email||'-'))}${kv('E-posta doğrulanmış',y.emailVerified?'Evet':'Hayır')}${kv('Yönetici',WHO.admin?'<b>Evet</b>':'Hayır')}${kv('Sunucuda tanımlı yönetici UID sayısı',c.uids)}${kv('Sunucuda tanımlı yönetici e-posta sayısı',c.emails)}</div><button class="btn s" data-act="goto" data-to="whoami" onclick="WHO=null">Yenile</button>`;
+}

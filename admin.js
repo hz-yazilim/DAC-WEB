@@ -68,7 +68,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
 
   /* ---------- Uçlar ---------- */
   // Normal kullanıcı için güvenli rol sorgusu (menüyü göstermek için). Yetkisiz kullanıcıya hiçbir ayrıntı vermez.
-  app.get("/api/me/admin", [(req, res, next) => (ipLimit(req.ip) ? next() : deny(res, 429, "Çok fazla istek.")), authn], wrap(async (req, res) => { res.set("Cache-Control", "no-store"); const r = await roleOf(req.user); res.json({ success: true, admin: r.admin }); }));
+  app.get("/api/me/admin", [(req, res, next) => (ipLimit(req.ip) ? next() : deny(res, 429, "Çok fazla istek.")), authn], wrap(async (req, res) => { res.set("Cache-Control", "no-store"); const r = await roleOf(req.user); res.json({ success: true, admin: r.admin, you: { uid: req.user.uid, email: req.user.email || null, emailVerified: req.user.emailVerified === true }, configured: { uids: envUids().size, emails: envEmails().size } }); }));
 
   app.get("/api/admin/me", guard, wrap(async (req, res) => res.json({ success: true, admin: true, uid: req.user.uid, email: req.user.email, source: req.admin.source })));
 
