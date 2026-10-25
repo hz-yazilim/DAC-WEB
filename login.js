@@ -103,11 +103,21 @@
     say("");
     if (!auth) { say("Giriş servisi henüz yüklenmedi. Sayfayı yenileyin."); return; }
     if (!termsOk()) return;
+    const t0 = Date.now();
+    busyForm(true);
     try { await A.signInWithPopup(auth, provider); }
     catch (e) {
-      if (e.code === "auth/popup-closed-by-user" || e.code === "auth/cancelled-popup-request") return;
-      say(msgOf(e));
+      // Açılır pencere engellendi / desteklenmiyor (mobil, uygulama içi tarayıcı, PWA): sayfa yönlendirmesiyle dene
+      if (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment") {
+        try { await A.signInWithRedirect(auth, provider); return; } catch (e2) { say(msgOf(e2)); }
+      } else if (e.code === "auth/cancelled-popup-request") {
+        // başka bir pencere isteği: sessiz geç
+      } else if (e.code === "auth/popup-closed-by-user") {
+        // Pencere çok hızlı kapandıysa kullanıcı vazgeçmemiştir: çoğunlukla çerez/depolama engeli veya yetkisiz alan adıdır
+        if (Date.now() - t0 < 4000) say("Google giriş penceresi hemen kapandı. Tarayıcıda 3. taraf çerezlere izin verin veya açılır pencere engelleyiciyi kapatın; sorun sürerse Firebase > Authentication > Settings > Authorized domains listesinde bu sitenin alan adını kontrol edin.");
+      } else { console.error("Google giriş hatası:", e); say(msgOf(e)); }
     }
+    busyForm(false);
   };
 
   async function loadConfig() {
@@ -136,6 +146,7 @@
       auth = A.getAuth(app);
       provider = new A.GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
+      A.getRedirectResult(auth).catch((e) => { if (e && e.code && e.code !== "auth/no-auth-event") say(msgOf(e)); });
       // Analytics isteğe bağlı: yalnızca measurementId tanımlıysa; yüklenemezse girişi etkilemez
       // Analytics: yalnızca ölçüm kimliği tanımlıysa VE kullanıcı çerez çubuğunda "Tümünü kabul et" dediyse (KVKK açık rıza)
       let analyticsOn = false;

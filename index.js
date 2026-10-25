@@ -52,6 +52,8 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 // Yanıt sıkıştırma (gzip/br): "compression" paketi yüklüyse etkinleşir
 try { app.use(require("compression")()); } catch (e) { console.warn("compression paketi yok: npm install compression"); }
+// Firebase Auth: giriş penceresi/iframe'i authDomain'den yüklenir (özel alan adı veya *.web.app olabilir) ve reCAPTCHA (google.com) gerekebilir
+const AUTH_DOMAIN_SRC = (() => { const d = String(process.env.FIREBASE_WEB_AUTH_DOMAIN || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""); return /^[a-z0-9.-]+$/i.test(d) ? ["https://" + d] : []; })();
 app.use(require("helmet")({
   // Google ile giriş penceresi (popup) için COOP gevşetildi
   crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
@@ -66,14 +68,14 @@ app.use(require("helmet")({
     directives: {
       defaultSrc: ["'self'"],
       // 'unsafe-inline' kaldırıldı: tüm script'ler harici dosyada (login.js, sw-register.js, app.js ...)
-      scriptSrc: ["'self'", "https://www.gstatic.com", "https://apis.google.com", "https://www.googletagmanager.com"],
+      scriptSrc: ["'self'", "https://www.gstatic.com", "https://apis.google.com", "https://www.google.com", "https://www.googletagmanager.com"],
       scriptSrcAttr: ["'none'"],
       styleSrc: ["'self'"],
       styleSrcAttr: ["'unsafe-inline'"], // app.js dinamik stil nitelikleri (style="color:...") kullanıyor
       fontSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://*.onrender.com", "https://*.googleapis.com", "https://*.google-analytics.com", "https://*.analytics.google.com", "https://*.googletagmanager.com", "https://*.firebaseio.com", "https://*.firebaseapp.com", "https://www.gstatic.com"],
-      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.iyzipay.com", "https://js.stripe.com"],
+      connectSrc: ["'self'", "https://*.onrender.com", "https://*.googleapis.com", "https://*.google-analytics.com", "https://*.analytics.google.com", "https://*.googletagmanager.com", "https://*.firebaseio.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.gstatic.com", "https://www.google.com", ...AUTH_DOMAIN_SRC],
+      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.google.com", "https://recaptcha.google.com", ...AUTH_DOMAIN_SRC, "https://*.iyzipay.com", "https://js.stripe.com"],
       formAction: ["'self'", "https://*.iyzipay.com", "https://checkout.stripe.com"],
       manifestSrc: ["'self'"], workerSrc: ["'self'"],
       objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"],
