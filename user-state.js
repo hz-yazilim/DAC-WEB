@@ -117,6 +117,7 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     const counts = {};
     counts.assets = await deleteWhere("assets", "ownerId", uid);
     counts.assetChecks = await deleteWhere("assetChecks", "ownerId", uid);
+    counts.pushSubs = await deleteWhere("pushSubs", "uid", uid);
     await ref(uid).delete();
     await db.collection("users").doc(uid).delete();
     // orders / subscriptions / consents: vergi ve ticari defter saklama yükümlülüğü ile ispat amacıyla yasal süre boyunca korunur (aydınlatma metninde belirtilir).

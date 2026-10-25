@@ -244,6 +244,58 @@ async function runScan(a){
  S.scans.unshift({id:uid(),assetId:a.id,name:a.name,cat:a.cat,score:res.healthScore,status:res.status,at:Date.now(),ms:Date.now()-t0});
  S.scans=S.scans.slice(0,planState().p.history||300);save();
 }
+/* ---------- tarayıcı bildirimleri (Web Push) ---------- */
+let NTF={on:false,perm:typeof Notification!=='undefined'?Notification.permission:'denied',checked:false};
+const ntfSupported=()=>'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
+const b64u=u=>{const s=(u+'='.repeat((4-u.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'),r=atob(s);return Uint8Array.from(r,c=>c.charCodeAt(0))};
+async function ntfRefresh(){
+ if(!ntfSupported())return;
+ try{const reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.getSubscription();NTF.on=!!sub&&Notification.permission==='granted';NTF.perm=Notification.permission;NTF.checked=true}catch{}
+ if(location.hash==='#settings')render();
+}
+async function ntfEnable(){
+ const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');
+ if(!ntfSupported())return toast('Bu tarayıcı bildirimleri desteklemiyor. iPhone için siteyi önce Ana Ekrana ekleyin.','err');
+ busy(true);
+ try{
+  const perm=await Notification.requestPermission();NTF.perm=perm;
+  if(perm!=='granted')throw new Error('Bildirim izni verilmedi. Tarayıcı ayarlarından bu site için bildirimlere izin verin.');
+  const h=await authH();const kr=await fetch(api+'/api/push/key',{headers:h}),kj=await kr.json();if(!kj.success)throw new Error(kj.error||'Bildirim anahtarı alınamadı');
+  const reg=await navigator.serviceWorker.ready;let sub=await reg.pushManager.getSubscription();
+  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(kj.key)});
+  const r=await fetch(api+'/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json',...h},body:JSON.stringify({subscription:sub.toJSON()})}),j=await r.json();
+  if(!j.success)throw new Error(j.error||'Abonelik kaydedilemedi');
+  NTF.on=true;toast('Bildirimler açıldı');
+ }catch(e){toast(e.message,'err')}
+ busy(false);render();
+}
+async function ntfDisable(){
+ const api=apiUrl();busy(true);
+ try{const reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.getSubscription();
+  if(sub){const h=await authH();if(api)await fetch(api+'/api/push/unsubscribe',{method:'POST',headers:{'Content-Type':'application/json',...h},body:JSON.stringify({endpoint:sub.endpoint})}).catch(()=>{});await sub.unsubscribe()}
+  NTF.on=false;toast('Bildirimler kapatıldı')}catch(e){toast(e.message,'err')}
+ busy(false);render();
+}
+async function ntfTest(){
+ const api=apiUrl();if(!api)return;busy(true);
+ try{const r=await fetch(api+'/api/push/test',{method:'POST',headers:{'Content-Type':'application/json',...await authH()},body:'{}'}),j=await r.json();toast(j.success?'Test bildirimi gönderildi':(j.error||'Gönderilemedi'),j.success?'':'err')}catch{toast('Sunucuya ulaşılamadı','err')}
+ busy(false);
+}
+/* Sunucunun otomatik taradığı varlıkların son sonuçlarını al ve birleştir */
+let LAST_PULL=0;
+async function pullLatest(force){
+ const api=apiUrl();if(!api||!U||!S||(!force&&Date.now()-LAST_PULL<120000))return;LAST_PULL=Date.now();
+ try{
+  const h=await authH();if(!h.Authorization)return;
+  const since=Math.max(0,...S.assets.map(a=>a.lastScan||0));
+  const r=await fetch(api+'/api/assets/latest?since='+since,{headers:h}),j=await r.json();if(!j.success)return;
+  let ch=0;
+  for(const it of j.items){const a=find(it.assetId);if(!a||it.scannedAtMs<=(a.lastScan||0)+1000)continue;
+   a.result=it.result;a.lastScan=it.scannedAtMs;ch++;
+   S.scans.unshift({id:uid(),assetId:a.id,name:a.name,cat:a.cat,score:it.result.healthScore,status:it.result.status,at:it.scannedAtMs,ms:it.result.latencyMs||0,auto:true})}
+  if(ch){S.scans=S.scans.slice(0,planState().p.history||300);save();render()}
+ }catch{}
+}
 async function delRemote(id){const api=apiUrl();if(!api||!U)return;try{const h=await authH();if(h.Authorization)await fetch(api+'/api/assets/'+encodeURIComponent(id),{method:'DELETE',headers:h})}catch{}}
 async function rescan(id,open){
  const a=find(id);if(!a||!gate())return;busy(true);
@@ -375,10 +427,19 @@ function plan(){
 
 /* ---------- ayarlar ---------- */
 const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone;
+function ntfCard(){
+ if(!NTF.checked)ntfRefresh();
+ const sup=ntfSupported(),blocked=NTF.perm==='denied';
+ return`<div class="card"><b>${ic('bell-ring')} Bildirimler</b>
+ <div class="hint">Site çöktüğünde, SSL/alan adı/abonelik bitmek üzereyken ya da yeni kritik bir sorun çıktığında tarayıcınız size anında haber verir. Varlıklarınız arka planda otomatik taranır (erişim türleri 5 saatte bir, SSL/Domain günde bir, ağır taramalar haftada bir).</div>
+ ${!sup?'<div class="paynote">Bu tarayıcı bildirim desteklemiyor. iPhone/iPad için siteyi Paylaş menüsünden “Ana Ekrana Ekle” ile yükleyip oradan açın.</div>':blocked?'<div class="paynote">Bildirimler tarayıcıda engellenmiş. Adres çubuğundaki kilit simgesinden bu site için bildirime izin verin.</div>':''}
+ <div class="acts" style="margin-top:12px">${NTF.on?`<span class="badge ok">Açık</span><button class="btn s" data-act="ntf-test">${ic('send')} Test gönder</button><button class="btn s d" data-act="ntf-off">${ic('bell-off')} Kapat</button>`:`<button class="btn p s" data-act="ntf-on" ${sup&&!blocked?'':'disabled'}>${ic('bell')} Bildirimleri aç</button>`}</div></div>`;
+}
 function settings(){
  const s=S.settings,b=s.billing||{},ps=planState(),kb=Math.round(JSON.stringify(S).length/1024);
  const f=(n,l,ph='',t='text')=>`<label class="hint">${l}</label><input class="field" name="${n}" type="${t}" value="${esc(b[n])}" placeholder="${ph}">`;
  return`<h2>Ayarlar</h2><p class="sub">Hesap, fatura, bağlantı ve veri yönetimi</p>
+ ${ntfCard()}
  <div class="card"><b>${ic('user-round')} Hesap</b><div class="item" style="border:0">${U?.photoURL?`<img class="pfp" src="${esc(U.photoURL)}" alt="">`:`<div class="ico">${ic('user-round')}</div>`}<div class="g"><b>${esc(U?.displayName||'Kullanıcı')}</b><span>${esc(U?.email||'')}</span></div></div>
  <div class="hint">Son giriş: ${U?.metadata?.lastSignInTime?fmt(U.metadata.lastSignInTime):'-'} • Paket: ${esc(planName(ps))}</div>
  <div class="acts" style="margin-top:12px"><button class="btn s" data-act="copyuid">${ic('copy')} Kullanıcı ID kopyala</button><button class="btn s" data-act="logout">${ic('log-out')} Çıkış yap</button></div></div>
@@ -745,6 +806,7 @@ document.addEventListener('click',async e=>{
  else if(act==='portal')portal();
  else if(act==='syncplan'){const p=await syncPlan();toast(p===null?'Sunucudan abonelik bilgisi alınamadı (API adresi ve Firebase yapılandırmasını kontrol edin)':P.PAID.includes(p)?'Paketiniz aktif: '+P.PLANS[p].name:'Aktif ücretli paket bulunamadı',p===null?'warn':'')}
  else if(act==='ping')ping();
+ else if(act==='ntf-on')ntfEnable();else if(act==='ntf-off')ntfDisable();else if(act==='ntf-test')ntfTest();
  else if(act==='install'){if(DEFERRED){DEFERRED.prompt();await DEFERRED.userChoice;DEFERRED=null;render()}}
  else if(act==='clearcache')clearCache();
  else if(act==='copyuid'){try{await navigator.clipboard.writeText(U.uid);toast('Kopyalandı')}catch{toast(U.uid)}}
@@ -788,7 +850,7 @@ $('#q').addEventListener('input',e=>{
 });
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#q').focus()}if(e.key==='Escape')close()});
 addEventListener('hashchange',()=>{render();scrollTo(0,0)});
-addEventListener('focus',()=>{if(S&&U&&apiUrl()&&!document.hidden){syncPlan();SYNC.pulled?schedulePush():pullState()}});
+addEventListener('focus',()=>{if(S&&U&&apiUrl()&&!document.hidden){pullLatest();syncPlan();SYNC.pulled?schedulePush():pullState()}});
 
 /* ---------- giriş (Firebase Auth index.html içinden çağırır) ---------- */
 window.dacStart=u=>{
@@ -805,7 +867,7 @@ window.dacStart=u=>{
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.assets=Array.isArray(S.assets)?S.assets.filter(a=>a&&typeof a==='object'&&CATS[a.cat]&&typeof a.id==='string'):[];S.scans=Array.isArray(S.scans)?S.scans.filter(x=>x&&!x.mock):[];S.team=Array.isArray(S.team)?S.team:[];S.projects=Array.isArray(S.projects)?S.projects:[];
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
- syncReset();save(true);render();syncPlan();handleReturn();pullState();sendConsents();
+ syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();
 };
 async function exportAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');busy(true);try{const r=await fetch(api+'/api/account/export',{headers:await authH()});const j=await r.json();if(!r.ok||!j.success)throw new Error(j.error||'Dışa aktarılamadı');dl('dac-verilerim-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(j,null,2));toast('Verileriniz indirildi')}catch(e){toast(e.message,'err')}busy(false)}
 async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');

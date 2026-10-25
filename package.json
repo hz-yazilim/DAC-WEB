@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test --test-timeout=120000 tests/*.test.js",
-    "check": "node --check index.js && node --check server/payments.js && node --check server/security.js && node --check server/user-state.js && node --check server/firebase-init.js && node --check public/sw.js && node --check public/js/app.js && node --check public/js/config.js && node --check public/js/plans.js && node --check public/js/company.js && node --check public/js/legal.js && node --check public/js/cookie-consent.js && node --check public/js/sw-register.js && python3 -m py_compile index.py",
+    "check": "node --check index.js && node --check server/payments.js && node --check server/alerts.js && node --check server/push.js && node --check server/security.js && node --check server/user-state.js && node --check server/firebase-init.js && node --check public/sw.js && node --check public/js/app.js && node --check public/js/config.js && node --check public/js/plans.js && node --check public/js/company.js && node --check public/js/legal.js && node --check public/js/cookie-consent.js && node --check public/js/sw-register.js && python3 -m py_compile index.py",
     "py:start": "uvicorn index:app --host 0.0.0.0 --port 3000 --proxy-headers --forwarded-allow-ips=\"*\" --no-server-header"
   },
   "engines": {
@@ -19,7 +19,8 @@
     "firebase-admin": "^13.10.0",
     "helmet": "^7.2.0",
     "iyzipay": "^2.0.64",
-    "ssl-checker": "^2.0.10"
+    "ssl-checker": "^2.0.10",
+    "web-push": "^3.6.7"
   },
   "description": "Digital Asset Center – dijital varlık tarama ve izleme (Node/Express + isteğe bağlı Python/FastAPI)"
 }

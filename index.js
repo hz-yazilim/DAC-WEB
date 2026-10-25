@@ -2186,6 +2186,8 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
 
 const payments = SRV("payments")({ app, db, admin, http: axios });
 SRV("user-state")({ app, db, admin, verifyUser: payments.verifyUser });
+const ALERTS = SRV("alerts");
+const PUSH = SRV("push")({ app, db, verifyUser: payments.verifyUser }); // tarayıcı bildirimleri (Web Push)
 
 // Tarayıcı için herkese açık Firebase web yapılandırması (Render ortam değişkenlerinden; kodda sabit değer yok)
 app.get("/api/firebase-config", (req, res) => {
@@ -2276,7 +2278,7 @@ app.post("/api/scan", scanGuard, async (req, res) => {
     try {
       const ts = admin.firestore.FieldValue.serverTimestamp(); const doc = forFirestore({ ...assetUpdate, lastCheck: undefined, updatedAt: undefined });
       await withTimeout((async () => {
-        await db.collection("assets").doc(assetId).set({ ...doc, target: typeData?.commonAnalysis?.target ?? targetUrl ?? null, scannedAt: ts, lastCheck: ts, updatedAt: ts }, { merge: true }); // scannedAt/target: Firestore'daki mevcut varlık belge yapısıyla uyum
+        await db.collection("assets").doc(assetId).set({ ...doc, target: typeData?.commonAnalysis?.target ?? targetUrl ?? null, scannedAt: ts, lastCheck: ts, updatedAt: ts, auto: false, nextScanAt: Date.now() + ALERTS.intervalMs(assetType), scanExtra: forFirestore(extra), ...(ACTIVE_PROBE_TYPES.includes(assetType) ? { authorizationConfirmed: true } : {}) }, { merge: true }); // scannedAt/target: Firestore'daki mevcut varlık belge yapısıyla uyum
         const checkRef = db.collection("assetChecks").doc(); checkId = checkRef.id;
         await checkRef.set(forFirestore({ assetId, checkId, type: assetType, targetUrl: targetUrl || null, errors: scanErrors, findings, healthScore: finalHealthScore, healthLevel: finalHealthLevel, confidence, latencyMs: Date.now() - scanStartedAt, status: finalStatus, scanStatus, ownerId: uid, scannerVersion: typeData?.analysisMeta?.scannerVersion || null, scores: typeData?.specificAnalysis?.scores || null, checkedAt: ts, ...(ACTIVE_PROBE_TYPES.includes(assetType) ? { authorizationConfirmed: true, authorizationIp: req.ip || null } : {}) }) );
       })(), 8000, "Firestore");
@@ -2301,6 +2303,90 @@ app.delete("/api/assets/:id", scanGuard, async (req, res) => {
     await ref.delete();
     res.json({ success: true, deleted: true });
   } catch (e) { console.error("Varlık silme hatası:", e.message); res.status(503).json({ success: false, error: "Silinemedi, tekrar deneyin." }); }
+});
+
+// ===== Otomatik tarama + tarayıcı bildirimi =====
+// Her varlık türü kendi aralığında (alerts.js > INTERVAL_H) taranır. Yalnızca bildirimi açmış (pushSubs kaydı olan) ve paketi geçerli kullanıcıların varlıkları taranır.
+// Sunucu içi zamanlayıcı yalnızca uyanıkken çalışır; Render ücretsiz planda uyuyorsa dışarıdan POST /api/cron/scan?key=CRON_SECRET çağıran bir cron (ör. cron-job.org, her 15 dk) kurun.
+const AUTO_ENABLED = process.env.AUTO_SCAN !== "false";
+const AUTO_BATCH = SEC.int(process.env.AUTO_SCAN_BATCH, 30);
+let autoRunning = false;
+async function autoScanOne(snap, ctx) {
+  const d = snap.data(), ref = snap.ref, uid = d.ownerId, type = d.assetType || d.type;
+  const later = (ms) => ref.set({ nextScanAt: Date.now() + ms }, { merge: true });
+  if (!uid || !TYPE_HANDLERS[type]) return later(7 * 864e5);
+  if (!ctx.subs.has(uid)) ctx.subs.set(uid, await PUSH.subsOf(uid));
+  const subs = ctx.subs.get(uid); if (!subs.length) return later(24 * 36e5);
+  if (SEC.enforcePlans()) {
+    if (!ctx.ent.has(uid)) ctx.ent.set(uid, await payments.getEntitlement(uid).catch(() => ({ plan: "trial" })));
+    if (ctx.ent.get(uid).plan === "expired") return later(24 * 36e5);
+  }
+  const prev = { status: d.status, findings: d.findings, expiryLevel: d.expiryLevel };
+  const send = async (notes) => { for (const n of notes) await PUSH.notify(uid, { title: n.title, body: n.body, url: "/#assets", tag: `${snap.id}:${n.kind}` }, subs); };
+  // Abonelik (SaaS): internetten taranmaz; yenileme tarihine göre yalnızca süre uyarısı verilir
+  if (type === "SAAS_SUBSCRIPTION") {
+    const r = ALERTS.decide({ type, name: d.name || d.provider, prev, next: { status: d.status, findings: d.findings, data: d }, now: Date.now() });
+    await send(r.notes.filter((n) => n.kind === "expiry")); return ref.set({ expiryLevel: r.expiryLevel, nextScanAt: Date.now() + ALERTS.intervalMs(type) }, { merge: true });
+  }
+  if (ACTIVE_PROBE_TYPES.includes(type) && d.authorizationConfirmed !== true) return later(7 * 864e5); // yetki beyanı yoksa otomatik aktif sondalama yapılmaz
+  const targetUrl = String(d.targetUrl || "").slice(0, 2048); const extra = d.scanExtra && typeof d.scanExtra === "object" ? { ...d.scanExtra } : {};
+  if (type === "ANALYTICS" && !extra.measurementId && d.specificAnalysis?.property?.measurementId) extra.measurementId = d.specificAnalysis.property.measurementId;
+  if (!NO_HOST_TYPES.includes(type)) { try { await assertPublicHost(hostOf(targetUrl || extra.domain || extra.target)); } catch { return later(7 * 864e5); } }
+  const run = async () => withTimeout(Promise.resolve(TYPE_HANDLERS[type]({ targetUrl, extra })), SCAN_TIMEOUT_MS, "Tarama");
+  const t0 = Date.now(); let result;
+  try {
+    result = await run();
+    if ((result?.statusHint || result?.data?.commonAnalysis?.status) === "DOWN") { await sleep(20000); result = await run(); } // geçici kesintiden yanlış alarm olmasın: bir kez daha doğrula
+  } catch (e) { console.warn(`[auto ${type}] tarama hatası:`, e.message); return later(36e5); }
+  const typeData = result?.data || {}; if (!typeData.commonAnalysis) return later(36e5);
+  const findings = Array.isArray(result.findings) ? result.findings : [];
+  const score = typeData.commonAnalysis.score ?? null; const level = score == null ? "BELİRSİZ" : score >= 80 ? "YEŞİL" : score >= 50 ? "SARI" : "KIRMIZI";
+  const status = result.statusHint || typeData.commonAnalysis.status || defaultStatusFromHealth(level);
+  const dec = ALERTS.decide({ type, name: d.name || targetUrl, prev, next: { status, findings, healthScore: score, data: typeData }, now: Date.now() });
+  const ts = admin.firestore.FieldValue.serverTimestamp(); const nowIso = new Date().toISOString();
+  const upd = forFirestore({ assetId: snap.id, scanStatus: "COMPLETED", assetType: type, type, ...typeData, findings, healthLevel: level, healthScore: score, confidence: result.confidence ?? computeConfidence(findings, false), status, latencyMs: Date.now() - t0, ownerId: uid, auto: true });
+  await ref.set({ ...upd, scannedAt: ts, lastCheck: ts, updatedAt: ts, expiryLevel: dec.expiryLevel, nextScanAt: Date.now() + ALERTS.intervalMs(type) }, { merge: true });
+  await db.collection("assetChecks").doc().set(forFirestore({ assetId: snap.id, type, targetUrl: targetUrl || null, errors: result.errors || [], findings, healthScore: score, healthLevel: level, confidence: result.confidence ?? null, latencyMs: Date.now() - t0, status, scanStatus: "COMPLETED", ownerId: uid, scannerVersion: typeData.analysisMeta?.scannerVersion || null, scores: typeData.specificAnalysis?.scores || null, checkedAt: ts, auto: true }));
+  await send(dec.notes);
+}
+async function runDueScans() {
+  if (!db || autoRunning) return { skipped: true }; autoRunning = true; const ctx = { subs: new Map(), ent: new Map() }; let done = 0;
+  try {
+    const snap = await db.collection("assets").where("nextScanAt", "<=", Date.now()).orderBy("nextScanAt").limit(AUTO_BATCH).get();
+    await pool(snap.docs, 3, async (doc) => { try { await autoScanOne(doc, ctx); done++; } catch (e) { console.error("Otomatik tarama hatası:", e.message); await doc.ref.set({ nextScanAt: Date.now() + 36e5 }, { merge: true }).catch(() => {}); } });
+  } catch (e) { console.error("Otomatik tarama turu hatası:", e.message); }
+  finally { autoRunning = false; }
+  return { scanned: done };
+}
+// Eski varlıklarda nextScanAt alanı yoksa bir kez ekle (sorgu onları bulabilsin)
+async function backfillNextScan() {
+  try { const snap = await db.collection("assets").limit(2000).get(); const todo = snap.docs.filter((d) => d.data().nextScanAt == null); for (let i = 0; i < todo.length; i += 400) { const b = db.batch(); todo.slice(i, i + 400).forEach((d) => b.set(d.ref, { nextScanAt: Date.now() }, { merge: true })); await b.commit(); } }
+  catch (e) { console.warn("nextScanAt doldurulamadı:", e.message); }
+}
+if (db && AUTO_ENABLED && !process.env.NODE_TEST) {
+  setTimeout(() => backfillNextScan().then(runDueScans), 20000).unref();
+  setInterval(runDueScans, SEC.int(process.env.AUTO_SCAN_TICK_MIN, 15) * 60000).unref();
+}
+// Dışarıdan tetikleme (uyuyan Render için): CRON_SECRET tanımlı değilse uç nokta kapalıdır
+app.all("/api/cron/scan", async (req, res) => {
+  const secret = process.env.CRON_SECRET; if (!secret) return res.status(404).json({ success: false, error: "Bulunamadı" });
+  const given = String(req.headers["x-cron-secret"] || req.query.key || ""); const a = Buffer.from(given), b = Buffer.from(secret);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(403).json({ success: false, error: "Yetkisiz" });
+  res.json({ success: true, ...(await runDueScans()) });
+});
+// Otomatik taramaların sonuçlarını arayüze taşır: since (ms) sonrasında güncellenen varlıkların son sonucu
+app.get("/api/assets/latest", scanGuard, async (req, res) => {
+  if (!db) return res.status(503).json({ success: false, error: "Veritabanı yapılandırılmamış" });
+  const since = Number(req.query.since) || 0; res.set("Cache-Control", "no-store");
+  try {
+    const snap = await db.collection("assets").where("ownerId", "==", req.user.uid).limit(500).get(); const items = [];
+    for (const doc of snap.docs) {
+      const d = doc.data(), ms = d.scannedAt && d.scannedAt.toMillis ? d.scannedAt.toMillis() : 0; if (!ms || ms <= since) continue;
+      const { ownerId, scannedAt, lastCheck, updatedAt, nextScanAt, scanExtra, expiryLevel, authorizationConfirmed, ...result } = d;
+      items.push({ assetId: doc.id, scannedAtMs: ms, auto: !!d.auto, result: { ...result, lastCheck: new Date(ms).toISOString(), updatedAt: new Date(ms).toISOString() } });
+    }
+    res.json({ success: true, items: items.sort((x, y) => y.scannedAtMs - x.scannedAtMs).slice(0, 100) });
+  } catch (e) { console.error("latest:", e.message); res.status(503).json({ success: false, error: "Sonuçlar alınamadı" }); }
 });
 
 app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico, free: p.free }, timestamp: new Date().toISOString() }); });

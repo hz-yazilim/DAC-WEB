@@ -243,7 +243,7 @@ test("/api/scan: targetUrl metin değilse 400", async () => {
 test("Hesap uç noktaları ve ödeme: token yoksa reddedilir", async () => {
   delete process.env.DEV_AUTH_BYPASS;
   const s = await listen(require("../index"));
-  for (const [m, p] of [["GET", "/api/account/export"], ["DELETE", "/api/account"], ["POST", "/api/consent"], ["POST", "/api/checkout"], ["GET", "/api/state"], ["DELETE", "/api/assets/abc"]]) {
+  for (const [m, p] of [["GET", "/api/account/export"], ["DELETE", "/api/account"], ["POST", "/api/consent"], ["POST", "/api/checkout"], ["GET", "/api/state"], ["DELETE", "/api/assets/abc"], ["POST", "/api/push/subscribe"], ["POST", "/api/push/test"], ["GET", "/api/assets/latest"]]) {
     const r = await call(s, m, p, { body: m === "GET" ? undefined : {} });
     assert.ok([401, 503].includes(r.status), `${m} ${p} -> ${r.status}`); await r.arrayBuffer();
   }
@@ -333,4 +333,39 @@ test("Satın al: ALLOW_FREE_ACTIVATION=false ise sağlayıcı yokken paket veril
   const db = memDb(); const { s } = await payApp(db);
   const r = await call(s, "POST", "/api/checkout", { headers: { Authorization: "Bearer x", Origin: "http://localhost:3000" }, body: checkoutBody });
   assert.equal(r.status, 503); assert.equal(db.data["subscriptions/u1"], undefined); delete process.env.ALLOW_FREE_ACTIVATION; s.close();
+});
+
+// ---------- Otomatik tarama aralıkları ve bildirim kararları ----------
+test("alerts: erişim türleri 5 saatte, ağır taramalar haftada bir taranır", () => {
+  const A = require("../server/alerts");
+  assert.equal(A.intervalMs("UPTIME"), 5 * 36e5); assert.equal(A.intervalMs("SSL_CERTIFICATE"), 24 * 36e5); assert.equal(A.intervalMs("SECURITY"), 168 * 36e5);
+});
+test("alerts: çökme bir kez bildirilir, düzelince 'yeniden çalışıyor' gelir", () => {
+  const A = require("../server/alerts");
+  let r = A.decide({ type: "WEBSITE", name: "Site", prev: { status: "ACTIVE" }, next: { status: "DOWN", findings: ["web_down_critical"], data: {} } });
+  assert.deepEqual(r.notes.map((n) => n.kind), ["down"]);
+  r = A.decide({ type: "WEBSITE", name: "Site", prev: { status: "DOWN" }, next: { status: "DOWN", findings: ["web_down_critical"], data: {} } });
+  assert.equal(r.notes.length, 0);
+  r = A.decide({ type: "WEBSITE", name: "Site", prev: { status: "DOWN" }, next: { status: "ACTIVE", findings: [], data: {} } });
+  assert.deepEqual(r.notes.map((n) => n.kind), ["up"]);
+});
+test("alerts: SSL/alan adı bitişi her eşikte bir kez bildirilir, yenilenince sıfırlanır", () => {
+  const A = require("../server/alerts"); const mk = (d) => ({ specificAnalysis: { cert: { daysRemaining: d } } });
+  let r = A.decide({ type: "SSL_CERTIFICATE", name: "x", prev: {}, next: { status: "ACTIVE", findings: [], data: mk(25) } });
+  assert.equal(r.notes.length, 1); assert.equal(r.expiryLevel, 30);
+  r = A.decide({ type: "SSL_CERTIFICATE", name: "x", prev: { expiryLevel: 30 }, next: { status: "ACTIVE", findings: [], data: mk(20) } }); assert.equal(r.notes.length, 0);
+  r = A.decide({ type: "SSL_CERTIFICATE", name: "x", prev: { expiryLevel: 30 }, next: { status: "ACTIVE", findings: [], data: mk(6) } }); assert.equal(r.expiryLevel, 7); assert.equal(r.notes.length, 1);
+  r = A.decide({ type: "SSL_CERTIFICATE", name: "x", prev: { expiryLevel: 7 }, next: { status: "ACTIVE", findings: [], data: mk(80) } }); assert.equal(r.expiryLevel, null);
+  const d = A.decide({ type: "DOMAIN", name: "d", prev: {}, next: { status: "ACTIVE", findings: [], data: { specificAnalysis: { registration: { remainingDays: 2 } } } } }); assert.match(d.notes[0].title, /Alan adı 2 gün/);
+});
+test("alerts: yalnızca YENİ kritik bulgular bildirilir", () => {
+  const A = require("../server/alerts");
+  const r = A.decide({ type: "SECURITY", name: "s", prev: { status: "ACTIVE", findings: ["a_critical"] }, next: { status: "ACTIVE", findings: ["a_critical", "security_exposed_env_critical", "b_warning"], data: {} } });
+  assert.equal(r.notes.length, 1); assert.match(r.notes[0].title, /1 yeni kritik/);
+});
+test("cron ucu: CRON_SECRET yokken kapalı, yanlış anahtarla 403", async () => {
+  const app = require("../index"); const s = await listen(app);
+  delete process.env.CRON_SECRET; let r = await call(s, "POST", "/api/cron/scan"); assert.equal(r.status, 404);
+  process.env.CRON_SECRET = "dogru-anahtar-123"; r = await call(s, "POST", "/api/cron/scan?key=yanlis"); assert.equal(r.status, 403);
+  delete process.env.CRON_SECRET; s.close();
 });

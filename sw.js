@@ -1,6 +1,6 @@
 /* Digital Asset Center - Service Worker
  * Uygulama kabuğunu önbelleğe alır (çevrimdışı açılış). API ve Firebase istekleri asla önbelleğe alınmaz. */
-const CACHE = "dac-shell-v9";
+const CACHE = "dac-shell-v10";
 const SHELL = ["/", "/css/style.css", "/js/app.js", "/js/config.js", "/js/plans.js", "/js/login.js", "/js/sw-register.js", "/js/lucide.min.js", "/js/company.js", "/js/legal.js", "/js/cookie-consent.js", "/manifest.json", "/icons/icon-192.png", "/icons/icon-512.png", "/fonts/inter-latin.woff2", "/fonts/inter-latin-ext.woff2"];
 
 self.addEventListener("install", (e) => {
@@ -36,4 +36,20 @@ self.addEventListener("fetch", (e) => {
       })
       .catch(() => caches.match(req).then((hit) => hit || (req.mode === "navigate" ? caches.match("/") : undefined)))
   );
+});
+
+// ---------- Tarayıcı bildirimleri (Web Push) ----------
+self.addEventListener("push", (e) => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = { title: "Digital Asset Center", body: e.data ? e.data.text() : "" }; }
+  e.waitUntil(self.registration.showNotification(String(d.title || "Digital Asset Center").slice(0, 100), {
+    body: String(d.body || "").slice(0, 300), icon: "/icons/icon-192.png", badge: "/icons/icon-192.png", tag: d.tag || undefined, renotify: !!d.tag, data: { url: typeof d.url === "string" && d.url.startsWith("/") ? d.url : "/" }
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/";
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    for (const c of list) { if (new URL(c.url).origin === self.location.origin && "focus" in c) { c.navigate(url).catch(() => {}); return c.focus(); } }
+    return self.clients.openWindow(url);
+  }));
 });
