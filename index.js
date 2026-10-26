@@ -2204,7 +2204,12 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
   });
 }
 
-const payments = SRV("payments")({ app, db, admin, http: axios });
+// Ticari ayarlar (V13.2): yönetici panelinden değişen fiyat/limit, kupon, duyuru ve bakım modu (commerce.js)
+const COMMERCE = SRV("commerce")({ db, PLANS, log: (m) => console.warn("commerce:", m) });
+const payments = SRV("payments")({ app, db, admin, http: axios, commerce: COMMERCE });
+const COMMERCE_PUBLIC = COMMERCE.mountPublic(app, { SEC, getVerifyUser: () => payments.verifyUser, getIsAdmin: () => async (u) => (await ADMIN.roleOf(u)).admin });
+app.post(["/api/scan", "/api/jobs"], COMMERCE_PUBLIC.maintenanceGuard); // bakım modunda yeni tarama başlatma (yönetici hariç)
+COMMERCE.start();
 SRV("user-state")({ app, db, admin, verifyUser: payments.verifyUser });
 const ALERTS = SRV("alerts");
 const PUSH = SRV("push")({ app, db, verifyUser: payments.verifyUser }); // tarayıcı bildirimleri (Web Push)
@@ -2527,7 +2532,7 @@ async function getHealthDetail() {
     payments: { stripe: p.stripe, iyzico: p.iyzico, freeMode: p.free }, autoScan: { enabled: AUTO_ENABLED && !!db, running: autoRunning, cronEndpoint: !!process.env.CRON_SECRET },
     rdap: { bootstrapLoaded: rdapBoot.ok === true }, scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP }, ai: AI.status(), devBypassActive: SEC.devBypass() };
 }
-const ADMIN = SRV("admin")({ app, db, admin, verifyUser: payments.verifyUser, SEC, metrics: METRICS, jobs: JOBS, getHealth: getHealthDetail, platform: async () => ({ ai: AI.describe(), billing: BILLING.describe(PLANS), scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, legacyWebWeights: SCORING.WEB_LEGACY_WEIGHTS } }), getEntitlement: db ? payments.getEntitlement : null });
+const ADMIN = SRV("admin")({ app, db, admin, verifyUser: payments.verifyUser, SEC, metrics: METRICS, jobs: JOBS, getHealth: getHealthDetail, platform: async () => ({ ai: AI.describe(), billing: BILLING.describe(PLANS), scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, legacyWebWeights: SCORING.WEB_LEGACY_WEIGHTS } }), getEntitlement: db ? payments.getEntitlement : null, commerce: COMMERCE });
 
 app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico, free: p.free }, timestamp: new Date().toISOString() }); });
 // JSON ayrıştırma vb. hatalar için düzgün yanıt

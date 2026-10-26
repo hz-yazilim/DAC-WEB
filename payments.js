@@ -11,7 +11,7 @@ const crypto = require("crypto");
 const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 const SEC = require("./security");
 
-module.exports = function initPayments({ app, db, admin, http }) {
+module.exports = function initPayments({ app, db, admin, http, commerce = null }) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
   const stripeKey = () => process.env.STRIPE_SECRET_KEY || null;
   const iyziReady = () => !!(process.env.IYZICO_API_KEY && process.env.IYZICO_SECRET_KEY);
@@ -20,7 +20,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
   const freeMode = () => process.env.ALLOW_FREE_ACTIVATION !== "false";
   const providerReady = (currency) => (currency === "USD" ? !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET : iyziReady());
   const status = () => ({ stripe: !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET, iyzico: iyziReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true", free: freeMode() });
-  const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
+  const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message, ...(e.pcode ? { code: e.pcode } : {}), ...(e.extra || {}) }); } };
 
   // ---------- Kullanıcı doğrulama ----------
   async function verifyUser(req) {
@@ -89,7 +89,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
   // ---------- Ödeme başlat ----------
   app.post("/api/checkout", payGuard, handler(async (req, res) => {
     const u = await verifyUser(req);
-    const { plan, cycle = "monthly", currency = "TRY", billing = {}, consent } = req.body || {};
+    const { plan, cycle = "monthly", currency = "TRY", billing = {}, consent, coupon, expectedAmount } = req.body || {};
     // 6502 sayılı Kanun / Mesafeli Sözleşmeler Yönetmeliği: ön bilgilendirme + satış sözleşmesi onayı ve anında ifa edilen dijital hizmette cayma hakkı beyanı
     if (!consent || consent.distanceSales !== true || consent.withdrawalWaiver !== true) throw fail(400, "Ödeme için Ön Bilgilendirme Formu, Mesafeli Satış Sözleşmesi ve cayma hakkı beyanını onaylamalısınız.");
     if (!u.email && !(billing && billing.email)) throw fail(400, "Ödeme için e-posta adresi gerekli.");
@@ -102,24 +102,32 @@ module.exports = function initPayments({ app, db, admin, http }) {
     if (!PLANS.PAID.includes(plan)) throw fail(400, "Geçersiz paket.");
     if (!["monthly", "yearly"].includes(cycle)) throw fail(400, "Geçersiz dönem.");
     await db.collection("consents").add({ uid: u.uid, type: "distance-sales", version: LEGAL_VERSION, granted: true, plan: String(plan).slice(0, 30), at: Date.now(), ip: req.ip || null, ua: String(req.headers["user-agent"] || "").slice(0, 200) });
-    const P = PLANS.PLANS[plan]; const amount = PLANS.price(plan, currency === "USD" ? "USD" : "TRY", cycle);
+    const P = PLANS.PLANS[plan]; const cur = currency === "USD" ? "USD" : "TRY";
+    if (commerce) await commerce.ensureFresh(5000); // yönetici panelinden değişen fiyat/kupon anında geçerli olsun
+    const listAmount = PLANS.price(plan, cur, cycle); let amount = listAmount, couponInfo = null;
+    if (coupon) { if (!commerce) throw fail(400, "Kupon sistemi etkin değil."); couponInfo = await commerce.quoteCoupon(coupon, { plan, cycle, currency: cur, uid: u.uid }); amount = couponInfo.finalAmount; }
+    // Ekranda görülen tutar ile sunucunun alacağı tutar farklıysa (fiyat az önce değişti) ödeme başlatılmaz
+    if (expectedAmount != null && (!Number.isFinite(Number(expectedAmount)) || Math.abs(Number(expectedAmount) - amount) > 0.009)) throw Object.assign(fail(409, "Fiyat güncellendi. Yeni tutarı kontrol edip tekrar deneyin."), { pcode: "PRICE_CHANGED", extra: { amount, listAmount } });
     const back = returnUrlOf(req);
     const label = `Digital Asset Center - ${P.name} (${cycle === "yearly" ? "Yıllık" : "Aylık"})`;
 
+    let redeemed = false;
+    if (couponInfo) { await commerce.redeemCoupon(couponInfo.code, u.uid); redeemed = true; }
+    try {
     // Ödeme henüz entegre değil: paketi doğrudan ver (kart bilgisi istenmez). Sağlayıcı bağlanınca bu blok devre dışı kalır.
     if (!providerReady(currency === "USD" ? "USD" : "TRY") && freeMode()) {
       const cur = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
       const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === plan ? cur.periodEnd : Date.now();
       const periodEnd = startFrom + (cycle === "yearly" ? 365 : 30) * 864e5;
       await activate(u.uid, { plan, status: "active", provider: "manual", currency: currency === "USD" ? "USD" : "TRY", cycle, periodEnd, free: true });
-      await db.collection("orders").add({ uid: u.uid, plan, cycle, currency: currency === "USD" ? "USD" : "TRY", amount, status: "activated-free", consentVersion: LEGAL_VERSION, createdAt: Date.now() });
+      await db.collection("orders").add({ uid: u.uid, plan, cycle, currency: currency === "USD" ? "USD" : "TRY", amount, status: "activated-free", consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
       return res.json({ success: true, activated: true, plan, periodEnd, provider: "manual" });
     }
 
     if (currency === "USD") {
       if (!stripeKey()) throw fail(503, "USD ödemesi henüz yapılandırılmadı (STRIPE_SECRET_KEY).");
       const prev = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
-      const meta = { uid: u.uid, plan, cycle };
+      const meta = { uid: u.uid, plan, cycle, ...(couponInfo ? { coupon: couponInfo.code } : {}) };
       const s = await stripeApi("POST", "/checkout/sessions", {
         mode: "subscription", success_url: withParam(back, "paid", "1"), cancel_url: withParam(back, "paid", "0"),
         client_reference_id: u.uid, ...(prev.stripeCustomerId ? { customer: prev.stripeCustomerId } : { customer_email: u.email }),
@@ -134,7 +142,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
     if (!name || !address || !city) throw fail(400, "TL ödemesi için Ayarlar > Fatura Bilgileri (ad soyad, adres, şehir) doldurulmalı.");
     const orderRef = db.collection("orders").doc();
     const priceStr = amount.toFixed(2);
-    await orderRef.set({ uid: u.uid, plan, cycle, currency: "TRY", amount, status: "pending", returnUrl: back, consentVersion: LEGAL_VERSION, createdAt: Date.now() });
+    await orderRef.set({ uid: u.uid, plan, cycle, currency: "TRY", amount, status: "pending", returnUrl: back, consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
     const Iyzipay = require("iyzipay");
     const iyzi = new Iyzipay({ apiKey: process.env.IYZICO_API_KEY, secretKey: process.env.IYZICO_SECRET_KEY, uri: process.env.IYZICO_BASE_URL || "https://sandbox-api.iyzipay.com" });
     const parts = name.split(/\s+/); const surname = parts.length > 1 ? parts.pop() : "-"; const first = parts.join(" ");
@@ -148,6 +156,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
     }, (err, r) => (err ? reject(err) : resolve(r))));
     if (result.status !== "success") throw fail(502, "iyzico: " + (result.errorMessage || "ödeme formu oluşturulamadı"));
     res.json({ success: true, provider: "iyzico", url: result.paymentPageUrl || null, html: result.paymentPageUrl ? null : result.checkoutFormContent });
+    } catch (e) { if (redeemed) await commerce.releaseCoupon(couponInfo.code, u.uid).catch(() => {}); throw e; } // ödeme başlatılamadıysa kupon hakkı iade edilir
   }));
 
   // ---------- iyzico geri dönüş (tarayıcı POST) ----------
@@ -163,7 +172,7 @@ module.exports = function initPayments({ app, db, admin, http }) {
     const order = (await ref.get()).data();
     if (!order) return back(null, false);
     const paid = r.status === "success" && r.paymentStatus === "SUCCESS" && Number(r.paidPrice) + 0.01 >= order.amount;
-    if (!paid) { await ref.set({ status: "failed", gatewayStatus: r.paymentStatus || r.errorMessage || null }, { merge: true }); return back(order.returnUrl, false); }
+    if (!paid) { await ref.set({ status: "failed", gatewayStatus: r.paymentStatus || r.errorMessage || null }, { merge: true }); if (commerce && order.couponCode && order.status !== "failed" && order.status !== "paid") await commerce.releaseCoupon(order.couponCode, order.uid).catch(() => {}); return back(order.returnUrl, false); }
     // Tekrar/eşzamanlı callback süreyi iki kez uzatmasın: sipariş durumu transaction içinde "paid"e çekilir
     const first = await db.runTransaction(async (t) => { const o = (await t.get(ref)).data(); if (!o || o.status === "paid") return false; t.set(ref, { status: "paid", paidAt: Date.now(), paymentId: r.paymentId || null }, { merge: true }); return true; });
     if (first) {
@@ -200,7 +209,15 @@ module.exports = function initPayments({ app, db, admin, http }) {
     if (!isNew) return res.json({ received: true, duplicate: true });
     try {
       if (ev.type === "checkout.session.completed" && o.subscription) await stripeSync(await stripeApi("GET", "/subscriptions/" + o.subscription));
-      else if (ev.type === "invoice.paid") { const id = o.subscription || o.parent?.subscription_details?.subscription; if (id) await stripeSync(await stripeApi("GET", "/subscriptions/" + id)); }
+      else if (ev.type === "invoice.paid") {
+        const id = o.subscription || o.parent?.subscription_details?.subscription;
+        if (id) {
+          const sub = await stripeApi("GET", "/subscriptions/" + id); await stripeSync(sub);
+          // Yönetici panelinde Stripe tahsilatları da görünsün (idempotent: fatura kimliği belge kimliği olur)
+          try { const m = sub.metadata || {}, oid = "st_" + String(o.id || "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 60); if (m.uid && oid.length > 3) await db.collection("orders").doc(oid).set({ uid: m.uid, plan: m.plan, cycle: m.cycle, currency: "USD", amount: Math.round(Number(o.amount_paid || 0)) / 100, status: "paid", gatewayStatus: "stripe", paidAt: Date.now(), createdAt: Date.now(), invoiceId: String(o.id || "").slice(0, 80), ...(m.coupon ? { couponCode: m.coupon } : {}) }, { merge: true }); } catch (e) { console.error("payments: stripe sipariş kaydı yazılamadı:", e.message); }
+        }
+      }
+      else if (ev.type === "checkout.session.expired") { const m = o.metadata || {}; if (commerce && m.coupon && m.uid) await commerce.releaseCoupon(m.coupon, m.uid).catch(() => {}); }
       else if (ev.type === "customer.subscription.updated" || ev.type === "customer.subscription.deleted") await stripeSync(o);
     } catch (e) { await evRef.delete().catch(() => {}); throw e; } // işlenemediyse Stripe tekrar deneyebilsin
     res.json({ received: true });

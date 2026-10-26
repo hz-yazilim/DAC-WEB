@@ -331,7 +331,7 @@ test("Dağıtım: Render başlangıcı, ortam örneği, .gitignore ve sağlık u
 
 // ================= FRONTEND ↔ BACKEND BAĞLANTILARI (statik kaynak testleri) =================
 test("Frontend-backend: arayüzün çağırdığı her /api yolu sunucuda tanımlı", () => {
-  const front = SRC("app.js"), back = SRC("index.js") + SRC("admin.js") + SRC("payments.js") + SRC("user-state.js") + SRC("push.js");
+  const front = SRC("app.js"), back = SRC("index.js") + SRC("admin.js") + SRC("payments.js") + SRC("user-state.js") + SRC("push.js") + SRC("commerce.js");
   const called = new Set([...front.matchAll(/['"`](\/api\/[A-Za-z0-9_\-\/]+)/g)].map((m) => m[1].replace(/\/$/, "")));
   const missing = [...called].filter((p) => !back.includes(p) && !back.includes(p.replace(/\/[^/]*$/, "/:")) && !back.includes(p.replace(/\/[^/]+$/, "")));
   assert.deepEqual(missing, []); for (const need of ["/api/jobs", "/api/admin/overview", "/api/admin/users", "/api/me/admin"]) assert.ok(called.has(need) || front.includes(need), need + " arayüzde kullanılmıyor");
