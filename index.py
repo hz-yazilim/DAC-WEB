@@ -3482,16 +3482,24 @@ async def scan_uptime(target_url, extra=None) -> J:
     started = now_ms()
     V = "uptime-analyzer-v2.0"
     url = ensure_url(target_url)
-    N0 = 6
+    # P95 anlamlı olsun diye EN AZ 100 örnek (env ile artırılabilir, 100'ün altına inemez)
+    N0 = max(100, int(os.environ.get("UPTIME_SAMPLES", "100") or 100))
+    CONC = min(10, max(1, int(os.environ.get("UPTIME_CONCURRENCY", "5") or 5)))
+    BUDGET = max(10000, int(os.environ.get("UPTIME_BUDGET_MS", "45000") or 45000))
     samples: list = []
-    for i in range(N0):
-        if i >= 3 and all(not s.up for s in samples):
-            break
-        r = await request(url, timeout=8000, read_body=True, max_bytes=200000, insecure=True)
-        samples.append(J(status=r.status, ms=r.total, ttfb=r.ttfb, up=0 < r.status < 500, protectedBy=detect_bot_protection(r) if r.status >= 400 else None,
-                         err=r.errorInfo.kind if r.errorInfo else None, retryAfter=(r.headers or {}).get("retry-after"), maint=r.status == 503))
-        if i < N0 - 1:
-            await sleep(500)
+    state = {"launched": 0, "stop": False}
+
+    async def _worker():
+        while not state["stop"] and state["launched"] < N0 and now_ms() - started < BUDGET:
+            state["launched"] += 1
+            r = await request(url, timeout=6000, read_body=True, max_bytes=60000, insecure=True)
+            samples.append(J(status=r.status, ms=r.total, ttfb=r.ttfb, up=0 < r.status < 500, protectedBy=detect_bot_protection(r) if r.status >= 400 else None,
+                             err=r.errorInfo.kind if r.errorInfo else None, retryAfter=(r.headers or {}).get("retry-after"), maint=r.status == 503))
+            if len(samples) == 5 and all(not x.up for x in samples):
+                state["stop"] = True
+            await sleep(100)
+
+    await asyncio.gather(*[_worker() for _ in range(CONC)])
     N = len(samples)
     host = host_of(url)
     dns_ms = await _dns_lookup_ms(host) if host else None
@@ -3512,7 +3520,7 @@ async def scan_uptime(target_url, extra=None) -> J:
     median = times[len(times) // 2] if times else None
     c = Checker()
     server_errs = len([s for s in samples if s.status >= 500])
-    c.add(rate == 100, 40, "finding_uptime_down_critical" if rate == 0 else "finding_uptime_intermittent_critical", "erisim")
+    c.add((rate >= 98) if N >= 50 else (rate == 100), 40, "finding_uptime_down_critical" if rate == 0 else "finding_uptime_intermittent_critical", "erisim")
     c.add(rate >= 80, 10, None, "erisim")
     c.add(server_errs == 0, 5, "finding_uptime_server_errors_critical", "erisim")
     if times:

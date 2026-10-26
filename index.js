@@ -1800,13 +1800,22 @@ async function scanPerformance(targetUrl) {
 // UPTIME & GECİKME v2
 // =====================================================================
 async function scanUptime(targetUrl, extra = {}) {
-  const startedAt = Date.now(); const V = "uptime-analyzer-v2.0"; const url = ensureUrl(targetUrl); const N0 = 6, samples = [];
-  for (let i = 0; i < N0; i++) {
-    if (i >= 3 && samples.every(s => !s.up)) break; // 3 ardışık başarısızlıktan sonra boşuna bekleme
-    const r = await request(url, { timeout: 8000, readBody: true, maxBytes: 200000, insecure: true });
-    samples.push({ status: r.status, ms: r.total, ttfb: r.ttfb, up: r.status > 0 && r.status < 500, protectedBy: r.status >= 400 ? detectBotProtection(r) : null, err: r.errorInfo?.kind || null, retryAfter: r.headers["retry-after"] || null, maint: r.status === 503 });
-    if (i < N0 - 1) await sleep(500);
-  }
+  const startedAt = Date.now(); const V = "uptime-analyzer-v2.0"; const url = ensureUrl(targetUrl);
+  // P95 anlamlı olsun diye EN AZ 100 örnek alınır (env ile artırılabilir, 100'ün altına inemez). Eşzamanlı çalışır; süre bütçesi aşılırsa kalan örnekler alınmaz.
+  const N0 = Math.max(100, parseInt(process.env.UPTIME_SAMPLES || "100", 10) || 100);
+  const CONC = Math.min(10, Math.max(1, parseInt(process.env.UPTIME_CONCURRENCY || "5", 10) || 5));
+  const BUDGET = Math.max(10000, parseInt(process.env.UPTIME_BUDGET_MS || "45000", 10) || 45000);
+  const samples = []; let launched = 0, stopAll = false;
+  const worker = async () => {
+    while (!stopAll && launched < N0 && Date.now() - startedAt < BUDGET) {
+      launched++;
+      const r = await request(url, { timeout: 6000, readBody: true, maxBytes: 60000, insecure: true });
+      samples.push({ status: r.status, ms: r.total, ttfb: r.ttfb, up: r.status > 0 && r.status < 500, protectedBy: r.status >= 400 ? detectBotProtection(r) : null, err: r.errorInfo?.kind || null, retryAfter: r.headers["retry-after"] || null, maint: r.status === 503 });
+      if (samples.length === 5 && samples.every(s => !s.up)) stopAll = true; // ilk 5 örnek başarısızsa boşuna 100'e tamamlama
+      await sleep(100);
+    }
+  };
+  await Promise.all(Array.from({ length: CONC }, worker));
   const N = samples.length; const host = hostOf(url); const t0 = Date.now(); let dnsMs = null; try { await dns.lookup(host); dnsMs = Date.now() - t0; } catch {}
   let uPort = /^https:/i.test(url) ? 443 : 80; try { const pu = new URL(url); if (pu.port) uPort = parseInt(pu.port, 10); } catch {}
   const [tcp, tlsi] = await Promise.all([host ? tcpPortCheck(host, uPort, 4000) : null, /^https:/i.test(url) && host ? tlsAlpn(host) : null]);
@@ -1814,7 +1823,7 @@ async function scanUptime(targetUrl, extra = {}) {
   const mean = avg(times); const jitter = times.length > 1 ? Math.round(Math.sqrt(times.reduce((s, t) => s + (t - mean) ** 2, 0) / times.length)) : 0;
   const p95 = times.length ? times[Math.min(times.length - 1, Math.ceil(times.length * 0.95) - 1)] : null; const median = times.length ? times[Math.floor(times.length / 2)] : null;
   const c = makeChecker(); const serverErrs = samples.filter(s => s.status >= 500).length;
-  c.add(rate === 100, 40, rate === 0 ? "finding_uptime_down_critical" : "finding_uptime_intermittent_critical", "erisim"); c.add(rate >= 80, 10, null, "erisim");
+  c.add(N >= 50 ? rate >= 98 : rate === 100, 40, rate === 0 ? "finding_uptime_down_critical" : "finding_uptime_intermittent_critical", "erisim"); c.add(rate >= 80, 10, null, "erisim");
   c.add(serverErrs === 0, 5, "finding_uptime_server_errors_critical", "erisim");
   if (times.length) { c.add(median < 800, 20, "finding_uptime_slow_response_warning", "gecikme"); c.add(p95 < 2000, 10, "finding_uptime_high_p95_warning", "gecikme"); c.add(jitter < 300, 10, "finding_uptime_unstable_latency_warning", "gecikme"); }
   c.add(dnsMs != null ? dnsMs < 300 : null, 5, "finding_uptime_slow_dns_warning", "gecikme");
@@ -1827,7 +1836,7 @@ async function scanUptime(targetUrl, extra = {}) {
   return buildResult({
     assetType: "UPTIME", version: V, startedAt, target: url, findings, score: rate === 0 ? 0 : c.score(), status: rate === 0 ? "DOWN" : undefined,
     specific: { url, samples: N, successRatePct: rate, statusCodes: samples.map(s => s.status), failures: samples.filter(s => !s.up).map(s => s.err || `HTTP ${s.status}`), minMs: times[0] ?? null, avgMs: mean, medianMs: median, p95Ms: p95, maxMs: times[times.length - 1] ?? null, jitterMs: jitter, dnsLookupMs: dnsMs, tcpConnectMs: tcp?.open ? tcp.latencyMs : null, tlsHandshakeMs: tlsi?.handshakeMs ?? null,
-      note: "Tek noktadan (sunucu konumu) anlık ölçüm; sürekli izleme değildir. 4xx yanıtlar 'sunucu ayakta' sayılır, ölçüm ilk bayta kadar geçen süreyi (TTFB) esas alır.", checks: c.summary(), scores }
+      note: `Tek noktadan (sunucu konumu) anlık ölçüm; sürekli izleme değildir. ${N} örnekle hesaplandı${N < 100 ? " (süre sınırı veya erişilemezlik nedeniyle 100'ün altında kaldı; P95 güvenilir değildir)" : ""}. 4xx yanıtlar 'sunucu ayakta' sayılır, ölçüm ilk bayta kadar geçen süreyi (TTFB) esas alır.`, checks: c.summary(), scores }
   });
 }
 

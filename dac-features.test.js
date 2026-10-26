@@ -345,3 +345,30 @@ test("XSS: yeni arayüz kodunda dış kaynaklı değerler esc() ile kodlanır", 
   const raw = [...part.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]).filter((e) => /\b(name|targetUrl|email|displayName|uid|message|error|label|target|code)\b/.test(e) && !/esc\(|ic\(|\.length|\?|fmt|tone|badge|Number|toLocaleString|slice\(0,\s*\d\)\.toUpperCase/.test(e));
   assert.deepEqual(raw, [], "esc'siz enterpolasyon: " + raw.join(" | "));
 });
+
+// ================= YÖNETİCİ: PAKETLER / SİPARİŞLER / MÜDAHALE =================
+test("Admin: paket/sipariş uçları yetkisiz 403; paket verme, listeleme, kaldırma ve doğrulamalar", async () => {
+  const { app, store } = adminApp({ env: { ADMIN_UIDS: "root" }, users: { root: { uid: "root", email: "root@ornek.com", emailVerified: true, metadata: {} }, u1: { uid: "u1", email: "u1@ornek.com", emailVerified: true, metadata: {} }, u2: { uid: "u2", email: "u2@ornek.com", emailVerified: true, metadata: {} } } }); const s = await listen(app);
+  for (const [m, p] of [["GET", "/api/admin/subscriptions"], ["GET", "/api/admin/orders"], ["POST", "/api/admin/users/u1/plan"], ["POST", "/api/admin/users/u1/plan/revoke"], ["POST", "/api/admin/users/u1/trial"]])
+    assert.equal((await fetch(url(s, p), { method: m, headers: as("u1"), body: m === "POST" ? "{}" : undefined })).status, 403, m + p);
+  const post = (p, b) => fetch(url(s, p), { method: "POST", headers: as("root"), body: JSON.stringify(b) });
+  assert.equal((await post("/api/admin/users/u1/plan", { plan: "gizli", days: 30 })).status, 400, "bilinmeyen paket reddedilir");
+  assert.equal((await post("/api/admin/users/u1/plan", { plan: "kobi", days: 99999 })).status, 400, "gün sınırı");
+  assert.equal((await post("/api/admin/users/yok/plan", { plan: "kobi", days: 30 })).status, 404);
+  const g = await post("/api/admin/users/u1/plan", { plan: "kobi", days: 30 }); assert.equal(g.status, 200);
+  assert.equal(store.subscriptions.u1.plan, "kobi"); assert.equal(store.subscriptions.u1.provider, "admin"); assert.ok(store.subscriptions.u1.periodEnd > Date.now());
+  const subs = await (await fetch(url(s, "/api/admin/subscriptions"), { headers: as("root") })).json();
+  assert.equal(subs.summary.paidActive, 1); assert.equal(subs.summary.byPlan.kobi, 1); assert.equal(subs.summary.grantedFree, 1); assert.equal(subs.summary.freeUsers, 2, "3 kullanıcıdan 2'si ücretsiz");
+  assert.equal(subs.rows[0].email, "u1@ornek.com");
+  const list = await (await fetch(url(s, "/api/admin/users"), { headers: as("root") })).json(); const u1 = list.users.find((x) => x.uid === "u1"), r0 = list.users.find((x) => x.uid === "root");
+  assert.equal(u1.plan.plan, "kobi"); assert.equal(r0.plan.plan, "free");
+  assert.equal((await post("/api/admin/users/u1/plan/revoke", {})).status, 200); assert.equal(store.subscriptions.u1.status, "canceled");
+  assert.equal((await post("/api/admin/users/root/plan/revoke", {})).status, 404, "aboneliği olmayanda 404");
+  store.subscriptions.u2 = { plan: "freelance", status: "active", provider: "stripe", periodEnd: Date.now() + 864e5 };
+  assert.equal((await post("/api/admin/users/u2/plan", { plan: "kobi", days: 30 })).status, 409, "ödeme sağlayıcılı aktif aboneliğin üzerine yazılmaz");
+  assert.equal((await post("/api/admin/users/u2/plan/revoke", {})).status, 409);
+  assert.equal((await post("/api/admin/users/u1/trial", { days: 5 })).status, 200); assert.ok(Math.abs(store.users.u1.trialStart + 3 * 864e5 - (Date.now() + 5 * 864e5)) < 5000, "deneme bitişi = şimdi + 5 gün");
+  assert.equal((await post("/api/admin/users/u1/trial", { days: 999 })).status, 400);
+  const aud = Object.values(store.adminAudit).map((x) => x.action); assert.ok(aud.includes("plan.grant") && aud.includes("plan.revoke") && aud.includes("trial.extend"), aud.join());
+  s.close();
+});

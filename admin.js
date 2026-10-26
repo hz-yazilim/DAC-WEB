@@ -9,6 +9,7 @@
  *  - Gerçek verisi olmayan alanlar uydurulmaz: { available:false, reason } döner. */
 "use strict";
 const { scrub } = require("./metrics");
+const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 
 module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics, jobs, getHealth, platform, getEntitlement = null, now = Date.now }) {
   const list = (v) => String(v || "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -66,6 +67,30 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   }
   const countOf = async (q) => { try { return (await q.count().get()).data().count; } catch (e) { return null; } };
 
+  /* ---------- Paket / abonelik yardımcıları ---------- */
+  const PAID = PLANS.PAID || ["freelance", "kobi", "enterprise"];
+  const planName = (id) => (PLANS.PLANS[id] && PLANS.PLANS[id].name) || id || "-";
+  const ts = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : typeof v === "number" ? v : null);
+  // subscriptions/{uid} belgesinden okunabilir paket özeti (yazma yapmaz)
+  function planInfo(sub) {
+    if (!sub) return { plan: "free", planName: "Ücretsiz", active: false, status: "none", free: false, provider: null, periodEnd: null };
+    const pe = ts(sub.periodEnd); const active = PAID.includes(sub.plan) && sub.status === "active" && (!pe || pe > now());
+    return { plan: active ? sub.plan : "free", planName: active ? planName(sub.plan) : "Ücretsiz", lastPlan: sub.plan || null, lastPlanName: sub.plan ? planName(sub.plan) : null,
+      active, status: sub.status || "none", free: !!sub.free || sub.provider === "manual" || sub.provider === "admin", provider: sub.provider || null, currency: sub.currency || null, cycle: sub.cycle || null, periodEnd: pe, updatedAt: ts(sub.updatedAt) };
+  }
+  async function subOf(uid) { if (!db) return null; try { const d = await db.collection("subscriptions").doc(uid).get(); return d.exists === false ? null : (d.data() || null); } catch { return null; } }
+  async function emailsOf(uids) {
+    const map = {}; if (!authOk() || !uids.length) return map; const u = [...new Set(uids)];
+    for (let i = 0; i < u.length; i += 100) {
+      const chunk = u.slice(i, i + 100);
+      try { const r = await admin.auth().getUsers(chunk.map((uid) => ({ uid }))); (r.users || []).forEach((x) => { map[x.uid] = x.email || x.displayName || null; }); }
+      catch { await Promise.all(chunk.map(async (uid) => { try { const x = await admin.auth().getUser(uid); map[uid] = x.email || null; } catch { /* kullanıcı silinmiş olabilir */ } })); }
+    }
+    return map;
+  }
+  const orderView = (id, o, emails) => ({ id, uid: o.uid, email: (emails && emails[o.uid]) || null, plan: o.plan, planName: planName(o.plan), cycle: o.cycle || null, currency: o.currency || null, amount: o.amount == null ? null : o.amount, status: o.status || null,
+    provider: o.status === "activated-free" ? "manual" : (o.currency === "USD" ? "stripe" : "iyzico"), createdAt: ts(o.createdAt), paidAt: ts(o.paidAt), gatewayStatus: o.gatewayStatus || null });
+
   /* ---------- Uçlar ---------- */
   // Normal kullanıcı için güvenli rol sorgusu (menüyü göstermek için). Yetkisiz kullanıcıya hiçbir ayrıntı vermez.
   app.get("/api/me/admin", [(req, res, next) => (ipLimit(req.ip) ? next() : deny(res, 429, "Çok fazla istek.")), authn], wrap(async (req, res) => { res.set("Cache-Control", "no-store"); const r = await roleOf(req.user); res.json({ success: true, admin: r.admin, you: { uid: req.user.uid, email: req.user.email || null, emailVerified: req.user.emailVerified === true }, configured: { uids: envUids().size, emails: envEmails().size } }); }));
@@ -115,6 +140,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     out = out.slice(0, limit);
     const counts = await Promise.all(out.map((u) => (db ? countOf(db.collection("assets").where("ownerId", "==", u.uid)) : null)));
     out.forEach((u, i) => (u.assetCount = counts[i]));
+    const subs = await Promise.all(out.map((u) => subOf(u.uid))); out.forEach((u, i) => { u.plan = planInfo(subs[i]); });
     res.json({ success: true, users: out, nextPageToken: next, scanned, filtered: !!q || status !== "all" });
   }));
 
@@ -122,14 +148,18 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     const uid = String(req.params.uid || ""); if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
     if (!authOk()) return deny(res, 503, "Firebase Admin yapılandırılmamış");
     let u; try { u = await admin.auth().getUser(uid); } catch { return deny(res, 404, "Kullanıcı bulunamadı"); }
-    let byType = null, assetCount = null, plan = null, userJobs = [];
+    let byType = null, assetCount = null, plan = null, userJobs = [], subscription = null, orders = [], trial = null;
     if (db) {
       try { const snap = await db.collection("assets").where("ownerId", "==", uid).limit(2000).get(); byType = {}; snap.docs.forEach((d) => { const t = d.data().assetType || d.data().type || "?"; byType[t] = (byType[t] || 0) + 1; }); assetCount = snap.size; } catch { /* sayılamadı */ }
       if (getEntitlement) { try { const e = await getEntitlement(uid); plan = { plan: e.plan, status: e.status, periodEnd: e.periodEnd || null, trialEnd: e.trialEnd || null }; } catch { /* paket okunamadı */ } }
     }
     try { userJobs = (await jobs.listJobs(uid, 10)).map((j) => ({ id: j.id, label: j.label, status: j.status, total: j.total, counts: j.counts, createdAt: j.createdAt })); } catch { /* */ }
     const r = await roleOf({ uid, email: u.email, emailVerified: u.emailVerified });
-    res.json({ success: true, user: { ...pubUser(u), isAdmin: r.admin }, assets: { available: assetCount != null, count: assetCount, byType }, plan, jobs: userJobs });
+    if (db) {
+      subscription = planInfo(await subOf(uid));
+      try { const os = await db.collection("orders").where("uid", "==", uid).limit(50).get(); orders = os.docs.map((d) => orderView(d.id, d.data(), { [uid]: u.email })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 20); } catch { /* sipariş okunamadı */ }
+    }
+    res.json({ success: true, user: { ...pubUser(u), isAdmin: r.admin }, assets: { available: assetCount != null, count: assetCount, byType }, plan, subscription, orders, jobs: userJobs });
   }));
 
   app.post("/api/admin/users/:uid/disable", guard, writeGuard, wrap(async (req, res) => {
@@ -177,6 +207,68 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   app.get("/api/admin/jobs/:id/items", guard, wrap(async (req, res) => res.json({ success: true, ...(await jobs.queryItems(String(req.params.id), null, req.query, true)) })));
   app.post("/api/admin/jobs/:id/retry", guard, writeGuard, wrap(async (req, res) => { const r = await jobs.retryItems(String(req.params.id), null, { admin: true, limit: 500 }); await auditSafe(req, "job.retry", req.params.id, r); res.json({ success: true, ...r }); }));
   app.post("/api/admin/jobs/:id/cancel", guard, writeGuard, wrap(async (req, res) => { const r = await jobs.cancelJob(String(req.params.id), null, true); await auditSafe(req, "job.cancel", req.params.id, { canceled: r.canceled }); res.json({ success: true, canceled: r.canceled }); }));
+
+  /* ---------- Abonelikler ve siparişler (kim hangi paketi almış / kim ücretsiz) ---------- */
+  app.get("/api/admin/subscriptions", guard, wrap(async (req, res) => {
+    if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", rows: [], summary: null });
+    const f = String(req.query.plan || "all"), q = String(req.query.q || "").trim().toLowerCase().slice(0, 100);
+    const snap = await db.collection("subscriptions").limit(Math.min(5000, SEC.int(process.env.ADMIN_SUB_CAP, 2000))).get();
+    const all = snap.docs.map((d) => ({ uid: d.id, ...planInfo(d.data()) }));
+    const emails = await emailsOf(all.map((x) => x.uid)); all.forEach((x) => { x.email = emails[x.uid] || null; });
+    const sum = { byPlan: {}, paidActive: 0, grantedFree: 0, expiredOrCanceled: 0, total: all.length };
+    for (const x of all) { if (x.active) { sum.byPlan[x.plan] = (sum.byPlan[x.plan] || 0) + 1; sum.paidActive++; if (x.free) sum.grantedFree++; } else sum.expiredOrCanceled++; }
+    const us = await userStats().catch(() => null); const totalUsers = us && us.available ? us.total : null;
+    sum.totalUsers = totalUsers; sum.freeUsers = totalUsers == null ? null : Math.max(0, totalUsers - sum.paidActive);
+    let rows = all;
+    if (PAID.includes(f)) rows = rows.filter((x) => x.active && x.plan === f); else if (f === "granted") rows = rows.filter((x) => x.active && x.free); else if (f === "expired") rows = rows.filter((x) => !x.active);
+    if (q) rows = rows.filter((x) => `${x.email || ""} ${x.uid}`.toLowerCase().includes(q));
+    rows.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    res.json({ success: true, available: true, summary: sum, rows: rows.slice(0, 300), truncated: rows.length > 300, note: "Ücretsiz = aktif ücretli paketi olmayan (deneme/süresi dolmuş) kullanıcılar. 'Ödemesiz verildi' = ödeme sağlayıcısı olmadan etkinleştirilen veya yönetici tarafından verilen paket." });
+  }));
+  app.get("/api/admin/orders", guard, wrap(async (req, res) => {
+    if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", orders: [] });
+    const st = String(req.query.status || "").trim();
+    const snap = await db.collection("orders").orderBy("createdAt", "desc").limit(Math.min(300, +req.query.limit || 100)).get();
+    let rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })); if (st) rows = rows.filter((o) => o.status === st);
+    const emails = await emailsOf(rows.map((o) => o.uid));
+    res.json({ success: true, available: true, orders: rows.map((o) => orderView(o.id, o, emails)) });
+  }));
+
+  /* ---------- Müdahale: paket ver / kaldır, deneme süresi uzat ---------- */
+  const uidOk = (uid) => /^[A-Za-z0-9_-]{1,128}$/.test(uid);
+  app.post("/api/admin/users/:uid/plan", guard, writeGuard, wrap(async (req, res) => {
+    const uid = String(req.params.uid || ""); if (!uidOk(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
+    if (!db || !authOk()) return deny(res, 503, "Firebase yapılandırılmamış");
+    const b = req.body || {}, plan = String(b.plan || ""), days = Math.floor(+b.days || 30);
+    if (!PAID.includes(plan)) return deny(res, 400, "Geçerli bir paket seçin: " + PAID.join(", "));
+    if (!(days >= 1 && days <= 3660)) return deny(res, 400, "Gün sayısı 1-3660 arasında olmalı");
+    try { await admin.auth().getUser(uid); } catch { return deny(res, 404, "Kullanıcı bulunamadı"); }
+    const prev = await subOf(uid);
+    if (prev && prev.provider && ["stripe", "iyzico"].includes(prev.provider) && prev.status === "active" && ts(prev.periodEnd) > now()) return deny(res, 409, "Kullanıcının ödeme sağlayıcısıyla aktif aboneliği var; üzerine yazılmadı.");
+    const periodEnd = now() + days * 864e5;
+    await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cycle: days >= 365 ? "yearly" : "monthly", periodEnd, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
+    await auditSafe(req, "plan.grant", uid, { plan, days, previous: prev ? prev.plan || null : null });
+    res.json({ success: true, uid, plan, periodEnd });
+  }));
+  app.post("/api/admin/users/:uid/plan/revoke", guard, writeGuard, wrap(async (req, res) => {
+    const uid = String(req.params.uid || ""); if (!uidOk(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
+    if (!db) return deny(res, 503, "Firestore bağlı değil");
+    const prev = await subOf(uid); if (!prev) return deny(res, 404, "Bu kullanıcının aboneliği yok");
+    if (prev.provider === "stripe" || prev.provider === "iyzico") return deny(res, 409, "Ödeme sağlayıcılı abonelik buradan iptal edilmez; sağlayıcı panelinden iptal edin.");
+    await db.collection("subscriptions").doc(uid).set({ status: "canceled", periodEnd: now(), revokedBy: req.user.uid, updatedAt: now() }, { merge: true });
+    await auditSafe(req, "plan.revoke", uid, { plan: prev.plan || null });
+    res.json({ success: true, uid });
+  }));
+  app.post("/api/admin/users/:uid/trial", guard, writeGuard, wrap(async (req, res) => {
+    const uid = String(req.params.uid || ""); if (!uidOk(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
+    if (!db || !authOk()) return deny(res, 503, "Firebase yapılandırılmamış");
+    const days = Math.floor(+(req.body || {}).days || 0); if (!(days >= 1 && days <= 90)) return deny(res, 400, "Gün sayısı 1-90 arasında olmalı");
+    try { await admin.auth().getUser(uid); } catch { return deny(res, 404, "Kullanıcı bulunamadı"); }
+    const trialStart = now() - (PLANS.TRIAL_DAYS - days) * 864e5; // deneme bitişi = şimdi + days
+    await db.collection("users").doc(uid).set({ trialStart }, { merge: true });
+    await auditSafe(req, "trial.extend", uid, { days });
+    res.json({ success: true, uid, trialEnd: now() + days * 864e5 });
+  }));
 
   app.get("/api/admin/audit", guard, wrap(async (req, res) => {
     if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", entries: [] });
