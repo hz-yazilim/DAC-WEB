@@ -8,7 +8,7 @@ const _p = require("path"), _fs = require("fs");
 const ROOT = _fs.existsSync(_p.join(__dirname, "index.js")) ? __dirname : _p.join(__dirname, "..");
 const LOAD = (n) => require(_fs.existsSync(_p.join(ROOT, "server", n + ".js")) ? _p.join(ROOT, "server", n) : _p.join(ROOT, n));
 const PUBFILE = (n) => { const a = _p.join(ROOT, "public"); if (!_fs.existsSync(a)) return _p.join(ROOT, n); const f = _p.join(a, n); return _fs.existsSync(f) ? f : (_fs.readdirSync(a, { recursive: true }).map((x) => _p.join(a, x)).find((x) => _p.basename(x) === n) || f); };
-const APP_FILES = ["app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js"];
+const APP_FILES = ["app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js", "app-support.js"];
 const SRC = (n) => _fs.readFileSync(_fs.existsSync(_p.join(ROOT, "server", n)) ? _p.join(ROOT, "server", n) : _p.join(ROOT, n), "utf8");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (app) => new Promise((r) => { const s = http.createServer(app).listen(0, () => r(s)); });

@@ -1,7 +1,7 @@
 /* Digital Asset Center - ana render, olaylar ve giriş/başlatma (app-analysis.js'den sonra yüklenir) */
 /* ---------- ana render ---------- */
 const NAV0=()=>[['GENEL',[['dash','Genel Bakış','layout-grid']]],...GROUPS.map(([g,l])=>[l,Object.entries(CATS).filter(([,v])=>v.g===g).map(([k,v])=>['cat/'+k,v.label,v.icon])]),
- ['YÖNETİM',[['assets','Varlıklarım','database'],['history','Tarama Geçmişi','history'],['renewals','Yenileme Takvimi','calendar-clock'],['reports','Raporlar','bar-chart-3'],['team','Ekip Yönetimi','users'],['projects','Müşteri Projeleri','briefcase'],['bulk','Toplu Tarama','list-checks'],['plan','Paket ve Faturalandırma','credit-card'],['settings','Ayarlar','settings']]]];
+ ['YÖNETİM',[['assets','Varlıklarım','database'],['history','Tarama Geçmişi','history'],['renewals','Yenileme Takvimi','calendar-clock'],['reports','Raporlar','bar-chart-3'],['team','Ekip Yönetimi','users'],['projects','Müşteri Projeleri','briefcase'],['bulk','Toplu Tarama','list-checks'],['plan','Paket ve Faturalandırma','credit-card'],['support','Destek','life-buoy'],['settings','Ayarlar','settings']]]];
 const NAV=()=>{const n=NAV0();if(BK.isAdmin)n.push(['SİSTEM',[['admin','Yönetici Paneli','shield']]]);return n};
 const icons=()=>window.lucide&&lucide.createIcons();
 function render(){
@@ -14,7 +14,7 @@ function render(){
  <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="logout">${ic('log-out')} Çıkış</button></div></div></div>`;
  $('#av').textContent=S.settings.org.slice(0,2).toUpperCase();
  $('#dot').style.display=alerts().length?'block':'none';
- $('#view').innerHTML=siteBanner()+(p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='bulk'?bulkPage():p==='whoami'?whoamiPage():p==='domains'?domainsPage():p==='admin'&&BK.isAdmin?adminPage():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='settings'?settings():dash());
+ $('#view').innerHTML=siteBanner()+(p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='bulk'?bulkPage():p==='whoami'?whoamiPage():p==='domains'?domainsPage():p==='admin'&&BK.isAdmin?adminPage():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='support'?supportPage():p==='settings'?settings():dash());
  icons();bkPoll();
 }
 
@@ -43,6 +43,7 @@ document.addEventListener('click',async e=>{
  else if(act==='cycle'){st.cycle=b.dataset.v;save();render()}
  else if(act==='buy')checkout(b.dataset.p);
  else if(act==='portal')portal();
+ else if(act==='sub-cancel')subCancelAsk();else if(act==='sub-cancel-go')subCancelGo(b.dataset.v==='1');else if(act==='sub-resume')subResume();
  else if(act==='syncplan'){const p=await syncPlan();toast(p===null?'Sunucudan abonelik bilgisi alınamadı (API adresi ve Firebase yapılandırmasını kontrol edin)':P.PAID.includes(p)?'Paketiniz aktif: '+P.PLANS[p].name:'Aktif ücretli paket bulunamadı',p===null?'warn':'')}
  else if(act==='ping')ping();
  else if(act==='ntf-on')ntfEnable();else if(act==='ntf-off')ntfDisable();else if(act==='ntf-test')ntfTest();

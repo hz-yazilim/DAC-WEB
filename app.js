@@ -438,7 +438,7 @@ function plan(){
  <div class="plans">${cards}</div>
  ${free&&!provOk(cur)?`<div class="paynote">Ödeme sistemi henüz bağlanmadı: <b>Satın al</b> butonu paketi kart bilgisi istemeden doğrudan etkinleştirir (geçici test dönemi).</div>`:''}
  <p class="hint">${cur==='TRY'?'TL ödemeleri iyzico ile alınır; kart bilgisi bu sitede saklanmaz. Süre dolmadan yeniden satın alarak uzatabilirsiniz. Ödeme için Ayarlar > Fatura Bilgileri doldurulmalıdır.':'USD ödemeleri Stripe ile alınır, abonelik otomatik yenilenir ve istediğiniz zaman iptal edilebilir.'}</p>
- ${ps.paid&&st.provider==='stripe'?`<button class="btn" data-act="portal">${ic('credit-card')} Aboneliği yönet / iptal et</button>`:''}
+ ${subCard(ps,st)}
  <button class="btn" data-act="syncplan" style="margin-top:8px">${ic('refresh-cw')} Ödememi kontrol et</button>`;
 }
 
@@ -490,8 +490,8 @@ async function syncPlan(){
   const h=await authH();if(!h.Authorization)return null;
   const r=await fetch(api+'/api/subscription',{headers:h}),j=await r.json();if(!r.ok||!j.success)return null;
   const st=S.settings;
-  if(P.PAID.includes(j.plan)){st.plan=j.plan;st.planEnd=j.periodEnd||null;st.provider=j.provider||null}
-  else{st.plan='trial';st.planEnd=null;st.provider=null}
+  if(P.PAID.includes(j.plan)){st.plan=j.plan;st.planEnd=j.periodEnd||null;st.provider=j.provider||null;st.cancelAtPeriodEnd=j.cancelAtPeriodEnd===true}
+  else{st.plan='trial';st.planEnd=null;st.provider=null;st.cancelAtPeriodEnd=false}
   if(j.trialStart)st.trialStart=j.trialStart;
   save();render();return j.plan;
  }catch{return null}
@@ -529,6 +529,37 @@ async function doCheckout(plan){
   location.href=j.url;
  }catch(e){toast(e.message,'err')}
  busy(false);
+}
+/* ---------- abonelik iptali (V13.4): kullanıcı kendi aboneliğini iptal eder / iptali geri alır ---------- */
+function subCard(ps,st){
+ if(!ps.paid)return'';
+ const prov=st.provider,end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-',canc=!!st.cancelAtPeriodEnd;
+ const provTxt=prov==='stripe'?'Stripe (USD, otomatik yenilenir)':prov==='iyzico'?'iyzico (TL, tek seferlik dönem bedeli)':'Ödemesiz / yönetici tanımlı paket';
+ const state=canc?`<span class="badge wn">İptal edildi • ${end} tarihinde sona erer</span>`:prov==='stripe'?`<span class="badge ok">Yenilenir • sonraki dönem ${end}</span>`:`<span class="badge ok">Aktif • ${end} tarihine kadar</span>`;
+ return`<div class="card"><b>${ic('package')} Aboneliğim</b>
+ <div class="item"><div class="g"><b>${esc(ps.p.name)}</b><span>${esc(provTxt)}</span></div>${state}</div>
+ <div class="hint">${canc?'Paketiniz bitiş tarihine kadar kullanılabilir; sonrasında ücretli özellikler kapanır. Vazgeçtiyseniz iptali geri alabilirsiniz.':'İptal ederseniz paketiniz bitiş tarihine kadar kullanılabilir; yenilenmez ve yeni ücret alınmaz.'}</div>
+ <div class="btns">${canc?`<button class="btn" data-act="sub-resume">${ic('rotate-ccw')} İptali geri al</button>`:`<button class="btn s d" data-act="sub-cancel">${ic('circle-x')} Aboneliği iptal et</button>`}${prov==='stripe'?`<button class="btn s" data-act="portal">${ic('credit-card')} Kart / fatura yönetimi</button>`:''}<a class="btn s" href="#support">${ic('life-buoy')} İade / iptal için destek</a></div></div>`;
+}
+function subCancelAsk(){
+ const st=S.settings,prov=st.provider,paid=prov==='stripe'||prov==='iyzico',end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-';
+ $('#box').innerHTML=`<div class="mh"><h2 style="margin:0">Aboneliği iptal et</h2><button class="btn s" data-act="close">${ic('x')}</button></div>
+ <p class="hint">Paketiniz <b>${end}</b> tarihine kadar kullanılabilir. Bu tarihten sonra yenilenmez${prov==='stripe'?' ve kartınızdan yeni ücret alınmaz':''}.</p>
+ ${paid?'<p class="hint">Ödenmiş dönem için iade veya hemen sonlandırma isterseniz <a href="#support" data-act="close">Destek</a> sayfasından talep açın.</p>':''}
+ <button class="btn p w" data-act="sub-cancel-go" data-v="0">Dönem sonunda iptal et</button>
+ ${paid?'':'<button class="btn s d w" data-act="sub-cancel-go" data-v="1" style="margin-top:8px">Hemen sonlandır</button>'}
+ <button class="btn s w" data-act="close" style="margin-top:8px">Vazgeç</button>`;
+ $('#modal').classList.add('on');icons();
+}
+async function subCancelGo(imm){
+ close();busy(true);
+ try{const j=await bkApi('POST','/api/subscription/cancel',{immediate:!!imm});await syncPlan();toast(j.note||(imm?'Abonelik sonlandırıldı':'Abonelik iptal edildi'))}
+ catch(e){toast(e.message,'err')}busy(false);
+}
+async function subResume(){
+ if(!confirm('İptal geri alınsın mı? Abonelik dönem sonunda yenilenmeye devam eder.'))return;busy(true);
+ try{const j=await bkApi('POST','/api/subscription/resume',{});await syncPlan();toast(j.note||'İptal geri alındı')}
+ catch(e){toast(e.message,'err')}busy(false);
 }
 async function portal(){
  const api=apiUrl();busy(true);

@@ -228,3 +228,74 @@ test("Makbuz: Stripe invoice.paid doğrulanmış e-postaya makbuz gönderir (tek
   assert.equal((await send("e1")).status, 200); await new Promise((r) => setTimeout(r, 50)); const mails = H.calls.filter((c) => /resend/.test(c.url)); assert.equal(mails.length, 1); assert.match(mails[0].data.subject, /Freelance/); assert.equal(db.store["orders/st_in_7"].paymentIntent, "pi_77");
   await send("e2"); await new Promise((r) => setTimeout(r, 50)); assert.equal(H.calls.filter((c) => /resend/.test(c.url)).length, 1, "aynı fatura için ikinci makbuz yok"); s.close(); delete process.env.STRIPE_WEBHOOK_SECRET;
 });
+
+// ================= V13.4: KULLANICI DESTEK PANELİ + KULLANICI ABONELİK İPTALİ =================
+// memFs'in where() çağrısı boş döner; bu testlerde alan eşitliğiyle süzen küçük bir sürüm kullanılır.
+function memFsWhere(seed = {}) {
+  const db = memFs(seed), base = db.collection;
+  db.collection = (c) => { const o = base(c); o.where = (f, op, v) => ({ limit: () => ({ get: async () => { const docs = (await o.limit().get()).docs.filter((d) => d.data()[f] === v); return { docs, size: docs.length }; } }) }); return o; };
+  return db;
+}
+const supVerify = async (req) => { const h = req.headers["x-test-user"]; if (!h) throw Object.assign(new Error("Giriş yapmanız gerekiyor."), { status: 401 }); const u = JSON.parse(h); return { uid: u.uid, email: u.email || null, name: u.name || null, emailVerified: true }; };
+test("Kullanıcı destek paneli: giriş şart; talep aç, yalnızca kendi taleplerini gör, yaz, kapat; başkasının talebi 404; yönetici e-postası sızmaz", async () => {
+  const db = memFsWhere(), H = fakeHttp(), mailer = LOAD("mailer")({ db, http: H });
+  const S = LOAD("support")({ db, http: H, mailer, SEC: LOAD("security"), verifyUser: supVerify }); const app = express(); app.use(express.json()); S.mount(app); const s = await listen(app);
+  const U1 = as("u1"), U2 = as("u2"), get = (p, h) => fetch(url(s, p), { headers: h });
+  assert.equal((await get("/api/support/my", {})).status, 401, "girişsiz erişilemez"); assert.equal((await jpost(s, "/api/support/my", {}, { subject: "Fatura", message: "Faturamı alamadım lütfen" })).status, 401);
+  assert.equal((await jpost(s, "/api/support/my", U1, { subject: "ab", message: "yeterince uzun mesaj" })).status, 400); assert.equal((await jpost(s, "/api/support/my", U1, { subject: "Fatura", message: "kısa" })).status, 400);
+  const c = await (await jpost(s, "/api/support/my", U1, { subject: "Paketimi iptal etmek istiyorum", message: "Sipariş numaram 123, iptal etmek istiyorum.", category: "cancel" })).json();
+  assert.equal(c.success, true); assert.equal(c.ticket.status, "open"); assert.equal(c.ticket.category, "cancel"); const id = c.ticket.id;
+  assert.equal(db.store["supportTickets/" + id].uid, "u1"); assert.equal(db.store["supportTickets/" + id].email, "u1@ornek.com", "e-posta kullanıcının doğrulanmış hesabından alınır, istekten değil");
+  assert.equal((await jpost(s, "/api/support/my", U1, { subject: "Başka", message: "bir başka talep yazıyorum", category: "bilinmeyen" }).then((r) => r.json())).ticket.category, "general", "bilinmeyen kategori genele düşer");
+  assert.equal((await (await get("/api/support/my", U1)).json()).tickets.length, 2); assert.equal((await (await get("/api/support/my", U2)).json()).tickets.length, 0, "başka kullanıcı görmez");
+  assert.equal((await jpost(s, `/api/support/my/${id}/reply`, U2, { message: "sızma denemesi" })).status, 404, "başkasının talebine yazılamaz"); assert.equal((await jpost(s, `/api/support/my/${id}/close`, U2, {})).status, 404);
+  assert.equal((await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "x" })).status, 400);
+  // yönetici yanıtı (admin-ops'un yazdığı biçim) → kullanıcı görünümünde "staff"; yönetici e-postası görünmez
+  db.store["supportTickets/" + id] = { ...db.store["supportTickets/" + id], status: "answered", replies: [{ at: 1, by: "root@ornek.com", role: "admin", message: "İptal edildi." }, { at: 2, by: "eski@ornek.com", message: "rol alanı yok = yönetici yanıtı" }] };
+  const mine = (await (await get("/api/support/my", U1)).json()).tickets.find((t) => t.id === id); assert.deepEqual(mine.replies.map((r) => r.from), ["staff", "staff"]); assert.ok(!JSON.stringify(mine).includes("root@ornek.com") && !JSON.stringify(mine).includes("eski@ornek.com"), "yönetici kimliği sızmaz");
+  const rp = await (await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "Teşekkürler, bir sorum daha var." })).json(); assert.equal(rp.ticket.status, "open", "kullanıcı yazınca talep yeniden açık"); assert.equal(rp.ticket.replies.at(-1).from, "user"); assert.equal(db.store["supportTickets/" + id].replies.at(-1).role, "user");
+  const cl = await (await jpost(s, `/api/support/my/${id}/close`, U1, {})).json(); assert.equal(cl.ticket.status, "closed"); assert.equal(db.store["supportTickets/" + id].status, "closed");
+  assert.equal((await (await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "yeniden açıyorum" })).json()).ticket.status, "open", "kapalı talebe yazınca yeniden açılır");
+  assert.ok(H.calls.some((x) => /resend/.test(x.url)) === false, "e-posta kapalıyken gönderim denenmez"); s.close();
+});
+test("Kullanıcı destek paneli: açık talep sınırı ve yazma hız sınırı; yönetici listesi uid/rol/kategoriyi gösterir", async () => {
+  process.env.SUPPORT_MAX_OPEN = "2"; process.env.SUPPORT_PANEL_WRITE_LIMIT = "50"; const db = memFsWhere();
+  const S = LOAD("support")({ db, http: fakeHttp(), mailer: null, SEC: LOAD("security"), verifyUser: supVerify }); const app = express(); app.use(express.json()); S.mount(app); const s = await listen(app), U = as("u1");
+  const mk = (n) => jpost(s, "/api/support/my", U, { subject: "Konu " + n, message: "yeterince uzun mesaj " + n }); assert.equal((await mk(1)).status, 200); assert.equal((await mk(2)).status, 200); assert.equal((await mk(3)).status, 429, "açık talep sınırı"); s.close();
+  delete process.env.SUPPORT_MAX_OPEN; delete process.env.SUPPORT_PANEL_WRITE_LIMIT;
+  const h2 = adminHarness({ users: { root: mkU("root"), u1: mkU("u1") }, seed: { ...db.store } }); const s2 = await listen(h2.app), A = as("root");
+  const list = await (await fetch(url(s2, "/api/admin/support"), { headers: A })).json(); assert.equal(list.tickets.length, 2); assert.equal(list.tickets[0].uid, "u1"); assert.equal(list.tickets[0].source, "panel");
+  const id = list.tickets[0].id; const rep = await (await jpost(s2, `/api/admin/support/${id}/reply`, A, { message: "Merhaba, yardımcı olalım." })).json(); assert.equal(rep.mailed, false); assert.match(rep.note, /Destek panelinde görünür/);
+  assert.equal(h2.db.store["supportTickets/" + id].replies[0].role, "admin"); s2.close();
+});
+function subApp(db, H, env = {}) {
+  Object.assign(process.env, { STRIPE_SECRET_KEY: "sk_test_x", ...env }); const app = express(); app.use(express.json());
+  const admin = { apps: [1], auth: () => ({ verifyIdToken: async (t) => ({ uid: t, email: t + "@ornek.com", email_verified: true, firebase: { sign_in_provider: "google.com" } }) }) };
+  LOAD("payments")({ app, db, admin, http: H, commerce: null, mailer: null }); return app;
+}
+const bearer = (uid) => ({ Authorization: "Bearer " + uid, "Content-Type": "application/json" });
+test("Kullanıcı abonelik iptali: giriş şart; Stripe dönem sonu iptal + geri alma; iyzico yalnızca dönem sonu; ödemesiz pakette hemen sonlandırma; paketi olmayana 409", async () => {
+  const now = Date.now(), H = fakeHttp(), db = memFs({ "subscriptions/st": { plan: "kobi", status: "active", provider: "stripe", stripeSubscriptionId: "sub_1", periodEnd: now + 864e5 }, "subscriptions/iy": { plan: "kobi", status: "active", provider: "iyzico", periodEnd: now + 864e5 }, "subscriptions/fr": { plan: "kobi", status: "active", provider: "admin", free: true, periodEnd: now + 864e5 }, "subscriptions/gone": { plan: "kobi", status: "canceled", provider: "stripe", periodEnd: now - 1 } });
+  const s = await listen(subApp(db, H));
+  assert.equal((await jpost(s, "/api/subscription/cancel", { "Content-Type": "application/json" }, {})).status, 401, "girişsiz iptal edilemez");
+  assert.equal((await jpost(s, "/api/subscription/cancel", bearer("yok"), {})).status, 409, "aboneliği olmayan"); assert.equal((await jpost(s, "/api/subscription/cancel", bearer("gone"), {})).status, 409, "süresi dolmuş");
+  let j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), {})).json(); assert.equal(j.success, true); assert.equal(j.immediate, false); assert.match(H.calls.at(-1).data, /cancel_at_period_end=true/);
+  assert.equal(db.store["subscriptions/st"].status, "active"); assert.equal(db.store["subscriptions/st"].cancelAtPeriodEnd, true); assert.equal(db.store["subscriptions/st"].cancelRequestedBy, "user");
+  const n = H.calls.length; j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), {})).json(); assert.equal(j.already, true); assert.equal(H.calls.length, n, "ikinci iptal Stripe'ı tekrar çağırmaz");
+  assert.equal((await (await fetch(url(s, "/api/subscription"), { headers: bearer("st") })).json()).cancelAtPeriodEnd, true, "durum ucu iptal bayrağını döner");
+  j = await (await jpost(s, "/api/subscription/resume", bearer("st"), {})).json(); assert.equal(j.success, true); assert.match(H.calls.at(-1).data, /cancel_at_period_end=false/); assert.equal(db.store["subscriptions/st"].cancelAtPeriodEnd, false);
+  // Stripe: kullanıcı "hemen" istese de ödeme sağlayıcılı pakette yalnızca dönem sonu uygulanır (iade/hemen sonlandırma yönetici işlemi)
+  j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), { immediate: true })).json(); assert.equal(j.immediate, false); assert.equal(db.store["subscriptions/st"].status, "active");
+  j = await (await jpost(s, "/api/subscription/cancel", bearer("iy"), { immediate: true })).json(); assert.equal(j.immediate, false); assert.equal(db.store["subscriptions/iy"].status, "active"); assert.equal(db.store["subscriptions/iy"].cancelAtPeriodEnd, true); assert.ok(!H.calls.some((c) => /iyzipay/.test(c.url || "")));
+  j = await (await jpost(s, "/api/subscription/cancel", bearer("fr"), { immediate: true })).json(); assert.equal(j.immediate, true); assert.equal(db.store["subscriptions/fr"].status, "canceled");
+  assert.equal((await jpost(s, "/api/subscription/resume", bearer("fr"), {})).status, 409, "sonlanmış abonelik geri alınamaz"); s.close();
+});
+test("Abonelik iptali: yönetici dönem sonu iptali bayrak yazar, geri alabilir; Stripe senkronu bayrağı sağlayıcıdan alır; yeni satın alma bayrağı temizler", async () => {
+  const H = fakeHttp(); const h2 = adminHarness({ users: { root: mkU("root") }, seed: { "subscriptions/m": { plan: "kobi", status: "active", provider: "admin", periodEnd: Date.now() + 864e5 }, "subscriptions/s": { plan: "kobi", status: "active", provider: "stripe", stripeSubscriptionId: "sub_9", periodEnd: Date.now() + 864e5 } }, payments: (db) => payFor(db, H) }); const s = await listen(h2.app), A = as("root");
+  assert.equal((await jpost(s, "/api/admin/users/m/subscription/resume", as("u1"), {})).status, 403);
+  let j = await (await jpost(s, "/api/admin/users/m/subscription/cancel", A, {})).json(); assert.equal(j.immediate, false); assert.equal(h2.db.store["subscriptions/m"].cancelAtPeriodEnd, true); assert.equal(h2.db.store["subscriptions/m"].status, "active");
+  const subs = await (await fetch(url(s, "/api/admin/subscriptions"), { headers: A })).json(); assert.equal(subs.rows.find((r) => r.uid === "m").cancelAtPeriodEnd, true, "yönetici listesi iptal bayrağını gösterir");
+  j = await (await jpost(s, "/api/admin/users/m/subscription/resume", A, {})).json(); assert.equal(j.success, true); assert.equal(h2.db.store["subscriptions/m"].cancelAtPeriodEnd, false);
+  assert.equal((await jpost(s, "/api/admin/users/yok/subscription/resume", A, {})).status, 404);
+  await jpost(s, "/api/admin/users/s/subscription/cancel", A, {}); assert.equal(h2.db.store["subscriptions/s"].cancelAtPeriodEnd, true); s.close();
+});

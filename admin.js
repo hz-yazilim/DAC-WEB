@@ -82,7 +82,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     if (!sub) return { plan: "free", planName: "Ücretsiz", active: false, status: "none", free: false, provider: null, periodEnd: null };
     const pe = ts(sub.periodEnd); const active = PAID.includes(sub.plan) && sub.status === "active" && (!pe || pe > now());
     return { plan: active ? sub.plan : "free", planName: active ? planName(sub.plan) : "Ücretsiz", lastPlan: sub.plan || null, lastPlanName: sub.plan ? planName(sub.plan) : null,
-      active, status: sub.status || "none", free: !!sub.free || sub.provider === "manual" || sub.provider === "admin", provider: sub.provider || null, currency: sub.currency || null, cycle: sub.cycle || null, periodEnd: pe, updatedAt: ts(sub.updatedAt) };
+      active, status: sub.status || "none", free: !!sub.free || sub.provider === "manual" || sub.provider === "admin", provider: sub.provider || null, currency: sub.currency || null, cycle: sub.cycle || null, periodEnd: pe, cancelAtPeriodEnd: active && sub.cancelAtPeriodEnd === true, updatedAt: ts(sub.updatedAt) };
   }
   async function subOf(uid) { if (!db) return null; try { const d = await db.collection("subscriptions").doc(uid).get(); return d.exists === false ? null : (d.data() || null); } catch { return null; } }
   async function emailsOf(uids) {
@@ -253,7 +253,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     const prev = await subOf(uid);
     if (prev && prev.provider && ["stripe", "iyzico"].includes(prev.provider) && prev.status === "active" && ts(prev.periodEnd) > now()) return deny(res, 409, "Kullanıcının ödeme sağlayıcısıyla aktif aboneliği var; üzerine yazılmadı.");
     const periodEnd = now() + days * 864e5;
-    await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cycle: days >= 365 ? "yearly" : "monthly", periodEnd, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
+    await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cancelAtPeriodEnd: false, cycle: days >= 365 ? "yearly" : "monthly", periodEnd, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
     await auditSafe(req, "plan.grant", uid, { plan, days, previous: prev ? prev.plan || null : null });
     res.json({ success: true, uid, plan, periodEnd });
   }));

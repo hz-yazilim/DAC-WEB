@@ -52,6 +52,10 @@ module.exports = function registerAdminOps(c) {
     const uid = String(req.params.uid || ""); if (!need(res, uidOk(uid), 400, "Geçersiz kullanıcı kimliği")) return; if (!db || !payments) return deny(res, 503, "Ödeme sistemi bağlı değil");
     const r = await payments.cancelSubscription(uid, (req.body || {}).immediate === true); await auditSafe(req, "subscription.cancel", uid, { immediate: r.immediate, provider: r.provider }); res.json({ success: true, ...r });
   }));
+  app.post("/api/admin/users/:uid/subscription/resume", guard, writeGuard, wrap(async (req, res) => {
+    const uid = String(req.params.uid || ""); if (!need(res, uidOk(uid), 400, "Geçersiz kullanıcı kimliği")) return; if (!db || !payments) return deny(res, 503, "Ödeme sistemi bağlı değil");
+    const r = await payments.resumeSubscription(uid); await auditSafe(req, "subscription.resume", uid, { provider: r.provider }); res.json({ success: true, ...r });
+  }));
 
   /* ---------- Toplu işlemler (en çok 200 kullanıcı; her kullanıcı için ayrı sonuç) ---------- */
   app.post("/api/admin/bulk", guard, writeGuard, wrap(async (req, res) => {
@@ -70,7 +74,7 @@ module.exports = function registerAdminOps(c) {
         else if (action === "grant") {
           const prev = (await db.collection("subscriptions").doc(uid).get()); const pv = prev.exists ? prev.data() : null;
           if (pv && ["stripe", "iyzico"].includes(pv.provider) && pv.status === "active" && ts(pv.periodEnd) > now()) { results.push({ uid, ok: false, error: "ödeme sağlayıcılı aktif abonelik" }); continue; }
-          await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cycle: days >= 365 ? "yearly" : "monthly", periodEnd: now() + days * 864e5, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
+          await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cancelAtPeriodEnd: false, cycle: days >= 365 ? "yearly" : "monthly", periodEnd: now() + days * 864e5, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
         } else if (action === "revoke") {
           const pv = (await db.collection("subscriptions").doc(uid).get()); const d = pv.exists ? pv.data() : null; if (!d) { results.push({ uid, ok: false, error: "abonelik yok" }); continue; }
           if (["stripe", "iyzico"].includes(d.provider)) { results.push({ uid, ok: false, error: "ödeme sağlayıcılı" }); continue; }
@@ -98,14 +102,14 @@ module.exports = function registerAdminOps(c) {
   app.get("/api/admin/support", guard, wrap(async (req, res) => {
     if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", tickets: [] }); const st = ["open", "answered", "closed"].includes(req.query.status) ? req.query.status : "";
     const snap = await db.collection("supportTickets").orderBy("createdAt", "desc").limit(300).get(); let rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })); const counts = { open: 0, answered: 0, closed: 0 }; rows.forEach((t) => { counts[t.status] = (counts[t.status] || 0) + 1; }); if (st) rows = rows.filter((t) => t.status === st);
-    res.json({ success: true, available: true, counts, tickets: rows.slice(0, 100).map((t) => ({ id: t.id, no: t.id.slice(0, 6).toUpperCase(), name: t.name, email: t.email, subject: t.subject, message: t.message, status: t.status, createdAt: t.createdAt, updatedAt: t.updatedAt, replies: (t.replies || []).map((r) => ({ at: r.at, by: r.by, message: r.message })) })) });
+    res.json({ success: true, available: true, counts, tickets: rows.slice(0, 100).map((t) => ({ id: t.id, no: t.id.slice(0, 6).toUpperCase(), name: t.name, email: t.email, uid: t.uid || null, category: t.category || null, source: t.source || (t.uid ? "panel" : "form"), subject: t.subject, message: t.message, status: t.status, createdAt: t.createdAt, updatedAt: t.updatedAt, replies: (t.replies || []).map((r) => ({ at: r.at, by: r.by, role: r.role === "user" ? "user" : "admin", message: r.message })) })) });
   }));
   app.post("/api/admin/support/:id/reply", guard, writeGuard, wrap(async (req, res) => {
     if (!need(res, idOk(req.params.id), 400, "Geçersiz talep") || !db) return; const msg = String((req.body || {}).message || "").trim(); if (msg.length < 2 || msg.length > 4000) return deny(res, 400, "Yanıt 2-4000 karakter olmalı");
     const ref = db.collection("supportTickets").doc(req.params.id), s = await ref.get(); if (!s.exists) return deny(res, 404, "Talep bulunamadı"); const t = s.data();
     let mailed = false; if (mailer && mailer.enabled()) mailed = (await mailer.send({ to: t.email, ...mailer.tpl.supportReply({ subject: t.subject, message: msg, ticketId: req.params.id.slice(0, 6).toUpperCase() }), type: "support-reply" })).sent === true;
-    await ref.set({ replies: [...(t.replies || []), { at: now(), by: req.user.email || req.user.uid, message: msg, mailed }].slice(-50), status: "answered", updatedAt: now() }, { merge: true });
-    await auditSafe(req, "support.reply", req.params.id, { mailed }); res.json({ success: true, mailed, note: mailed ? null : "E-posta gönderilemedi/kapalı: yanıt yalnızca panelde kayıtlı. Kullanıcıya kendiniz yazın." });
+    await ref.set({ replies: [...(t.replies || []), { at: now(), by: req.user.email || req.user.uid, role: "admin", message: msg, mailed }].slice(-50), status: "answered", updatedAt: now() }, { merge: true });
+    await auditSafe(req, "support.reply", req.params.id, { mailed }); res.json({ success: true, mailed, note: mailed ? null : (t.uid ? "E-posta gönderilemedi/kapalı: yanıt kullanıcının Destek panelinde görünür." : "E-posta gönderilemedi/kapalı: yanıt yalnızca panelde kayıtlı. Kullanıcıya kendiniz yazın.") });
   }));
   app.post("/api/admin/support/:id/status", guard, writeGuard, wrap(async (req, res) => {
     if (!need(res, idOk(req.params.id), 400, "Geçersiz talep") || !db) return; const st = (req.body || {}).status; if (!["open", "answered", "closed"].includes(st)) return deny(res, 400, "Durum open, answered veya closed olmalı");

@@ -2193,7 +2193,7 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
 } }));
 } else {
   // Düz yerleşim: yalnızca bu izin listesindeki dosyalar yayınlanır (sunucu kodu asla yayınlanmaz)
-  const FLAT_OK = new Set(["style.css", "app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "lucide.min.js", "manifest.json", "icon-192.png", "icon-512.png",
+  const FLAT_OK = new Set(["style.css", "app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js", "app-support.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "lucide.min.js", "manifest.json", "icon-192.png", "icon-512.png",
     "support-form.js", "inter-latin.woff2", "inter-latin-ext.woff2", "jbmono-400-latin.woff2", "jbmono-400-ext.woff2", "jbmono-500-latin.woff2", "jbmono-500-ext.woff2"]);
   app.get("/index.html", (q, r) => r.redirect(301, "/"));
   app.use((req, res, next) => {
@@ -2210,7 +2210,7 @@ const COMMERCE = SRV("commerce")({ db, PLANS, log: (m) => console.warn("commerce
 const MAILER = SRV("mailer")({ db, http: axios, log: (m) => console.warn("mailer:", m) });
 const payments = SRV("payments")({ app, db, admin, http: axios, commerce: COMMERCE, mailer: MAILER });
 OPS = SRV("ops")({ db, admin, http: axios, mailer: MAILER, metrics: METRICS, PLANS, log: (m) => console.warn("ops:", m) });
-const SUPPORT = SRV("support")({ db, http: axios, mailer: MAILER, SEC, log: (m) => console.warn("support:", m) }); SUPPORT.mount(app);
+const SUPPORT = SRV("support")({ db, http: axios, mailer: MAILER, SEC, verifyUser: payments.verifyUser, log: (m) => console.warn("support:", m) }); SUPPORT.mount(app);
 const COMMERCE_PUBLIC = COMMERCE.mountPublic(app, { SEC, getVerifyUser: () => payments.verifyUser, getIsAdmin: () => async (u) => (await ADMIN.roleOf(u)).admin });
 app.post(["/api/scan", "/api/jobs"], COMMERCE_PUBLIC.maintenanceGuard); // bakım modunda yeni tarama başlatma (yönetici hariç)
 app.post("/api/scan", COMMERCE_PUBLIC.scanTypeGuard); // yönetici panelinden kapatılan tarama türleri

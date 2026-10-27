@@ -180,3 +180,11 @@ textarea.field{resize:vertical;min-height:110px;font-family:inherit}
 .banner.warn{border-color:#f59e0b77;background:linear-gradient(135deg,#2a2111,#111a30)}
 #adm-body textarea.field{min-height:80px;border-radius:18px;padding:12px 18px}
 #adm-body .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+
+/* V13.4: kullanıcı destek paneli */
+.sup-h{cursor:pointer;gap:10px}.sup-h:focus-visible{outline:2px solid var(--bl);outline-offset:4px;border-radius:8px}
+.sup-thread{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.sup-msg{max-width:92%;padding:10px 12px;border-radius:14px;border:1px solid var(--bd)}
+.sup-me{align-self:flex-end;background:#2f6bff22;border-color:#2f6bff66}.sup-staff{align-self:flex-start;background:var(--card)}
+.sup-tx{white-space:pre-wrap;word-break:break-word;margin-top:4px}
+#sup-body .field{margin-bottom:8px}

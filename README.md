@@ -10,6 +10,11 @@ Sunucu **Node.js (Express)** ile çalışır. (Eski Python/FastAPI sürümü `in
 - **Girdi doğrulama** (`validators.js`), ölçümler (`metrics.js`: P50/P95/P99), **AI mimarisi (kapalı)** (`ai-provider.js`), para birimi/affiliate hazırlığı (`billing-catalog.js`).
 - Ortak **Yenile** düğmesi yalnızca durumları çeker, tarama başlatmaz. TC kimlik alanı kaldırıldı (isteğe bağlı 10 haneli vergi no).
 
+## V13.4 yenilikleri
+- **Kullanıcı destek paneli** (`#support`, menüde *Destek*): giriş yapan kullanıcı talep açar, yöneticinin yanıtını görür, mesaj yazar, talebi kapatır. Uçlar: `GET/POST /api/support/my`, `POST /api/support/my/:id/reply|close` (`support.js`); yeni istemci dosyası `app-support.js`. Yönetici > Destek sekmesi kullanıcı yazışmalarını, kategoriyi ve "Kullanıcıyı aç" kısayolunu gösterir.
+- **Abonelik iptali**: kullanıcı *Paket ve Faturalandırma > Aboneliğim* kartından iptal eder / iptali geri alır (`POST /api/subscription/cancel|resume`). Ödeme sağlayıcılı pakette yalnızca dönem sonunda iptal; hemen sonlandırma ve iade yönetici işlemidir. Yönetici: Paketler listesi, kullanıcı detayı ve Ödemeler > Siparişler'de *Aboneliği iptal et* / *İptali geri al* (`/api/admin/users/:uid/subscription/cancel|resume`).
+- Yeni ortam değişkenleri (isteğe bağlı): `SUPPORT_MAX_OPEN` (varsayılan 10), `SUPPORT_PANEL_WRITE_LIMIT` (saatlik, varsayılan 20), `SUPPORT_PANEL_IP_LIMIT`.
+
 ## V13.3 yenilikleri
 - **E-posta** (`mailer.js`, Resend): ödeme makbuzu, paket bitiş hatırlatması (iyzico/ödemesiz paket 7/3/1 gün kala), deneme bitiyor, destek yanıtı. `RESEND_API_KEY` + `MAIL_FROM` yoksa kapalıdır. Hatırlatmalar 6 saatte bir otomatik ve `/api/cron/ops` (CRON_SECRET) ile çalışır.
 - **Yönetici > Ödemeler**: *Faturalar* (faturasız ödemeler listesi, fatura no işleme; e-arşiv entegrasyonu yoktur), siparişte *İade* (Stripe iadesi, iyzico iptal/iade; kısmi iade desteklenir), kullanıcı detayında *abonelik iptali*.

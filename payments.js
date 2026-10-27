@@ -44,7 +44,7 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     const now = Date.now();
     const sub = (await db.collection("subscriptions").doc(uid).get()).data();
     if (sub && PLANS.PAID.includes(sub.plan) && sub.status === "active" && (!sub.periodEnd || sub.periodEnd > now))
-      return { plan: sub.plan, status: "active", periodEnd: sub.periodEnd || null, provider: sub.provider || null, currency: sub.currency || null, cycle: sub.cycle || null };
+      return { plan: sub.plan, status: "active", periodEnd: sub.periodEnd || null, provider: sub.provider || null, currency: sub.currency || null, cycle: sub.cycle || null, cancelAtPeriodEnd: sub.cancelAtPeriodEnd === true };
     const uref = db.collection("users").doc(uid);
     let u = (await uref.get()).data() || {};
     if (!u.trialStart) {
@@ -135,7 +135,7 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
       const cur = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
       const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === plan ? cur.periodEnd : Date.now();
       const periodEnd = startFrom + (cycle === "yearly" ? 365 : 30) * 864e5;
-      await activate(u.uid, { plan, status: "active", provider: "manual", currency: currency === "USD" ? "USD" : "TRY", cycle, periodEnd, free: true });
+      await activate(u.uid, { plan, status: "active", provider: "manual", currency: currency === "USD" ? "USD" : "TRY", cycle, periodEnd, free: true, cancelAtPeriodEnd: false });
       await db.collection("orders").add({ uid: u.uid, plan, cycle, currency: currency === "USD" ? "USD" : "TRY", amount, status: "activated-free", consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
       return res.json({ success: true, activated: true, plan, periodEnd, provider: "manual" });
     }
@@ -200,7 +200,7 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
       const cur = (await db.collection("subscriptions").doc(order.uid).get()).data() || {};
       const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === order.plan ? cur.periodEnd : Date.now();
       const periodEnd = startFrom + (order.cycle === "yearly" ? 365 : 30) * 864e5;
-      await activate(order.uid, { plan: order.plan, status: "active", provider: "iyzico", currency: "TRY", cycle: order.cycle, periodEnd });
+      await activate(order.uid, { plan: order.plan, status: "active", provider: "iyzico", currency: "TRY", cycle: order.cycle, periodEnd, cancelAtPeriodEnd: false });
       sendReceipt(order.uid, { plan: order.plan, cycle: order.cycle, amount: order.amount, currency: "TRY", periodEnd, couponCode: order.couponCode });
     }
     back(order.returnUrl, true);
@@ -218,7 +218,7 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
   async function stripeSync(sub, extra = {}) {
     const m = sub.metadata || {}; if (!m.uid) return;
     const st = ["active", "trialing"].includes(sub.status) ? "active" : sub.status === "canceled" ? "canceled" : "past_due";
-    await activate(m.uid, { plan: m.plan, cycle: m.cycle, status: st, provider: "stripe", currency: "USD", periodEnd: periodEndOf(sub), stripeCustomerId: sub.customer, stripeSubscriptionId: sub.id, ...extra });
+    await activate(m.uid, { plan: m.plan, cycle: m.cycle, status: st, provider: "stripe", currency: "USD", periodEnd: periodEndOf(sub), stripeCustomerId: sub.customer, stripeSubscriptionId: sub.id, cancelAtPeriodEnd: sub.cancel_at_period_end === true, ...extra });
   }
   app.post("/api/stripe/webhook", handler(async (req, res) => {
     const secret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -280,16 +280,44 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     if (r.status !== "success") throw fail(502, "iyzico: " + (r.errorMessage || "iade başarısız"));
     return { provider: "iyzico", method: "refund", amount: amt };
   }
-  async function cancelSubscription(uid, immediate) {
+  // Abonelik iptali (yönetici ve kullanıcı ortak): immediate=false → dönem sonunda biter (yenilenmez, ödenmiş dönem geçerli kalır); immediate=true → hemen sonlanır.
+  // Stripe: sağlayıcıda iptal edilir. iyzico (tek seferlik dönem bedeli) / ödemesiz paket: yenileme zaten yoktur; iptal bayrağı (cancelAtPeriodEnd) kaydedilir.
+  async function cancelSubscription(uid, immediate, by = "admin") {
     const sub = (await db.collection("subscriptions").doc(uid).get()).data(); if (!sub) throw fail(404, "Abonelik bulunamadı");
+    const mark = { cancelAtPeriodEnd: true, cancelRequestedAt: Date.now(), cancelRequestedBy: by };
     if (sub.provider === "stripe" && sub.stripeSubscriptionId) {
       if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı.");
-      if (immediate) { await stripeApi("DELETE", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId)); await activate(uid, { status: "canceled", periodEnd: Date.now() }); return { provider: "stripe", immediate: true }; }
-      await stripeApi("POST", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId), { cancel_at_period_end: "true" }); return { provider: "stripe", immediate: false, note: "Dönem sonunda sona erecek (şimdiki dönem geçerli kalır)." };
+      if (immediate) { await stripeApi("DELETE", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId)); await activate(uid, { status: "canceled", periodEnd: Date.now(), ...mark, cancelAtPeriodEnd: false }); return { provider: "stripe", immediate: true }; }
+      await stripeApi("POST", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId), { cancel_at_period_end: "true" }); await activate(uid, mark);
+      return { provider: "stripe", immediate: false, periodEnd: sub.periodEnd || null, note: "Dönem sonunda sona erecek (şimdiki dönem geçerli kalır)." };
     }
-    if (immediate) { await activate(uid, { status: "canceled", periodEnd: Date.now() }); return { provider: sub.provider || "manual", immediate: true }; }
-    return { provider: sub.provider || "manual", immediate: false, note: "Bu paket otomatik yenilenmiyor; süresi dolunca kendiliğinden sona erer." };
+    if (immediate) { await activate(uid, { status: "canceled", periodEnd: Date.now(), ...mark, cancelAtPeriodEnd: false }); return { provider: sub.provider || "manual", immediate: true }; }
+    await activate(uid, mark);
+    return { provider: sub.provider || "manual", immediate: false, periodEnd: sub.periodEnd || null, note: "Abonelik iptal edildi: yenilenmeyecek, süresi dolunca sona erecek (şimdiki dönem geçerli kalır)." };
+  }
+  // Dönem sonu iptalini geri alır (yalnızca hâlâ aktif ve süresi dolmamış abonelikte).
+  async function resumeSubscription(uid) {
+    const sub = (await db.collection("subscriptions").doc(uid).get()).data(); if (!sub) throw fail(404, "Abonelik bulunamadı");
+    if (!(sub.status === "active" && (!sub.periodEnd || sub.periodEnd > Date.now()))) throw fail(409, "Abonelik artık aktif değil; yeniden satın alın.");
+    if (sub.provider === "stripe" && sub.stripeSubscriptionId) { if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı."); await stripeApi("POST", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId), { cancel_at_period_end: "false" }); }
+    await activate(uid, { cancelAtPeriodEnd: false, cancelRequestedAt: null, cancelRequestedBy: null });
+    return { provider: sub.provider || "manual", note: "İptal geri alındı." };
   }
 
-  return { verifyUser, getEntitlement, status, verifyStripeSignature, _stripeSync: stripeSync, refundOrder, cancelSubscription, trialHash };
+  /* ---------- Kullanıcının kendi aboneliğini iptali (V13.4) ---------- */
+  // Ödeme sağlayıcılı (Stripe/iyzico) pakette kullanıcı yalnızca DÖNEM SONUNDA iptal edebilir; hemen sonlandırma/iade yönetici işlemidir (Destek talebi açılır).
+  // Ödemesiz (yönetici verdiği/test etkinleştirmesi) pakette kullanıcı isterse hemen sonlandırabilir.
+  app.post("/api/subscription/cancel", payGuard, handler(async (req, res) => {
+    const u = await verifyUser(req), sub = (await db.collection("subscriptions").doc(u.uid).get()).data();
+    if (!sub || !PLANS.PAID.includes(sub.plan) || sub.status !== "active" || (sub.periodEnd && sub.periodEnd <= Date.now())) throw fail(409, "İptal edilecek aktif bir ücretli paketiniz yok.");
+    const providerPaid = ["stripe", "iyzico"].includes(sub.provider), immediate = !providerPaid && (req.body || {}).immediate === true;
+    if (!immediate && sub.cancelAtPeriodEnd === true) return res.json({ success: true, already: true, immediate: false, periodEnd: sub.periodEnd || null, note: "Abonelik zaten iptal edilmiş; dönem sonunda sona erecek." });
+    const r = await cancelSubscription(u.uid, immediate, "user"); console.log("payments: kullanıcı aboneliği iptal etti", u.uid, r.provider, r.immediate ? "hemen" : "dönem sonu");
+    res.json({ success: true, ...r });
+  }));
+  app.post("/api/subscription/resume", payGuard, handler(async (req, res) => {
+    const u = await verifyUser(req); const r = await resumeSubscription(u.uid); res.json({ success: true, ...r });
+  }));
+
+  return { verifyUser, getEntitlement, status, verifyStripeSignature, _stripeSync: stripeSync, refundOrder, cancelSubscription, resumeSubscription, trialHash };
 };
