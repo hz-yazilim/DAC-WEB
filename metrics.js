@@ -24,7 +24,7 @@ function scrub(msg) {
     .slice(0, 300);
 }
 
-function createMetrics({ windowMs = 3600e3, maxSamples = 20000, maxErrors = 200, now = Date.now } = {}) {
+function createMetrics({ windowMs = 3600e3, maxSamples = 20000, maxErrors = 200, now = Date.now, onError = null } = {}) {
   const req = []; // { t, ms, status }
   const series = new Map(); // ad -> [{t, v}]
   const errors = [];
@@ -36,6 +36,7 @@ function createMetrics({ windowMs = 3600e3, maxSamples = 20000, maxErrors = 200,
   function recordError({ source = "server", message, status = null, path = null } = {}) {
     errors.push({ at: new Date(now()).toISOString(), source, status, path: path ? String(path).split("?")[0].slice(0, 120) : null, message: scrub(message) });
     while (errors.length > maxErrors) errors.shift();
+    if (onError) { try { onError(errors[errors.length - 1]); } catch { /* kayıt hatası asıl işi bozmasın */ } }
   }
   function middleware(prefix = "/api") {
     return (req_, res, next) => {

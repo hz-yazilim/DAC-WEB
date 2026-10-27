@@ -11,7 +11,7 @@
 const { scrub } = require("./metrics");
 const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 
-module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics, jobs, getHealth, platform, getEntitlement = null, commerce = null, now = Date.now }) {
+module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics, jobs, getHealth, platform, getEntitlement = null, commerce = null, payments = null, userState = null, ops = null, mailer = null, now = Date.now }) {
   if (!commerce) commerce = require("./commerce")({ db, PLANS, now }); // dışarıdan verilmezse (testler) yerel örnek
   const list = (v) => String(v || "").split(",").map((s) => s.trim()).filter(Boolean);
   const envUids = () => new Set(list(process.env.ADMIN_UIDS));
@@ -36,11 +36,16 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   const deny = (res, code, error, extra = {}) => res.status(code).json({ success: false, error, ...extra });
 
   const authn = SEC.authenticate(verifyUser);
+  const TOTP = require("./totp"); const tfa = { tokens: TOTP.createTokens(process.env.ADMIN_2FA_SECRET || require("crypto").randomBytes(32).toString("hex"), now) };
+  const tfaEnrolled = async (uid) => { if (!db) return false; try { const t = await db.collection("adminTotp").doc(uid).get(); return !!(t.exists && t.data().enabled); } catch { return false; } };
   const guard = [
     (req, res, next) => (ipLimit(req.ip) ? next() : deny(res, 429, "Çok fazla istek.")),
     authn,
     (req, res, next) => (userLimit(req.user.uid) ? next() : deny(res, 429, "Çok fazla istek.")),
-    async (req, res, next) => { const r = await roleOf(req.user); if (!r.admin) return deny(res, 403, "Bu işlem için yönetici yetkisi gerekir.", { code: "ADMIN_REQUIRED" }); req.admin = r; res.set("Cache-Control", "no-store"); next(); }
+    async (req, res, next) => { const r = await roleOf(req.user); if (!r.admin) return deny(res, 403, "Bu işlem için yönetici yetkisi gerekir.", { code: "ADMIN_REQUIRED" }); req.admin = r; res.set("Cache-Control", "no-store");
+      // ADMIN_REQUIRE_2FA=true: 2FA uçları dışında tüm yönetici uçları doğrulanmış jeton ister (jeton oturum başına kod girilerek alınır)
+      if (process.env.ADMIN_REQUIRE_2FA === "true" && !req.path.startsWith("/api/admin/2fa/") && !tfa.tokens.check(req.user.uid, req.headers["x-admin-2fa"])) { const en = await tfaEnrolled(req.user.uid); return deny(res, 403, en ? "İki adımlı doğrulama kodu gerekli." : "Yönetici hesabı için iki adımlı doğrulamayı kurmalısınız (Yönetici Paneli > Güvenlik).", { code: en ? "2FA_REQUIRED" : "2FA_SETUP" }); }
+      next(); }
   ];
   const writeGuard = (req, res, next) => (writeLimit(req.user.uid) ? next() : deny(res, 429, "Çok fazla yönetici işlemi. Biraz bekleyin."));
   const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { const code = e.status || (e.code && String(e.code).startsWith("auth/") ? 400 : 500); if (code >= 500) metrics.recordError({ source: "admin", status: code, path: req.path, message: e && e.message }); deny(res, code, code >= 500 ? "Sunucu hatası" : scrub(e.message), e.code === "LARGE_CHANGE" ? { code: "LARGE_CHANGE", large: e.large } : {}); } };
@@ -90,7 +95,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     return map;
   }
   const orderView = (id, o, emails) => ({ id, uid: o.uid, email: (emails && emails[o.uid]) || null, plan: o.plan, planName: planName(o.plan), cycle: o.cycle || null, currency: o.currency || null, amount: o.amount == null ? null : o.amount, status: o.status || null,
-    provider: o.status === "activated-free" ? "manual" : (o.currency === "USD" ? "stripe" : "iyzico"), createdAt: ts(o.createdAt), paidAt: ts(o.paidAt), gatewayStatus: o.gatewayStatus || null, couponCode: o.couponCode || null, listAmount: o.listAmount == null ? null : o.listAmount, discount: o.discount == null ? null : o.discount });
+    provider: o.status === "activated-free" ? "manual" : (o.currency === "USD" ? "stripe" : "iyzico"), createdAt: ts(o.createdAt), paidAt: ts(o.paidAt), gatewayStatus: o.gatewayStatus || null, invoiceNo: (o.invoice && o.invoice.no) || null, refundedAmount: o.refundedAmount || 0, couponCode: o.couponCode || null, listAmount: o.listAmount == null ? null : o.listAmount, discount: o.discount == null ? null : o.discount });
 
   /* ---------- Uçlar ---------- */
   // Normal kullanıcı için güvenli rol sorgusu (menüyü göstermek için). Yetkisiz kullanıcıya hiçbir ayrıntı vermez.
@@ -303,7 +308,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     const cap = Math.min(5000, SEC.int(process.env.ADMIN_ORDER_CAP, 2000)), t = now();
     const osnap = await db.collection("orders").orderBy("createdAt", "desc").limit(cap).get();
     const orders = osnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const sumBy = (arr, f = (o) => Number(o.amount || 0)) => { const m = {}; for (const o of arr) { const c = o.currency || "TRY"; m[c] = Math.round(((m[c] || 0) + f(o)) * 100) / 100; } return m; };
+    const sumBy = (arr, f = (o) => Number(o.amount || 0) - Number(o.refundedAmount || 0)) => { const m = {}; for (const o of arr) { const c = o.currency || "TRY"; m[c] = Math.round(((m[c] || 0) + f(o)) * 100) / 100; } return m; };
     const paid = orders.filter((o) => o.status === "paid"); const paidAt = (o) => ts(o.paidAt) || ts(o.createdAt) || 0;
     const in30 = paid.filter((o) => paidAt(o) >= t - 30 * 864e5), in7 = paid.filter((o) => paidAt(o) >= t - 7 * 864e5);
     const byPlan = {}; for (const o of paid) { const k = o.plan || "?"; byPlan[k] = byPlan[k] || { count: 0, totals: {} }; byPlan[k].count++; byPlan[k].totals[o.currency || "TRY"] = Math.round(((byPlan[k].totals[o.currency || "TRY"] || 0) + Number(o.amount || 0)) * 100) / 100; }
@@ -326,7 +331,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
       paid: { count: paid.length, totals: sumBy(paid), last30d: { count: in30.length, totals: sumBy(in30) }, last7d: { count: in7.length, totals: sumBy(in7) } },
       byPlan, daily: Object.entries(daily).sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, v]) => ({ day, ...v })),
       coupons: { orders: withCoupon.length, discountTotals: sumBy(withCoupon, (o) => Number(o.discount || 0)) },
-      freeActivations: orders.filter((o) => o.status === "activated-free").length, failed: orders.filter((o) => o.status === "failed").length,
+      freeActivations: orders.filter((o) => o.status === "activated-free").length, refunded: { count: orders.filter((o) => Number(o.refundedAmount) > 0).length, totals: sumBy(orders.filter((o) => Number(o.refundedAmount) > 0), (o) => Number(o.refundedAmount)) }, uninvoiced: paid.filter((o) => !o.invoice).length, failed: orders.filter((o) => o.status === "failed").length,
       stuckPending: orders.filter((o) => o.status === "pending" && t - (ts(o.createdAt) || t) > 2 * 36e5).length,
       mrr: { estimate: mrr, activePayingSubscriptions: activePaying, note: "Liste fiyatı üzerinden tahmindir (kupon/eski fiyatlar yansımaz). Gerçek tahsilat için ödeme sağlayıcısı panelini kullanın." }, expiringSoon: expiring,
       note: "Gelir yalnızca 'paid' siparişlerden hesaplanır. Ödemesiz etkinleştirilenler ve yönetici tarafından verilen paketler gelire sayılmaz." });
@@ -362,5 +367,6 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   // AI / para birimi / affiliate altyapı durumu (hepsi şimdilik devre dışı; gerçek veri yoksa uydurulmaz)
   app.get("/api/admin/platform", guard, wrap(async (req, res) => res.json({ success: true, ...(await platform()) })));
 
+  require("./admin-ops")({ app, db, admin, guard, writeGuard, wrap, deny, auditSafe, planInfo, emailsOf, ts, PLANS, PAID, now, roleOf, authOk, tfa, payments, userState, ops, mailer, SEC });
   return { roleOf, audit: auditSafe, userStats, commerce };
 };

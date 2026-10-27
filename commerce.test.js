@@ -329,10 +329,10 @@ test("Yönetici: kullanıcı müdahaleleri (oturum kapat, şifre sıfırlama ba�
 
 // ================= İSTEMCİ / YAPI =================
 test("İstemci: app.js sunucudaki fiyatı uygular, kupon/PRICE_CHANGED akışı ve yönetici sekmeleri mevcut; sunucu dosyaları statik olarak yayınlanmaz", () => {
-  const src = _fs.readFileSync(_fs.existsSync(_p.join(ROOT, "public")) ? _p.join(ROOT, "public", "js", "app.js") : _p.join(ROOT, "app.js"), "utf8");
+  const src = ["app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js"].map((f) => _fs.readFileSync(_fs.existsSync(_p.join(ROOT, "public")) ? _p.join(ROOT, "public", "js", f) : _p.join(ROOT, f), "utf8")).join("\n");
   for (const needle of ["/api/pricing", "/api/site-status", "/api/coupon/validate", "PRICE_CHANGED", "expectedAmount", "adm-pricesave", "adm-cpncreate", "adm-sitemnt", "payRevenue", "csvCell"]) assert.ok(src.includes(needle), needle);
   assert.ok(/csvCell=v=>\{let s=v==null\?'':String\(v\);if\(\/\^\[=\+\\-@/.test(src), "CSV formül enjeksiyonu kaçışı");
-  const idx = _fs.readFileSync(_p.join(ROOT, "index.js"), "utf8"); const m = /const FLAT_OK = new Set\(\[([\s\S]*?)\]\)/.exec(idx); assert.ok(m && !/commerce|admin\.js|payments\.js/.test(m[1]), "sunucu kodu yayın izin listesinde değil");
+  const idx = _fs.readFileSync(_p.join(ROOT, "index.js"), "utf8"); const m = /const FLAT_OK = new Set\(\[([\s\S]*?)\]\)/.exec(idx); assert.ok(m && !/commerce|(?<![-\w])(admin|ops|support|admin-ops)\.js|payments\.js|mailer|totp/.test(m[1]), "sunucu kodu yayın izin listesinde değil");
 });
 test("Güvenlik: gizli kupon/fiyat alanları herkese açık uçlarda sızmaz", async () => {
   const db = memFs({ "coupons/GIZLI": { code: "GIZLI", active: true, type: "percent", value: 10, usedCount: 0, note: "iç not", createdBy: "root" } }); const C = LOAD("commerce")({ db, PLANS }); const app = express(); app.use(express.json());

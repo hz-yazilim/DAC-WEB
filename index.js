@@ -48,7 +48,8 @@ const firebaseStatus = fbInit.status;
 
 const app = express();
 const SEC = SRV("security");
-const METRICS = SRV("metrics").createMetrics();       // API gecikme (P50/P95/P99), hata oranı, kuyruk/tarama süreleri
+let OPS = null; // ops.js sonradan oluşturulur (db/admin hazır olduktan sonra)
+const METRICS = SRV("metrics").createMetrics({ onError: (e) => { if (OPS) OPS.persistError(e); } });       // API gecikme (P50/P95/P99), hata oranı, kuyruk/tarama süreleri
 const SCORING = SRV("scoring");                       // merkezi skor ağırlıkları ve kritik bulgu sınırı
 const VALID = SRV("validators");                      // domain / URL / telefon doğrulama
 const AI = SRV("ai-provider");                        // AI mimarisi (şimdilik devre dışı) + dönemsel rapor modeli
@@ -75,14 +76,14 @@ app.use(require("helmet")({
     directives: {
       defaultSrc: ["'self'"],
       // 'unsafe-inline' kaldırıldı: tüm script'ler harici dosyada (login.js, sw-register.js, app.js ...)
-      scriptSrc: ["'self'", "https://www.gstatic.com", "https://apis.google.com", "https://www.google.com", "https://www.googletagmanager.com"],
+      scriptSrc: ["'self'", "https://www.gstatic.com", "https://apis.google.com", "https://www.google.com", "https://www.googletagmanager.com", "https://challenges.cloudflare.com"],
       scriptSrcAttr: ["'none'"],
       styleSrc: ["'self'"],
       styleSrcAttr: ["'unsafe-inline'"], // app.js dinamik stil nitelikleri (style="color:...") kullanıyor
       fontSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'", "https://*.onrender.com", "https://*.googleapis.com", "https://*.google-analytics.com", "https://*.analytics.google.com", "https://*.googletagmanager.com", "https://*.firebaseio.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.gstatic.com", "https://www.google.com", ...AUTH_DOMAIN_SRC],
-      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.google.com", "https://recaptcha.google.com", ...AUTH_DOMAIN_SRC, "https://*.iyzipay.com", "https://js.stripe.com"],
+      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.google.com", "https://recaptcha.google.com", ...AUTH_DOMAIN_SRC, "https://*.iyzipay.com", "https://js.stripe.com", "https://challenges.cloudflare.com"],
       formAction: ["'self'", "https://*.iyzipay.com", "https://checkout.stripe.com"],
       manifestSrc: ["'self'"], workerSrc: ["'self'"],
       objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"],
@@ -2192,8 +2193,8 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
 } }));
 } else {
   // Düz yerleşim: yalnızca bu izin listesindeki dosyalar yayınlanır (sunucu kodu asla yayınlanmaz)
-  const FLAT_OK = new Set(["style.css", "app.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "lucide.min.js", "manifest.json", "icon-192.png", "icon-512.png",
-    "inter-latin.woff2", "inter-latin-ext.woff2", "jbmono-400-latin.woff2", "jbmono-400-ext.woff2", "jbmono-500-latin.woff2", "jbmono-500-ext.woff2"]);
+  const FLAT_OK = new Set(["style.css", "app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "lucide.min.js", "manifest.json", "icon-192.png", "icon-512.png",
+    "support-form.js", "inter-latin.woff2", "inter-latin-ext.woff2", "jbmono-400-latin.woff2", "jbmono-400-ext.woff2", "jbmono-500-latin.woff2", "jbmono-500-ext.woff2"]);
   app.get("/index.html", (q, r) => r.redirect(301, "/"));
   app.use((req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") return next();
@@ -2206,11 +2207,15 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
 
 // Ticari ayarlar (V13.2): yönetici panelinden değişen fiyat/limit, kupon, duyuru ve bakım modu (commerce.js)
 const COMMERCE = SRV("commerce")({ db, PLANS, log: (m) => console.warn("commerce:", m) });
-const payments = SRV("payments")({ app, db, admin, http: axios, commerce: COMMERCE });
+const MAILER = SRV("mailer")({ db, http: axios, log: (m) => console.warn("mailer:", m) });
+const payments = SRV("payments")({ app, db, admin, http: axios, commerce: COMMERCE, mailer: MAILER });
+OPS = SRV("ops")({ db, admin, http: axios, mailer: MAILER, metrics: METRICS, PLANS, log: (m) => console.warn("ops:", m) });
+const SUPPORT = SRV("support")({ db, http: axios, mailer: MAILER, SEC, log: (m) => console.warn("support:", m) }); SUPPORT.mount(app);
 const COMMERCE_PUBLIC = COMMERCE.mountPublic(app, { SEC, getVerifyUser: () => payments.verifyUser, getIsAdmin: () => async (u) => (await ADMIN.roleOf(u)).admin });
 app.post(["/api/scan", "/api/jobs"], COMMERCE_PUBLIC.maintenanceGuard); // bakım modunda yeni tarama başlatma (yönetici hariç)
-COMMERCE.start();
-SRV("user-state")({ app, db, admin, verifyUser: payments.verifyUser });
+app.post("/api/scan", COMMERCE_PUBLIC.scanTypeGuard); // yönetici panelinden kapatılan tarama türleri
+COMMERCE.start(); if (db && !process.env.NODE_TEST) OPS.start();
+const USER_STATE = SRV("user-state")({ app, db, admin, verifyUser: payments.verifyUser });
 const ALERTS = SRV("alerts");
 const PUSH = SRV("push")({ app, db, verifyUser: payments.verifyUser }); // tarayıcı bildirimleri (Web Push)
 
@@ -2416,6 +2421,14 @@ app.all("/api/cron/scan", async (req, res) => {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(403).json({ success: false, error: "Yetkisiz" });
   res.json({ success: true, ...(await runDueScans()), queue: await JOBS.tick().catch(() => null) });
 });
+// Dış cron: hatırlatma e-postaları + alarm denetimi (+ ?backup=1 ile yedek). CRON_SECRET gerekir; tanımsızsa kapalı.
+app.all("/api/cron/ops", async (req, res) => {
+  const secret = process.env.CRON_SECRET; if (!secret) return res.status(404).json({ success: false, error: "Bulunamadı" });
+  const given = String(req.headers["x-cron-secret"] || req.query.key || ""); const a = Buffer.from(given), b = Buffer.from(secret);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(403).json({ success: false, error: "Yetkisiz" });
+  const out = { success: true, reminders: await OPS.runReminders().catch((e) => ({ error: e.message })), alerts: await OPS.checkAlerts().catch((e) => ({ error: e.message })) };
+  if (req.query.backup === "1") out.backup = await OPS.backup("cron").catch((e) => ({ error: e.message })); res.json(out);
+});
 // Otomatik taramaların sonuçlarını arayüze taşır: since (ms) sonrasında güncellenen varlıkların son sonucu
 app.get("/api/assets/latest", scanGuard, async (req, res) => {
   if (!db) return res.status(503).json({ success: false, error: "Veritabanı yapılandırılmamış" });
@@ -2532,7 +2545,7 @@ async function getHealthDetail() {
     payments: { stripe: p.stripe, iyzico: p.iyzico, freeMode: p.free }, autoScan: { enabled: AUTO_ENABLED && !!db, running: autoRunning, cronEndpoint: !!process.env.CRON_SECRET },
     rdap: { bootstrapLoaded: rdapBoot.ok === true }, scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP }, ai: AI.status(), devBypassActive: SEC.devBypass() };
 }
-const ADMIN = SRV("admin")({ app, db, admin, verifyUser: payments.verifyUser, SEC, metrics: METRICS, jobs: JOBS, getHealth: getHealthDetail, platform: async () => ({ ai: AI.describe(), billing: BILLING.describe(PLANS), scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, legacyWebWeights: SCORING.WEB_LEGACY_WEIGHTS } }), getEntitlement: db ? payments.getEntitlement : null, commerce: COMMERCE });
+const ADMIN = SRV("admin")({ app, db, admin, verifyUser: payments.verifyUser, SEC, metrics: METRICS, jobs: JOBS, getHealth: getHealthDetail, platform: async () => ({ ai: AI.describe(), billing: BILLING.describe(PLANS), scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, legacyWebWeights: SCORING.WEB_LEGACY_WEIGHTS } }), getEntitlement: db ? payments.getEntitlement : null, commerce: COMMERCE, payments, userState: USER_STATE, ops: OPS, mailer: MAILER });
 
 app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico, free: p.free }, timestamp: new Date().toISOString() }); });
 // JSON ayrıştırma vb. hatalar için düzgün yanıt

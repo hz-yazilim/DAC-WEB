@@ -27,6 +27,18 @@
 <tr><td>KVKK başvuruları</td><td><span data-co="kvkkEposta"></span></td></tr>
 <tr><td>Web sitesi</td><td><span data-co="web"></span></td></tr>
 </table>
+<h2>Destek talebi</h2>
+<p>Sorunuzu veya talebinizi aşağıdan iletin; yanıt e-posta adresinize gönderilir.</p>
+<form id="support-form" class="card" novalidate>
+<input class="field" name="name" placeholder="Adınız" maxlength="80" required autocomplete="name">
+<input class="field" name="email" type="email" placeholder="E-posta" maxlength="200" required autocomplete="email">
+<input class="field" name="subject" placeholder="Konu" maxlength="120" required>
+<textarea class="field" name="message" placeholder="Mesajınız (en az 10 karakter)" maxlength="4000" required style="height:140px;padding:14px 18px"></textarea>
+<input name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;opacity:0">
+<div id="cf-box"></div>
+<button class="btn p w" type="submit">Gönder</button>
+<div id="support-msg" class="hint" role="status"></div>
+</form>
 <h2>Güvenlik açığı bildirimi</h2>
 <p>Sistemlerimizde bir güvenlik açığı tespit ettiyseniz lütfen sorumlu ifşa ilkesiyle <a href="/.well-known/security.txt">security.txt</a> içindeki adrese bildirin; açığı kamuya açıklamadan önce düzeltmemiz için makul süre tanımanızı rica ederiz.</p>
 <h2>Yasal belgeler</h2>
@@ -34,8 +46,10 @@
 
 </main>
 <footer class="lfoot"><nav aria-label="Yasal bağlantılar"><a href="/kvkk">KVKK Aydınlatma Metni</a> • <a href="/gizlilik">Gizlilik Politikası</a> • <a href="/cerez-politikasi">Çerez Politikası</a> • <a href="/kullanim-kosullari">Kullanım Koşulları</a> • <a href="/kabul-edilebilir-kullanim">Kabul Edilebilir Kullanım</a> • <a href="/mesafeli-satis">Mesafeli Satış Sözleşmesi</a> • <a href="/iade-iptal">İptal ve İade</a> • <a href="/iletisim">İletişim</a> &bull; <a href="#" data-cookie-settings>Çerez tercihleri</a></nav><p>&copy; <span id="yil"></span> <span data-co="unvan"></span>. Tüm hakları saklıdır.</p></footer>
+<script src="/js/config.js?v=20261025b"></script>
 <script src="/js/company.js?v=20261025c"></script>
 <script src="/js/legal.js?v=20261025c"></script>
 <script src="/js/cookie-consent.js"></script>
+<script src="/js/support-form.js?v=20261027a"></script>
 </body>
 </html>

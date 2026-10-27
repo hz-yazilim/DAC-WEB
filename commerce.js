@@ -196,10 +196,10 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
   }
 
   /* =================== DUYURU / BAKIM =================== */
-  const defaultSite = () => ({ announcement: { enabled: false, text: "", level: "info", until: null }, maintenance: { enabled: false, message: "" }, updatedAt: null, updatedBy: null });
+  const defaultSite = () => ({ announcement: { enabled: false, text: "", level: "info", until: null }, maintenance: { enabled: false, message: "" }, flags: { registrationOpen: true, disabledScanTypes: [] }, updatedAt: null, updatedBy: null });
   function sanitizeSite(d) {
     const base = defaultSite(), a = (d && d.announcement) || {}, m = (d && d.maintenance) || {};
-    return { announcement: { enabled: a.enabled === true, text: String(a.text || "").slice(0, 280), level: LEVELS.includes(a.level) ? a.level : "info", until: Number.isFinite(a.until) ? a.until : null }, maintenance: { enabled: m.enabled === true, message: String(m.message || "").slice(0, 280) }, updatedAt: (d && d.updatedAt) || base.updatedAt, updatedBy: (d && d.updatedBy) || base.updatedBy };
+    return { announcement: { enabled: a.enabled === true, text: String(a.text || "").slice(0, 280), level: LEVELS.includes(a.level) ? a.level : "info", until: Number.isFinite(a.until) ? a.until : null }, maintenance: { enabled: m.enabled === true, message: String(m.message || "").slice(0, 280) }, flags: { registrationOpen: !(d && d.flags && d.flags.registrationOpen === false), disabledScanTypes: Array.isArray(d && d.flags && d.flags.disabledScanTypes) ? d.flags.disabledScanTypes.filter((x) => /^[A-Z_]{2,30}$/.test(x)).slice(0, 40) : [] }, updatedAt: (d && d.updatedAt) || base.updatedAt, updatedBy: (d && d.updatedBy) || base.updatedBy };
   }
   let siteCache = { at: 0, val: defaultSite() };
   async function getSite(force) {
@@ -224,12 +224,17 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
       const message = String(m.message || "").trim(); if (message.length > 280) throw bad(400, "Bakım mesajı en çok 280 karakter olabilir");
       next.maintenance = { enabled: m.enabled, message };
     }
+    if (input.flags !== undefined) {
+      const f = input.flags || {}; next.flags = next.flags || { registrationOpen: true, disabledScanTypes: [] };
+      if (f.registrationOpen !== undefined) { if (typeof f.registrationOpen !== "boolean") throw bad(400, "registrationOpen true/false olmalı"); next.flags.registrationOpen = f.registrationOpen; }
+      if (f.disabledScanTypes !== undefined) { if (!Array.isArray(f.disabledScanTypes) || f.disabledScanTypes.length > 40) throw bad(400, "disabledScanTypes liste olmalı"); const t = [...new Set(f.disabledScanTypes.map((x) => String(x).toUpperCase()))]; for (const x of t) if (!/^[A-Z_]{2,30}$/.test(x)) throw bad(400, "Geçersiz tarama türü: " + x.slice(0, 30)); next.flags.disabledScanTypes = t; }
+    }
     next.updatedAt = now(); next.updatedBy = by.email || by.uid;
     await db.collection("settings").doc("site").set(next); siteCache = { at: now(), val: next }; return next;
   }
   async function publicSite() {
     const s = await getSite(); const a = s.announcement, t = now();
-    return { announcement: a.enabled && a.text && (!a.until || a.until > t) ? { text: a.text, level: a.level, until: a.until } : null, maintenance: { enabled: s.maintenance.enabled, message: s.maintenance.message || "Sistem bakımda. Kısa süre sonra tekrar deneyin." }, serverTime: t };
+    return { announcement: a.enabled && a.text && (!a.until || a.until > t) ? { text: a.text, level: a.level, until: a.until } : null, maintenance: { enabled: s.maintenance.enabled, message: s.maintenance.message || "Sistem bakımda. Kısa süre sonra tekrar deneyin." }, flags: { registrationOpen: s.flags.registrationOpen, disabledScanTypes: s.flags.disabledScanTypes }, serverTime: t };
   }
 
   /* =================== GENEL UÇLAR =================== */
@@ -255,14 +260,23 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
         res.status(503).json({ success: false, code: "MAINTENANCE", error: s.maintenance.message || "Sistem bakımda. Kısa süre sonra tekrar deneyin." });
       } catch (e) { next(); }
     };
-    return { maintenanceGuard };
+    // Kapatılan tarama türleri: yöneticiler hariç yeni taramada 503 FEATURE_DISABLED
+    const scanTypeGuard = async (req, res, next) => {
+      try {
+        const s = await getSite(); const t = String((req.body && req.body.type) || "WEBSITE").toUpperCase(); if (!s.flags.disabledScanTypes.includes(t)) return next();
+        try { const u = await getVerifyUser()(req); if (await getIsAdmin()(u)) return next(); } catch { /* yönetici değil */ }
+        res.status(503).json({ success: false, code: "FEATURE_DISABLED", error: "Bu tarama türü geçici olarak kapalı. Lütfen daha sonra tekrar deneyin." });
+      } catch (e) { next(); }
+    };
+    return { maintenanceGuard, scanTypeGuard };
   }
 
   let timer = null;
+  const registrationOpen = async () => (await getSite()).flags.registrationOpen !== false;
   const start = () => { loadPricing().catch((e) => log("Fiyat ayarı yüklenemedi: " + e.message)); getSite(true).catch(() => {}); timer = setInterval(() => loadPricing().catch(() => {}), 60000); if (timer.unref) timer.unref(); };
   const stop = () => { if (timer) clearInterval(timer); timer = null; };
 
   return { start, stop, loadPricing, ensureFresh, savePricing, resetPricing, pricingHistory, adminPricingView, publicView, currentState, defaultState, normalize,
     createCoupon, listCoupons, setCouponActive, deleteCoupon, quoteCoupon, redeemCoupon, releaseCoupon, validateCoupon,
-    getSite, saveSite, publicSite, mountPublic };
+    getSite, saveSite, publicSite, mountPublic, registrationOpen };
 };

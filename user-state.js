@@ -109,22 +109,30 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     res.json({ success: true, exportedAt: new Date().toISOString(), profile: { uid, email: req.user.email, name: req.user.name }, account: usr.exists ? usr.data() : null, subscription: sub.exists ? sub.data() : null, state, assets, assetChecks: checks, orders, consents });
   }));
 
-  app.delete("/api/account", accGuard, wrap(async (req, res) => {
-    const uid = req.user.uid;
-    if (String((req.body || {}).confirm || "") !== "HESABIMI SIL") return res.status(400).json({ success: false, error: 'Onay için "HESABIMI SIL" yazın.' });
+  // Hesap verisini siler (kullanıcı kendi isteğiyle veya yönetici KVKK talebiyle). Aktif Stripe aboneliği varsa silmez (force ile geçilebilir).
+  async function purgeAccount(uid, { force = false } = {}) {
     const sub = (await db.collection("subscriptions").doc(uid).get()).data();
-    if (sub && sub.provider === "stripe" && sub.status === "active") return res.status(409).json({ success: false, code: "ACTIVE_SUBSCRIPTION", error: "Aktif bir USD aboneliğiniz var. Önce Paket sayfasından aboneliği iptal edin, sonra hesabı silin." });
+    if (!force && sub && sub.provider === "stripe" && sub.status === "active") return { blocked: true };
     const counts = {};
     counts.assets = await deleteWhere("assets", "ownerId", uid);
     counts.assetChecks = await deleteWhere("assetChecks", "ownerId", uid);
     counts.pushSubs = await deleteWhere("pushSubs", "uid", uid);
     await ref(uid).delete();
     await db.collection("users").doc(uid).delete();
+    try { await db.collection("adminNotes").doc(uid).delete(); } catch { /* not yok */ }
     // orders / subscriptions / consents: vergi ve ticari defter saklama yükümlülüğü ile ispat amacıyla yasal süre boyunca korunur (aydınlatma metninde belirtilir).
     if (admin && admin.auth) { try { await admin.auth().deleteUser(uid); } catch (e) { if (e.code !== "auth/user-not-found") throw e; } }
+    return { blocked: false, counts };
+  }
+
+  app.delete("/api/account", accGuard, wrap(async (req, res) => {
+    const uid = req.user.uid;
+    if (String((req.body || {}).confirm || "") !== "HESABIMI SIL") return res.status(400).json({ success: false, error: 'Onay için "HESABIMI SIL" yazın.' });
+    const r = await purgeAccount(uid); if (r.blocked) return res.status(409).json({ success: false, code: "ACTIVE_SUBSCRIPTION", error: "Aktif bir USD aboneliğiniz var. Önce Paket sayfasından aboneliği iptal edin, sonra hesabı silin." });
+    const counts = r.counts;
     res.json({ success: true, deleted: counts });
   }));
 
-  return { sanitizeState };
+  return { sanitizeState, purgeAccount };
 };
 module.exports.sanitizeState = sanitizeState;

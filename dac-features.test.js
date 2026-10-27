@@ -8,6 +8,7 @@ const _p = require("path"), _fs = require("fs");
 const ROOT = _fs.existsSync(_p.join(__dirname, "index.js")) ? __dirname : _p.join(__dirname, "..");
 const LOAD = (n) => require(_fs.existsSync(_p.join(ROOT, "server", n + ".js")) ? _p.join(ROOT, "server", n) : _p.join(ROOT, n));
 const PUBFILE = (n) => { const a = _p.join(ROOT, "public"); if (!_fs.existsSync(a)) return _p.join(ROOT, n); const f = _p.join(a, n); return _fs.existsSync(f) ? f : (_fs.readdirSync(a, { recursive: true }).map((x) => _p.join(a, x)).find((x) => _p.basename(x) === n) || f); };
+const APP_FILES = ["app.js", "app-analysis.js", "app-main.js", "app-bulk.js", "app-admin.js", "app-admin-ops.js"];
 const SRC = (n) => _fs.readFileSync(_fs.existsSync(_p.join(ROOT, "server", n)) ? _p.join(ROOT, "server", n) : _p.join(ROOT, n), "utf8");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (app) => new Promise((r) => { const s = http.createServer(app).listen(0, () => r(s)); });
@@ -68,7 +69,7 @@ test("Doğrulama: telefon biçimi ve uzunluğu", () => {
 });
 test("Doğrulama: vergi no isteğe bağlı 10 hane; TC kimlik alanı artık yok", () => {
   assert.equal(V.normalizeTaxId("").ok, true); assert.equal(V.normalizeTaxId("1234567890").taxId, "1234567890"); assert.equal(V.normalizeTaxId("12345678901").ok, false); assert.equal(V.normalizeTaxId("abc").ok, false);
-  assert.ok(!/TC Kimlik/i.test(SRC("app.js")), "arayüzde TC Kimlik alanı kalmamalı");
+  assert.ok(!/TC Kimlik/i.test(APP_FILES.map(SRC).join("\n")), "arayüzde TC Kimlik alanı kalmamalı");
   assert.ok(!/identityNumber:\s*String\(billing\.taxId/.test(SRC("payments.js")), "ödeme sağlayıcıya kullanıcıdan TC aktarılmamalı");
 });
 test("Doğrulama: toplu içe aktarma — 250 satır, yinelenen, hatalı, başlık ve sınır", () => {
@@ -317,7 +318,7 @@ test("Para birimi / affiliate: fiyatlar kodla saklanır, kur uydurulmaz, yapıla
 
 // ================= GİZLİ ANAHTAR SIZINTISI / DAĞITIM =================
 test("Gizli anahtarlar: tarayıcıya giden dosyalarda ve statik yayında sızıntı yok; sunucu dosyaları yayınlanmaz", async () => {
-  const pubFiles = ["app.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "sw.js", "index.html", "style.css", "manifest.json"];
+  const pubFiles = [...APP_FILES, "support-form.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "sw.js", "index.html", "style.css", "manifest.json"];
   for (const f of pubFiles) { const t = _fs.readFileSync(PUBFILE(f), "utf8"); assert.ok(!/private_key|BEGIN (RSA |EC )?PRIVATE|FIREBASE_SERVICE_ACCOUNT|sk_live_|whsec_|CRON_SECRET|IYZICO_SECRET|ADMIN_UIDS|"type":\s*"service_account"/.test(t), f + " içinde gizli bilgi"); }
   const s = await listen(APP); for (const p of ["/admin.js", "/jobs.js", "/scoring.js", "/metrics.js", "/validators.js", "/ai-provider.js", "/billing-catalog.js", "/server/admin.js", "/.env", "/.env.example", "/dac-features.test.js", "/package.json"]) { const r = await fetch(url(s, p)); assert.ok([301, 404].includes(r.status) && !(r.headers.get("content-type") || "").includes("javascript"), `${p} -> ${r.status}`); await r.arrayBuffer(); } s.close();
 });
@@ -331,17 +332,17 @@ test("Dağıtım: Render başlangıcı, ortam örneği, .gitignore ve sağlık u
 
 // ================= FRONTEND ↔ BACKEND BAĞLANTILARI (statik kaynak testleri) =================
 test("Frontend-backend: arayüzün çağırdığı her /api yolu sunucuda tanımlı", () => {
-  const front = SRC("app.js"), back = SRC("index.js") + SRC("admin.js") + SRC("payments.js") + SRC("user-state.js") + SRC("push.js") + SRC("commerce.js");
+  const front = APP_FILES.map(SRC).join("\n"), back = SRC("index.js") + SRC("admin.js") + SRC("payments.js") + SRC("user-state.js") + SRC("push.js") + SRC("commerce.js") + SRC("support.js") + SRC("admin-ops.js") + SRC("ops.js");
   const called = new Set([...front.matchAll(/['"`](\/api\/[A-Za-z0-9_\-\/]+)/g)].map((m) => m[1].replace(/\/$/, "")));
   const missing = [...called].filter((p) => !back.includes(p) && !back.includes(p.replace(/\/[^/]*$/, "/:")) && !back.includes(p.replace(/\/[^/]+$/, "")));
   assert.deepEqual(missing, []); for (const need of ["/api/jobs", "/api/admin/overview", "/api/admin/users", "/api/me/admin"]) assert.ok(called.has(need) || front.includes(need), need + " arayüzde kullanılmıyor");
 });
 test("Ortak yenileme: yeni tarama BAŞLATMAZ (yalnızca durum/özet çeker)", () => {
-  const f = SRC("app.js"), i = f.indexOf("async function refreshAll"); assert.ok(i > 0, "refreshAll tanımlı olmalı");
+  const f = APP_FILES.map(SRC).join("\n"), i = f.indexOf("async function refreshAll"); assert.ok(i > 0, "refreshAll tanımlı olmalı");
   const body = f.slice(i, f.indexOf("\n}\n", i) + 3); assert.ok(!/runScan|rescan\(|\/api\/scan|POST|method:\s*['"]POST/.test(body), "refreshAll tarama başlatmamalı: " + body.slice(0, 300)); assert.ok(/pullLatest|\/api\/jobs/.test(body));
 });
 test("XSS: yeni arayüz kodunda dış kaynaklı değerler esc() ile kodlanır", () => {
-  const f = SRC("app.js"); const i = f.indexOf("/* ---------- toplu tarama + admin"); assert.ok(i > 0, "yeni bölüm işaretçisi yok"); const part = f.slice(i);
+  const f = APP_FILES.map(SRC).join("\n"); const i = f.indexOf("/* ---------- toplu tarama + admin"); assert.ok(i > 0, "yeni bölüm işaretçisi yok"); const part = f.slice(i);
   const raw = [...part.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1]).filter((e) => /\b(name|targetUrl|email|displayName|uid|message|error|label|target|code)\b/.test(e) && !/esc\(|ic\(|\.length|\?|fmt|tone|badge|Number|toLocaleString|slice\(0,\s*\d\)\.toUpperCase/.test(e));
   assert.deepEqual(raw, [], "esc'siz enterpolasyon: " + raw.join(" | "));
 });

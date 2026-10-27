@@ -11,7 +11,7 @@ const crypto = require("crypto");
 const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 const SEC = require("./security");
 
-module.exports = function initPayments({ app, db, admin, http, commerce = null }) {
+module.exports = function initPayments({ app, db, admin, http, commerce = null, mailer = null }) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
   const stripeKey = () => process.env.STRIPE_SECRET_KEY || null;
   const iyziReady = () => !!(process.env.IYZICO_API_KEY && process.env.IYZICO_SECRET_KEY);
@@ -33,6 +33,12 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
     return { uid: t.uid, email: t.email || null, name: t.name || null, emailVerified: t.email_verified === true };
   }
 
+  // E-posta normalleştirme: küçük harf, +etiket atılır; gmail/googlemail için noktalar da atılır
+  function trialHash(email) {
+    let e = String(email || "").trim().toLowerCase(); const m = /^([^@\s]+)@([^@\s]+)$/.exec(e); if (!m) return null;
+    let local = m[1].split("+")[0], dom = m[2]; if (dom === "googlemail.com") dom = "gmail.com"; if (dom === "gmail.com") local = local.replace(/\./g, "");
+    return crypto.createHash("sha256").update((process.env.TRIAL_PEPPER || "dac-trial-v1") + "|" + local + "@" + dom).digest("hex").slice(0, 40);
+  }
   // ---------- Yetki: abonelik > deneme > süresi dolmuş ----------
   async function getEntitlement(uid) {
     const now = Date.now();
@@ -41,7 +47,17 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
       return { plan: sub.plan, status: "active", periodEnd: sub.periodEnd || null, provider: sub.provider || null, currency: sub.currency || null, cycle: sub.cycle || null };
     const uref = db.collection("users").doc(uid);
     let u = (await uref.get()).data() || {};
-    if (!u.trialStart) { u.trialStart = now; await uref.set({ trialStart: now }, { merge: true }); }
+    if (!u.trialStart) {
+      if (commerce && !(await commerce.registrationOpen())) throw fail(403, "Yeni kayıtlar geçici olarak kapalı.");
+      // Deneme suistimali: aynı e-posta (takma ad/nokta/+etiket normalleştirilmiş) daha önce başka bir hesapla deneme aldıysa bu hesap denemeyi almaz.
+      // Yalnızca tuzlanmış SHA-256 özeti saklanır (`trialUsed/{özet}`); hesap silinse bile kayıt kalır (aydınlatma metninde belirtilmelidir).
+      let blocked = false;
+      try {
+        const em = admin && admin.apps.length ? (await admin.auth().getUser(uid)).email : null; const h = trialHash(em);
+        if (h) { const tr = db.collection("trialUsed").doc(h), snap = await tr.get(); if (snap.exists && snap.data().uid !== uid) blocked = true; else if (!snap.exists) await tr.set({ uid, at: now }); }
+      } catch { /* e-posta okunamadı: engelleme yapılmaz */ }
+      u.trialStart = blocked ? now - (PLANS.TRIAL_DAYS + 1) * 864e5 : now; await uref.set({ trialStart: u.trialStart, ...(blocked ? { trialBlocked: true } : {}) }, { merge: true });
+    }
     const trialEnd = u.trialStart + PLANS.TRIAL_DAYS * 864e5;
     if (now < trialEnd) return { plan: "trial", status: "trial", trialStart: u.trialStart, trialEnd };
     return { plan: "expired", status: sub && sub.status ? sub.status : "expired", trialStart: u.trialStart, trialEnd, lastPlan: sub ? sub.plan : null };
@@ -73,8 +89,8 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
     }
     return out;
   }
-  async function stripeApi(method, path, params) {
-    const r = await http.request({ method, url: "https://api.stripe.com/v1" + path, auth: { username: stripeKey(), password: "" }, data: params ? toForm(params).join("&") : undefined, headers: { "Content-Type": "application/x-www-form-urlencoded" }, validateStatus: () => true, timeout: 15000 });
+  async function stripeApi(method, path, params, extraHeaders = {}) {
+    const r = await http.request({ method, url: "https://api.stripe.com/v1" + path, auth: { username: stripeKey(), password: "" }, data: params ? toForm(params).join("&") : undefined, headers: { "Content-Type": "application/x-www-form-urlencoded", ...extraHeaders }, validateStatus: () => true, timeout: 15000 });
     if (r.status >= 400) throw fail(502, "Stripe: " + (r.data?.error?.message || r.status));
     return r.data;
   }
@@ -159,6 +175,11 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
     } catch (e) { if (redeemed) await commerce.releaseCoupon(couponInfo.code, u.uid).catch(() => {}); throw e; } // ödeme başlatılamadıysa kupon hakkı iade edilir
   }));
 
+  // Makbuz e-postası (en iyi çaba; hata ödeme akışını bozmaz)
+  function sendReceipt(uid, o) {
+    if (!mailer || !mailer.enabled() || !admin || !admin.apps.length) return;
+    (async () => { const u = await admin.auth().getUser(uid); if (!u.email || !u.emailVerified) return; const m = mailer.tpl.receipt({ planName: (PLANS.PLANS[o.plan] || {}).name || o.plan, ...o }); await mailer.send({ to: u.email, ...m, type: "receipt", uid, dedupeKey: o.dedupe || null }); })().catch(() => {});
+  }
   // ---------- iyzico geri dönüş (tarayıcı POST) ----------
   app.post("/api/iyzico/callback", payGuard, handler(async (req, res) => {
     const token = req.body && typeof req.body.token === "string" && req.body.token.length < 300 ? req.body.token : null;
@@ -174,12 +195,13 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
     const paid = r.status === "success" && r.paymentStatus === "SUCCESS" && Number(r.paidPrice) + 0.01 >= order.amount;
     if (!paid) { await ref.set({ status: "failed", gatewayStatus: r.paymentStatus || r.errorMessage || null }, { merge: true }); if (commerce && order.couponCode && order.status !== "failed" && order.status !== "paid") await commerce.releaseCoupon(order.couponCode, order.uid).catch(() => {}); return back(order.returnUrl, false); }
     // Tekrar/eşzamanlı callback süreyi iki kez uzatmasın: sipariş durumu transaction içinde "paid"e çekilir
-    const first = await db.runTransaction(async (t) => { const o = (await t.get(ref)).data(); if (!o || o.status === "paid") return false; t.set(ref, { status: "paid", paidAt: Date.now(), paymentId: r.paymentId || null }, { merge: true }); return true; });
+    const first = await db.runTransaction(async (t) => { const o = (await t.get(ref)).data(); if (!o || o.status === "paid") return false; t.set(ref, { status: "paid", paidAt: Date.now(), paymentId: r.paymentId || null, txIds: Array.isArray(r.itemTransactions) ? r.itemTransactions.map((x) => ({ id: String(x.paymentTransactionId || ""), price: Number(x.paidPrice || x.price || 0) })).filter((x) => x.id).slice(0, 5) : [] }, { merge: true }); return true; });
     if (first) {
       const cur = (await db.collection("subscriptions").doc(order.uid).get()).data() || {};
       const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === order.plan ? cur.periodEnd : Date.now();
       const periodEnd = startFrom + (order.cycle === "yearly" ? 365 : 30) * 864e5;
       await activate(order.uid, { plan: order.plan, status: "active", provider: "iyzico", currency: "TRY", cycle: order.cycle, periodEnd });
+      sendReceipt(order.uid, { plan: order.plan, cycle: order.cycle, amount: order.amount, currency: "TRY", periodEnd, couponCode: order.couponCode });
     }
     back(order.returnUrl, true);
   }));
@@ -214,7 +236,8 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
         if (id) {
           const sub = await stripeApi("GET", "/subscriptions/" + id); await stripeSync(sub);
           // Yönetici panelinde Stripe tahsilatları da görünsün (idempotent: fatura kimliği belge kimliği olur)
-          try { const m = sub.metadata || {}, oid = "st_" + String(o.id || "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 60); if (m.uid && oid.length > 3) await db.collection("orders").doc(oid).set({ uid: m.uid, plan: m.plan, cycle: m.cycle, currency: "USD", amount: Math.round(Number(o.amount_paid || 0)) / 100, status: "paid", gatewayStatus: "stripe", paidAt: Date.now(), createdAt: Date.now(), invoiceId: String(o.id || "").slice(0, 80), ...(m.coupon ? { couponCode: m.coupon } : {}) }, { merge: true }); } catch (e) { console.error("payments: stripe sipariş kaydı yazılamadı:", e.message); }
+          try { const m = sub.metadata || {}, oid = "st_" + String(o.id || "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 60); if (m.uid && oid.length > 3) await db.collection("orders").doc(oid).set({ uid: m.uid, plan: m.plan, cycle: m.cycle, currency: "USD", amount: Math.round(Number(o.amount_paid || 0)) / 100, status: "paid", gatewayStatus: "stripe", paidAt: Date.now(), createdAt: Date.now(), invoiceId: String(o.id || "").slice(0, 80), ...(o.payment_intent ? { paymentIntent: String(o.payment_intent) } : {}), ...(o.charge ? { charge: String(o.charge) } : {}), ...(m.coupon ? { couponCode: m.coupon } : {}) }, { merge: true }); } catch (e) { console.error("payments: stripe sipariş kaydı yazılamadı:", e.message); }
+          try { const m = sub.metadata || {}; if (m.uid && Number(o.amount_paid) > 0) sendReceipt(m.uid, { plan: m.plan, cycle: m.cycle, amount: Number(o.amount_paid) / 100, currency: "USD", periodEnd: periodEndOf(sub), couponCode: m.coupon, dedupe: "rcpt_" + String(o.id || "") }); } catch { /* makbuz opsiyonel */ }
         }
       }
       else if (ev.type === "checkout.session.expired") { const m = o.metadata || {}; if (commerce && m.coupon && m.uid) await commerce.releaseCoupon(m.coupon, m.uid).catch(() => {}); }
@@ -232,5 +255,41 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null }
     res.json({ success: true, url: s.url });
   }));
 
-  return { verifyUser, getEntitlement, status, verifyStripeSignature, _stripeSync: stripeSync };
+  /* ---------- Yönetici işlemleri: iade ve abonelik iptali (admin-ops.js çağırır) ---------- */
+  const iyziClient = () => { const Iyzipay = require("iyzipay"); return new Iyzipay({ apiKey: process.env.IYZICO_API_KEY, secretKey: process.env.IYZICO_SECRET_KEY, uri: process.env.IYZICO_BASE_URL || "https://sandbox-api.iyzipay.com" }); };
+  const iyziCall = (fn, body) => new Promise((resolve, reject) => fn(body, (err, r) => (err ? reject(err) : resolve(r))));
+  const istDay = (ms) => new Date(ms + 3 * 36e5).toISOString().slice(0, 10); // iyzico iptali aynı gün (TR saati) içindir
+  async function refundOrder(order, orderId, amount, ip) {
+    const full = Number(order.amount), already = Number(order.refundedAmount || 0), left = Math.round((full - already) * 100) / 100;
+    const amt = amount == null ? left : Math.round(Number(amount) * 100) / 100;
+    if (!(amt > 0) || amt > left + 0.001) throw fail(400, `İade tutarı geçersiz (iade edilebilir: ${left})`);
+    if (order.currency === "USD") {
+      if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı."); let pi = order.paymentIntent, ch = order.charge;
+      if (!pi && !ch && order.invoiceId) { const inv = await stripeApi("GET", "/invoices/" + encodeURIComponent(order.invoiceId)); pi = inv.payment_intent || null; ch = inv.charge || null; }
+      if (!pi && !ch) throw fail(409, "Bu siparişte Stripe ödeme kimliği yok; iadeyi Stripe panelinden yapın.");
+      const r = await stripeApi("POST", "/refunds", { ...(pi ? { payment_intent: pi } : { charge: ch }), amount: Math.round(amt * 100) }, { "Idempotency-Key": `dac_refund_${orderId}_${Math.round((already + amt) * 100)}` });
+      return { provider: "stripe", refundId: r.id, amount: amt };
+    }
+    if (!iyziReady()) throw fail(503, "iyzico yapılandırılmadı."); const iyzi = iyziClient(), ipx = String(ip || "127.0.0.1");
+    if (order.paymentId && already === 0 && amt === full && order.paidAt && istDay(order.paidAt) === istDay(Date.now())) {
+      const c = await iyziCall(iyzi.cancel.create.bind(iyzi.cancel), { locale: "tr", conversationId: orderId, paymentId: order.paymentId, ip: ipx });
+      if (c.status === "success") return { provider: "iyzico", method: "cancel", amount: amt };
+    }
+    const tx = (order.txIds || [])[0]; if (!tx || !tx.id) throw fail(409, "Bu siparişte iyzico işlem kimliği yok; iadeyi iyzico panelinden yapın.");
+    const r = await iyziCall(iyzi.refund.create.bind(iyzi.refund), { locale: "tr", conversationId: orderId, paymentTransactionId: tx.id, price: amt.toFixed(2), currency: "TRY", ip: ipx });
+    if (r.status !== "success") throw fail(502, "iyzico: " + (r.errorMessage || "iade başarısız"));
+    return { provider: "iyzico", method: "refund", amount: amt };
+  }
+  async function cancelSubscription(uid, immediate) {
+    const sub = (await db.collection("subscriptions").doc(uid).get()).data(); if (!sub) throw fail(404, "Abonelik bulunamadı");
+    if (sub.provider === "stripe" && sub.stripeSubscriptionId) {
+      if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı.");
+      if (immediate) { await stripeApi("DELETE", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId)); await activate(uid, { status: "canceled", periodEnd: Date.now() }); return { provider: "stripe", immediate: true }; }
+      await stripeApi("POST", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId), { cancel_at_period_end: "true" }); return { provider: "stripe", immediate: false, note: "Dönem sonunda sona erecek (şimdiki dönem geçerli kalır)." };
+    }
+    if (immediate) { await activate(uid, { status: "canceled", periodEnd: Date.now() }); return { provider: sub.provider || "manual", immediate: true }; }
+    return { provider: sub.provider || "manual", immediate: false, note: "Bu paket otomatik yenilenmiyor; süresi dolunca kendiliğinden sona erer." };
+  }
+
+  return { verifyUser, getEntitlement, status, verifyStripeSignature, _stripeSync: stripeSync, refundOrder, cancelSubscription, trialHash };
 };
