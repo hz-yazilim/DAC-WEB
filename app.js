@@ -3,7 +3,7 @@ const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>{try{const a=new Uint32Array(3);crypto.getRandomValues(a);return Array.from(a,x=>x.toString(36)).join('').slice(0,16)+Date.now().toString(36)}catch{return Math.random().toString(36).slice(2,10)+Date.now().toString(36)}};
 const P=window.DAC_PLANS;
-var SITE=null,SITE_AT=0,PRICE_AT=0,CPN=null; // V13.2 (var: hoisting, render erken çağrılsa bile güvenli)
+var SITE=null,SITE_AT=0,PRICE_AT=0,CPN=null,PLANCPN=null; // V13.2 (var: hoisting, render erken çağrılsa bile güvenli)
 
 /* ---------- Kategoriler: ne taranır, neden önemli ---------- */
 const GROUPS=[['web','WEB & ALTYAPI'],['perf','PERFORMANS & GÜVENLİK'],['brand','MARKA & İLETİŞİM'],['soft','YAZILIM & ABONELİK']];
@@ -426,15 +426,19 @@ function plan(){
  const status=ps.paid?`<span class="badge ok">${ps.p.name} aktif</span>${st.planEnd?` <span class="hint">bitiş: ${new Date(st.planEnd).toLocaleDateString('tr-TR')}</span>`:''}`
   :ps.trial?`<span class="badge wn">Ücretsiz deneme: ${leftTxt(ps.left)} kaldı</span>`:`<span class="badge bd">Deneme süresi doldu</span>`;
  const provOk=c=>!PAYCFG||(c==='TRY'?PAYCFG.iyzico:PAYCFG.stripe),free=!!(PAYCFG&&PAYCFG.free),ready=c=>provOk(c)||free;
- const cards=P.PAID.map(id=>{const p=P.PLANS[id],main=P.price(id,cur,cyc),a2=P.price(id,alt,cyc),isCur=ps.paid&&ps.id===id;
+ const pc=PLANCPN&&PLANCPN.cur===cur&&PLANCPN.cyc===cyc?PLANCPN:null;
+ if(PLANCPN&&!PLANCPN.err&&!pc&&!PLANCPN.busy){PLANCPN.busy=true;setTimeout(()=>planCpnApply(true),0)} // para birimi/dönem değişti: kodu yeniden doğrula
+ const cpnCard=`<div class="card"><b>${ic('tag')} İndirim kodu</b><div class="row2" style="margin-top:8px"><input class="field" id="pcpn" placeholder="İndirim kodunuz" maxlength="32" autocomplete="off" autocapitalize="characters" value="${esc(PLANCPN?PLANCPN.code:'')}"><button class="btn s" data-act="pcpn-apply">Uygula</button></div>${pc&&!pc.err?`<div class="hint"><b>${esc(pc.code)}</b> uygulandı. Geçerli paketlerde indirimli fiyat görünür ve ödemede otomatik kullanılır. <button class="btn s" data-act="pcpn-clear">Kaldır</button></div>`:PLANCPN&&PLANCPN.err?`<div class="hint">${esc(PLANCPN.err)}</div>`:'<div class="hint">Size verilen indirim kodunu girin; ödeme adımında otomatik uygulanır.</div>'}</div>`;
+ const cards=P.PAID.map(id=>{const p=P.PLANS[id],main=P.price(id,cur,cyc),a2=P.price(id,alt,cyc),isCur=ps.paid&&ps.id===id,q=pc&&!pc.err?pc.quotes[id]:null;
   const btn=!ready(cur)?`<button class="btn w" disabled>${cur==='TRY'?'TL':'USD'} ödeme yakında</button>`:`<button class="btn p w" data-act="buy" data-p="${id}">${isCur?'Süreyi uzat':ps.paid?'Bu pakete geç':'Satın al'}</button>`;
   return`<div class="card plan ${isCur?'on':''}">${p.popular?'<span class="badge ok pop">Popüler</span>':''}<h3>${p.name}</h3><div class="hint">${p.audience}</div>
-  <div class="price">${money(main,cur)}<small> / ${cyc==='yearly'?'yıl':'ay'}</small></div><div class="hint">≈ ${money(a2,alt)} / ${cyc==='yearly'?'yıl':'ay'}</div>
+  <div class="price">${q?`<s class="hint">${money(q.listAmount,cur)}</s> ${money(q.finalAmount,cur)}`:money(main,cur)}<small> / ${cyc==='yearly'?'yıl':'ay'}</small></div>${q?`<div class="hint"><span class="badge ok">${q.type==='percent'?'%'+q.value+' indirim':money(q.discount,cur)+' indirim'}</span></div>`:pc&&!pc.err?'<div class="hint">İndirim kodu bu pakette geçerli değil</div>':`<div class="hint">≈ ${money(a2,alt)} / ${cyc==='yearly'?'yıl':'ay'}</div>`}
   <ul class="ul">${p.features.map(f=>`<li>${f}</li>`).join('')}</ul>${btn}</div>`}).join('');
  return`<h2>Paket ve Faturalandırma</h2><p class="sub">${status} • ${S.assets.length}/${limTxt(ps)} varlık</p>
  ${ps.trial||ps.expired?`<div class="card banner ${ps.expired?'bad':''}"><div><b>${ps.expired?'Deneme süreniz doldu':'Ücretsiz deneme'}</b><div class="hint">${P.TRIAL_DAYS} gün ücretsiz, ${P.PLANS.trial.assets} varlık hakkı. Sonrasında en az Freelance paketini seçmeniz gerekir.</div></div></div>`:''}
  <div class="card"><div class="row2"><div><div class="hint">Para birimi / ödeme yöntemi</div><div class="seg"><button class="${cur==='TRY'?'on':''}" data-act="cur" data-v="TRY">₺ TL</button><button class="${cur==='USD'?'on':''}" data-act="cur" data-v="USD">$ USD</button></div></div>
  <div><div class="hint">Faturalama dönemi</div><div class="seg"><button class="${cyc==='monthly'?'on':''}" data-act="cycle" data-v="monthly">Aylık</button><button class="${cyc==='yearly'?'on':''}" data-act="cycle" data-v="yearly">Yıllık${P.YEARLY_MONTHS<12?` (${12-P.YEARLY_MONTHS} ay bedava)`:''}</button></div></div></div></div>
+ ${cpnCard}
  <div class="plans">${cards}</div>
  ${free&&!provOk(cur)?`<div class="paynote">Ödeme sistemi henüz bağlanmadı: <b>Satın al</b> butonu paketi kart bilgisi istemeden doğrudan etkinleştirir (geçici test dönemi).</div>`:''}
  <p class="hint">${cur==='TRY'?'TL ödemeleri iyzico ile alınır; kart bilgisi bu sitede saklanmaz. Süre dolmadan yeniden satın alarak uzatabilirsiniz. Ödeme için Ayarlar > Fatura Bilgileri doldurulmalıdır.':'USD ödemeleri Stripe ile alınır, abonelik otomatik yenilenir ve istediğiniz zaman iptal edilebilir.'}</p>
@@ -513,6 +517,8 @@ function checkout(plan){
  $('#modal').classList.add('on');icons();
  CPN=null;const curc=cur==='USD'?'USD':'TRY',cyc0=st.cycle||'monthly',list0=P.price(plan,curc,cyc0);
  const updAmt=()=>{const a=$('#cpnamt');if(a)a.innerHTML=CPN?`<s>${money(CPN.listAmount,curc)}</s> <b>${money(CPN.finalAmount,curc)}</b>`:`<b>${list0==null?'-':money(list0,curc)}</b>`};updAmt();
+ const pq=PLANCPN&&!PLANCPN.err&&PLANCPN.cur===curc&&PLANCPN.cyc===cyc0&&PLANCPN.quotes[plan];
+ if(pq){CPN=pq;$('#cpn').value=pq.code;$('#cpnr').textContent='Kupon uygulandı: '+(pq.type==='percent'?'%'+pq.value+' indirim':money(pq.discount,curc)+' indirim');updAmt()}
  $('#cpnb').onclick=async()=>{const code=$('#cpn').value.trim();if(!code){CPN=null;$('#cpnr').textContent='';return updAmt()}
   try{CPN=await bkApi('POST','/api/coupon/validate',{code,plan,cycle:cyc0,currency:curc});$('#cpnr').textContent='Kupon uygulandı: '+(CPN.type==='percent'?'%'+CPN.value+' indirim':money(CPN.discount,curc)+' indirim')}catch(e){CPN=null;$('#cpnr').textContent=e.message}updAmt()};
  $('#cgo').onclick=()=>{if(!$('#c1').checked||!$('#c2').checked)return toast('Devam etmek için iki onay kutusunu da işaretleyin','warn');close();doCheckout(plan)};
@@ -522,14 +528,27 @@ async function doCheckout(plan){
  busy(true);
  try{
   const r=await fetch(api+'/api/checkout',{method:'POST',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({plan,cycle:st.cycle||'monthly',currency:cur,billing:b,consent:{distanceSales:true,withdrawalWaiver:true},returnPath:location.pathname,coupon:CPN?CPN.code:undefined,expectedAmount:CPN?CPN.finalAmount:P.price(plan,cur==='USD'?'USD':'TRY',st.cycle||'monthly')})});
-  const j=await r.json();if(!j.success){if(j.code==='PRICE_CHANGED'){CPN=null;await loadPricing(true);render()}throw new Error(j.error||'İşlem tamamlanamadı')}
-  CPN=null;
+  const j=await r.json();if(!j.success){if(j.code==='PRICE_CHANGED'){CPN=null;PLANCPN=null;await loadPricing(true);render()}throw new Error(j.error||'İşlem tamamlanamadı')}
+  CPN=null;PLANCPN=null;
   if(j.activated){await syncPlan();render();toast('Paketiniz etkinleştirildi: '+(P.PLANS[j.plan]?.name||j.plan));busy(false);return}
   if(!j.url)throw new Error('Ödeme sayfası alınamadı');
   location.href=j.url;
  }catch(e){toast(e.message,'err')}
  busy(false);
 }
+/* ---------- paket sayfasında indirim kodu (V13.5): kod her ücretli paket için doğrulanır, indirimli fiyat kartlarda gösterilir, ödemede otomatik uygulanır ---------- */
+async function planCpnApply(auto){
+ const inp=$('#pcpn'),code=((auto&&PLANCPN?PLANCPN.code:(inp?inp.value:''))||'').trim().toUpperCase();
+ if(!code)return toast('Önce indirim kodunu yazın','warn');
+ if(!apiUrl())return toast('Scanner API adresi yapılandırılmamış','err');
+ const st=S.settings,cur=st.currency==='USD'?'USD':'TRY',cyc=st.cycle||'monthly';busy(true);
+ const res=await Promise.allSettled(P.PAID.map(id=>bkApi('POST','/api/coupon/validate',{code,plan:id,cycle:cyc,currency:cur})));busy(false);
+ const quotes={},errs=[];res.forEach((r,i)=>{if(r.status==='fulfilled')quotes[P.PAID[i]]=r.value;else errs.push(r.reason&&r.reason.message||'Geçersiz kupon kodu')});
+ if(!Object.keys(quotes).length){const m=errs[0]||'Geçersiz kupon kodu';PLANCPN={code,cur,cyc,quotes:{},err:m};render();return toast(m,'err')}
+ PLANCPN={code,cur,cyc,quotes};render();if(!auto)toast('İndirim kodu uygulandı: '+code);
+}
+function planCpnClear(){PLANCPN=null;render()}
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.id==='pcpn'){e.preventDefault();planCpnApply()}});
 /* ---------- abonelik iptali (V13.4): kullanıcı kendi aboneliğini iptal eder / iptali geri alır ---------- */
 function subCard(ps,st){
  if(!ps.paid)return'';
