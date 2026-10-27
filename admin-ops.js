@@ -100,20 +100,28 @@ module.exports = function registerAdminOps(c) {
 
   /* ---------- Destek talepleri ---------- */
   app.get("/api/admin/support", guard, wrap(async (req, res) => {
-    if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", tickets: [] }); const st = ["open", "answered", "closed"].includes(req.query.status) ? req.query.status : "";
-    const snap = await db.collection("supportTickets").orderBy("createdAt", "desc").limit(300).get(); let rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })); const counts = { open: 0, answered: 0, closed: 0 }; rows.forEach((t) => { counts[t.status] = (counts[t.status] || 0) + 1; }); if (st) rows = rows.filter((t) => t.status === st);
+    if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", tickets: [] }); const st = ["open", "answered", "resolved", "closed"].includes(req.query.status) ? req.query.status : "";
+    const snap = await db.collection("supportTickets").orderBy("createdAt", "desc").limit(300).get(); let rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })); const counts = { open: 0, answered: 0, resolved: 0, closed: 0 }; rows.forEach((t) => { counts[t.status] = (counts[t.status] || 0) + 1; }); if (st) rows = rows.filter((t) => t.status === st);
     res.json({ success: true, available: true, counts, tickets: rows.slice(0, 100).map((t) => ({ id: t.id, no: t.id.slice(0, 6).toUpperCase(), name: t.name, email: t.email, uid: t.uid || null, category: t.category || null, source: t.source || (t.uid ? "panel" : "form"), subject: t.subject, message: t.message, status: t.status, createdAt: t.createdAt, updatedAt: t.updatedAt, replies: (t.replies || []).map((r) => ({ at: r.at, by: r.by, role: r.role === "user" ? "user" : "admin", message: r.message })) })) });
   }));
   app.post("/api/admin/support/:id/reply", guard, writeGuard, wrap(async (req, res) => {
     if (!need(res, idOk(req.params.id), 400, "Geçersiz talep") || !db) return; const msg = String((req.body || {}).message || "").trim(); if (msg.length < 2 || msg.length > 4000) return deny(res, 400, "Yanıt 2-4000 karakter olmalı");
     const ref = db.collection("supportTickets").doc(req.params.id), s = await ref.get(); if (!s.exists) return deny(res, 404, "Talep bulunamadı"); const t = s.data();
+    if (t.status === "closed" || t.status === "resolved") return deny(res, 409, "Talep " + (t.status === "closed" ? "kapalı" : "sonuçlandı") + ". Yanıt yazmak için önce yeniden açın.");
     let mailed = false; if (mailer && mailer.enabled()) mailed = (await mailer.send({ to: t.email, ...mailer.tpl.supportReply({ subject: t.subject, message: msg, ticketId: req.params.id.slice(0, 6).toUpperCase() }), type: "support-reply" })).sent === true;
     await ref.set({ replies: [...(t.replies || []), { at: now(), by: req.user.email || req.user.uid, role: "admin", message: msg, mailed }].slice(-50), status: "answered", updatedAt: now() }, { merge: true });
     await auditSafe(req, "support.reply", req.params.id, { mailed }); res.json({ success: true, mailed, note: mailed ? null : (t.uid ? "E-posta gönderilemedi/kapalı: yanıt kullanıcının Destek panelinde görünür." : "E-posta gönderilemedi/kapalı: yanıt yalnızca panelde kayıtlı. Kullanıcıya kendiniz yazın.") });
   }));
   app.post("/api/admin/support/:id/status", guard, writeGuard, wrap(async (req, res) => {
-    if (!need(res, idOk(req.params.id), 400, "Geçersiz talep") || !db) return; const st = (req.body || {}).status; if (!["open", "answered", "closed"].includes(st)) return deny(res, 400, "Durum open, answered veya closed olmalı");
+    if (!need(res, idOk(req.params.id), 400, "Geçersiz talep") || !db) return; const st = (req.body || {}).status; if (!["open", "answered", "resolved", "closed"].includes(st)) return deny(res, 400, "Durum open, answered, resolved veya closed olmalı");
     const ref = db.collection("supportTickets").doc(req.params.id); if (!(await ref.get()).exists) return deny(res, 404, "Talep bulunamadı"); await ref.set({ status: st, updatedAt: now() }, { merge: true }); await auditSafe(req, "support.status", req.params.id, { status: st }); res.json({ success: true });
+  }));
+
+  app.delete("/api/admin/support/:id", guard, writeGuard, wrap(async (req, res) => {
+    if (!need(res, idOk(req.params.id), 400, "Geçersiz talep") || !db) return;
+    const ref = db.collection("supportTickets").doc(req.params.id), s = await ref.get(); if (!s.exists) return deny(res, 404, "Talep bulunamadı");
+    const t = s.data(); if (t.status !== "closed") return deny(res, 400, "Yalnızca kapalı talepler silinebilir. Önce talebi kapatın.");
+    await ref.delete(); await auditSafe(req, "support.delete", req.params.id, { subject: String(t.subject || "").slice(0, 120) }); res.json({ success: true });
   }));
 
   /* ---------- Operasyon ---------- */

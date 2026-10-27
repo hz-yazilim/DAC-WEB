@@ -2,7 +2,8 @@
 /* ---------- kullanıcı destek paneli (V13.4): talep aç, yanıtları oku, mesaj yaz, talebi kapat ---------- */
 const SUP={loaded:false,loading:false,err:null,tickets:[],open:null,form:{subject:'',message:'',category:'general'},drafts:{},busy:false,timer:null,sig:'',at:0};
 const SUPCAT={general:'Genel',billing:'Fatura / ödeme',cancel:'Paket iptali / iade',technical:'Teknik sorun'};
-const SUPST={open:['Açık','wn'],answered:['Yanıtlandı','ok'],closed:['Kapalı','mu']};
+const SUPST={open:['Açık','wn'],answered:['Yanıtlandı','ok'],resolved:['Sonuçlandı','ok'],closed:['Kapalı','mu']};
+const supFinal=t=>t.status==='closed'||t.status==='resolved';
 const supSig=t=>t.map(x=>x.id+':'+x.status+':'+x.updatedAt+':'+x.replies.length).join('|');
 const supFocused=()=>{const a=document.activeElement,b=$('#sup-body');return !!(a&&b&&b.contains(a)&&/^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName))};
 function supPaint(){const el=$('#sup-body');if(el){el.innerHTML=supBody();icons()}}
@@ -28,16 +29,16 @@ function supTicket(t){
  if(!on)return`<div class="card">${head}</div>`;
  const bub=(who,at,msg)=>`<div class="sup-msg ${who==='user'?'sup-me':'sup-staff'}"><div class="hint"><b>${who==='user'?'Siz':'Destek ekibi'}</b> • ${esc(fdt(at))}</div><div class="sup-tx">${esc(msg)}</div></div>`;
  const thread=bub('user',t.createdAt,t.message)+t.replies.map(r=>bub(r.from,r.at,r.message)).join('');
- const closed=t.status==='closed';
+ const fin=supFinal(t);
  return`<div class="card">${head}<div class="sup-thread">${thread}</div>
- ${closed?'<div class="hint">Bu talep kapalı. Aşağıya yazarsanız talep yeniden açılır.</div>':''}
- <textarea class="field" id="sup-rp-${esc(t.id)}" maxlength="4000" placeholder="Mesajınız…">${esc(SUP.drafts[t.id]||'')}</textarea>
- <div class="btns"><button class="btn p" data-act="sup-reply" data-id="${esc(t.id)}">${ic('send')} Gönder</button>${closed?'':`<button class="btn s" data-act="sup-close" data-id="${esc(t.id)}">Talebi kapat</button>`}</div></div>`;
+ ${fin?`<div class="hint">Bu talep ${t.status==='closed'?'kapatıldı':'sonuçlandı'}; artık mesaj yazılamaz. Yeni bir talep açabilirsiniz.</div>`:`<textarea class="field" id="sup-rp-${esc(t.id)}" maxlength="4000" placeholder="Mesajınız…">${esc(SUP.drafts[t.id]||'')}</textarea>
+ <div class="btns"><button class="btn p" data-act="sup-reply" data-id="${esc(t.id)}">${ic('send')} Gönder</button></div>`}</div>`;
 }
 function supBody(){
  if(!SUP.loaded)return'<div class="card"><div class="empty">Yükleniyor…</div></div>';
  const f=SUP.form,cats=Object.entries(SUPCAT).map(([k,l])=>`<option value="${k}"${f.category===k?' selected':''}>${esc(l)}</option>`).join('');
- const form=`<div class="card"><b>${ic('life-buoy')} Yeni destek talebi</b>
+ const act=SUP.tickets.find(t=>!supFinal(t));
+ const form=act?`<div class="card"><b>${ic('life-buoy')} Açık destek talebiniz var</b><div class="hint">#${esc(act.no)} numaralı talebiniz sonuçlanana kadar yeni talep açamazsınız. Eklemek istediğiniz bir şey varsa aşağıdan o talebe mesaj yazın.</div><button class="btn s" data-act="sup-toggle" data-id="${esc(act.id)}">Talebi aç</button></div>`:`<div class="card"><b>${ic('life-buoy')} Yeni destek talebi</b>
  <select class="field" id="sup-cat" aria-label="Kategori">${cats}</select>
  <input class="field" id="sup-subject" maxlength="120" placeholder="Konu" value="${esc(f.subject)}" autocomplete="off">
  <textarea class="field" id="sup-message" maxlength="4000" placeholder="Sorununuzu veya talebinizi yazın (en az 10 karakter)">${esc(f.message)}</textarea>
@@ -63,8 +64,5 @@ document.addEventListener('click',async e=>{
   if(act==='sup-reply'){
    const m=(SUP.drafts[id]||'').trim();if(m.length<2)return toast('Önce mesajınızı yazın','warn');
    SUP.busy=true;try{const j=await bkApi('POST','/api/support/my/'+encodeURIComponent(id)+'/reply',{message:m});delete SUP.drafts[id];supPut(j.ticket);toast('Mesajınız gönderildi');supPaint()}finally{SUP.busy=false}return}
-  if(act==='sup-close'){
-   if(!confirm('Bu talep kapatılsın mı? Sonradan yazarsanız yeniden açılır.'))return;
-   SUP.busy=true;try{const j=await bkApi('POST','/api/support/my/'+encodeURIComponent(id)+'/close',{});supPut(j.ticket);toast('Talep kapatıldı');supPaint()}finally{SUP.busy=false}return}
  }catch(x){toast(x.message,'err')}
 });

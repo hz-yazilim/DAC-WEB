@@ -237,7 +237,7 @@ function memFsWhere(seed = {}) {
   return db;
 }
 const supVerify = async (req) => { const h = req.headers["x-test-user"]; if (!h) throw Object.assign(new Error("Giriş yapmanız gerekiyor."), { status: 401 }); const u = JSON.parse(h); return { uid: u.uid, email: u.email || null, name: u.name || null, emailVerified: true }; };
-test("Kullanıcı destek paneli: giriş şart; talep aç, yalnızca kendi taleplerini gör, yaz, kapat; başkasının talebi 404; yönetici e-postası sızmaz", async () => {
+test("Kullanıcı destek paneli: giriş şart; tek aktif talep, yalnızca kendi taleplerini gör, yaz; kapalı/sonuçlanmışa yazılamaz; başkasının talebi 404; yönetici e-postası sızmaz", async () => {
   const db = memFsWhere(), H = fakeHttp(), mailer = LOAD("mailer")({ db, http: H });
   const S = LOAD("support")({ db, http: H, mailer, SEC: LOAD("security"), verifyUser: supVerify }); const app = express(); app.use(express.json()); S.mount(app); const s = await listen(app);
   const U1 = as("u1"), U2 = as("u2"), get = (p, h) => fetch(url(s, p), { headers: h });
@@ -246,27 +246,48 @@ test("Kullanıcı destek paneli: giriş şart; talep aç, yalnızca kendi talepl
   const c = await (await jpost(s, "/api/support/my", U1, { subject: "Paketimi iptal etmek istiyorum", message: "Sipariş numaram 123, iptal etmek istiyorum.", category: "cancel" })).json();
   assert.equal(c.success, true); assert.equal(c.ticket.status, "open"); assert.equal(c.ticket.category, "cancel"); const id = c.ticket.id;
   assert.equal(db.store["supportTickets/" + id].uid, "u1"); assert.equal(db.store["supportTickets/" + id].email, "u1@ornek.com", "e-posta kullanıcının doğrulanmış hesabından alınır, istekten değil");
-  assert.equal((await jpost(s, "/api/support/my", U1, { subject: "Başka", message: "bir başka talep yazıyorum", category: "bilinmeyen" }).then((r) => r.json())).ticket.category, "general", "bilinmeyen kategori genele düşer");
-  assert.equal((await (await get("/api/support/my", U1)).json()).tickets.length, 2); assert.equal((await (await get("/api/support/my", U2)).json()).tickets.length, 0, "başka kullanıcı görmez");
-  assert.equal((await jpost(s, `/api/support/my/${id}/reply`, U2, { message: "sızma denemesi" })).status, 404, "başkasının talebine yazılamaz"); assert.equal((await jpost(s, `/api/support/my/${id}/close`, U2, {})).status, 404);
+  assert.equal((await jpost(s, "/api/support/my", U1, { subject: "Başka", message: "bir başka talep yazıyorum", category: "bilinmeyen" })).status, 409, "sonuçlanmamış talep varken yeni talep açılamaz");
+  assert.equal((await jpost(s, "/api/support/my", as("u3"), { subject: "Başka", message: "bir başka talep yazıyorum", category: "bilinmeyen" }).then((r) => r.json())).ticket.category, "general", "bilinmeyen kategori genele düşer");
+  assert.equal((await (await get("/api/support/my", U1)).json()).tickets.length, 1); assert.equal((await (await get("/api/support/my", U2)).json()).tickets.length, 0, "başka kullanıcı görmez");
+  assert.equal((await jpost(s, `/api/support/my/${id}/reply`, U2, { message: "sızma denemesi" })).status, 404, "başkasının talebine yazılamaz"); assert.equal((await jpost(s, `/api/support/my/${id}/close`, U1, {})).status, 404, "kullanıcı kendi talebini kapatamaz (uç yok)");
   assert.equal((await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "x" })).status, 400);
   // yönetici yanıtı (admin-ops'un yazdığı biçim) → kullanıcı görünümünde "staff"; yönetici e-postası görünmez
   db.store["supportTickets/" + id] = { ...db.store["supportTickets/" + id], status: "answered", replies: [{ at: 1, by: "root@ornek.com", role: "admin", message: "İptal edildi." }, { at: 2, by: "eski@ornek.com", message: "rol alanı yok = yönetici yanıtı" }] };
   const mine = (await (await get("/api/support/my", U1)).json()).tickets.find((t) => t.id === id); assert.deepEqual(mine.replies.map((r) => r.from), ["staff", "staff"]); assert.ok(!JSON.stringify(mine).includes("root@ornek.com") && !JSON.stringify(mine).includes("eski@ornek.com"), "yönetici kimliği sızmaz");
   const rp = await (await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "Teşekkürler, bir sorum daha var." })).json(); assert.equal(rp.ticket.status, "open", "kullanıcı yazınca talep yeniden açık"); assert.equal(rp.ticket.replies.at(-1).from, "user"); assert.equal(db.store["supportTickets/" + id].replies.at(-1).role, "user");
-  const cl = await (await jpost(s, `/api/support/my/${id}/close`, U1, {})).json(); assert.equal(cl.ticket.status, "closed"); assert.equal(db.store["supportTickets/" + id].status, "closed");
-  assert.equal((await (await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "yeniden açıyorum" })).json()).ticket.status, "open", "kapalı talebe yazınca yeniden açılır");
+  assert.equal(db.store["supportTickets/" + id].status, "open", "kullanıcı talebi kapatamadı");
+  assert.equal((await jpost(s, "/api/support/my", U1, { subject: "Yeni", message: "yeni talep açmaya çalışıyorum" })).status, 409, "talep açık/yanıtlandı iken yeni talep yok");
+  for (const st of ["closed", "resolved"]) {
+    db.store["supportTickets/" + id] = { ...db.store["supportTickets/" + id], status: st }; const n = db.store["supportTickets/" + id].replies.length;
+    assert.equal((await jpost(s, `/api/support/my/${id}/reply`, U1, { message: "yeniden açıyorum" })).status, 409, st + " talebe yazılamaz"); assert.equal(db.store["supportTickets/" + id].status, st, st + " talep yeniden açılmaz"); assert.equal(db.store["supportTickets/" + id].replies.length, n);
+  }
+  const nw = await jpost(s, "/api/support/my", U1, { subject: "Yeni", message: "sonuçlanınca yeni talep açabilirim" }); assert.equal(nw.status, 200, "kapalı/sonuçlanmış sonrası yeni talep açılır");
+  assert.equal((await jpost(s, "/api/support/my", U1, { subject: "Yine", message: "tekrar yeni talep açmaya çalışıyorum" })).status, 409);
   assert.ok(H.calls.some((x) => /resend/.test(x.url)) === false, "e-posta kapalıyken gönderim denenmez"); s.close();
 });
-test("Kullanıcı destek paneli: açık talep sınırı ve yazma hız sınırı; yönetici listesi uid/rol/kategoriyi gösterir", async () => {
-  process.env.SUPPORT_MAX_OPEN = "2"; process.env.SUPPORT_PANEL_WRITE_LIMIT = "50"; const db = memFsWhere();
+test("Kullanıcı destek paneli: yazma hız sınırı; yönetici listesi uid/rol/kategoriyi gösterir, kapalıya yanıt yazamaz, yalnızca kapalıyı siler", async () => {
+  process.env.SUPPORT_PANEL_WRITE_LIMIT = "50"; const db = memFsWhere();
   const S = LOAD("support")({ db, http: fakeHttp(), mailer: null, SEC: LOAD("security"), verifyUser: supVerify }); const app = express(); app.use(express.json()); S.mount(app); const s = await listen(app), U = as("u1");
-  const mk = (n) => jpost(s, "/api/support/my", U, { subject: "Konu " + n, message: "yeterince uzun mesaj " + n }); assert.equal((await mk(1)).status, 200); assert.equal((await mk(2)).status, 200); assert.equal((await mk(3)).status, 429, "açık talep sınırı"); s.close();
-  delete process.env.SUPPORT_MAX_OPEN; delete process.env.SUPPORT_PANEL_WRITE_LIMIT;
+  const mk = (n) => jpost(s, "/api/support/my", U, { subject: "Konu " + n, message: "yeterince uzun mesaj " + n }); assert.equal((await mk(1)).status, 200); assert.equal((await mk(2)).status, 409, "tek aktif talep"); s.close();
+  delete process.env.SUPPORT_PANEL_WRITE_LIMIT;
   const h2 = adminHarness({ users: { root: mkU("root"), u1: mkU("u1") }, seed: { ...db.store } }); const s2 = await listen(h2.app), A = as("root");
-  const list = await (await fetch(url(s2, "/api/admin/support"), { headers: A })).json(); assert.equal(list.tickets.length, 2); assert.equal(list.tickets[0].uid, "u1"); assert.equal(list.tickets[0].source, "panel");
+  const list = await (await fetch(url(s2, "/api/admin/support"), { headers: A })).json(); assert.equal(list.tickets.length, 1); assert.equal(list.tickets[0].uid, "u1"); assert.equal(list.tickets[0].source, "panel");
   const id = list.tickets[0].id; const rep = await (await jpost(s2, `/api/admin/support/${id}/reply`, A, { message: "Merhaba, yardımcı olalım." })).json(); assert.equal(rep.mailed, false); assert.match(rep.note, /Destek panelinde görünür/);
-  assert.equal(h2.db.store["supportTickets/" + id].replies[0].role, "admin"); s2.close();
+  assert.equal(h2.db.store["supportTickets/" + id].replies[0].role, "admin");
+  const del = () => fetch(url(s2, `/api/admin/support/${id}`), { method: "DELETE", headers: A }); assert.equal((await del()).status, 400, "açık/yanıtlanmış talep silinmez");
+  assert.equal((await jpost(s2, `/api/admin/support/${id}/status`, A, { status: "resolved" })).status, 200); assert.equal((await (await fetch(url(s2, "/api/admin/support"), { headers: A })).json()).counts.resolved, 1);
+  assert.equal((await jpost(s2, `/api/admin/support/${id}/reply`, A, { message: "sonuçlanana yazma" })).status, 409, "sonuçlanmış talebe yanıt yazılamaz"); assert.equal((await del()).status, 400, "sonuçlanmış talep de silinmez; önce kapatılır");
+  assert.equal((await jpost(s2, `/api/admin/support/${id}/status`, A, { status: "closed" })).status, 200); assert.equal((await jpost(s2, `/api/admin/support/${id}/reply`, A, { message: "kapalıya yazma" })).status, 409);
+  assert.equal((await fetch(url(s2, `/api/admin/support/${id}`), { method: "DELETE", headers: as("u1") })).status, 403, "yönetici olmayan silemez");
+  assert.equal((await del()).status, 200); assert.ok(!(("supportTickets/" + id) in h2.db.store), "kapalı talep silindi"); assert.equal((await del()).status, 404); s2.close();
+});
+test("İletişim formu: aynı e-postayla sonuçlanmamış talep varken yeni talep gönderilemez; kapalı/sonuçlanınca gönderilir", async () => {
+  process.env.SUPPORT_RATE_LIMIT = "50"; const db = memFsWhere(); const S = LOAD("support")({ db, http: fakeHttp(), mailer: null, SEC: LOAD("security") }); const app = express(); app.use(express.json()); S.mount(app); const s = await listen(app);
+  const body = { name: "Ali", email: "ali@ornek.com", subject: "Fatura", message: "Faturamı alamadım lütfen yardım" }, send = (b) => fetch(url(s, "/api/support"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
+  assert.equal((await send(body)).status, 200); assert.equal((await send(body)).status, 409, "ikinci talep engellenir"); assert.equal((await send({ ...body, email: "baska@ornek.com" })).status, 200, "başka e-posta etkilenmez");
+  const k = Object.keys(db.store).find((x) => db.store[x].email === "ali@ornek.com");
+  for (const st of ["answered", "open"]) { db.store[k].status = st; assert.equal((await send(body)).status, 409, st + " iken engelli"); }
+  db.store[k].status = "resolved"; assert.equal((await send(body)).status, 200, "sonuçlanınca yeni talep açılabilir"); s.close();
 });
 function subApp(db, H, env = {}) {
   Object.assign(process.env, { STRIPE_SECRET_KEY: "sk_test_x", ...env }); const app = express(); app.use(express.json());
