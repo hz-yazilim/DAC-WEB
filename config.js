@@ -4,6 +4,6 @@
 (function () {
   var FALLBACK = "https://dac-web-tfqf.onrender.com";
   var h = location.hostname;
-  var sameOrigin = /\.onrender\.com$/i.test(h) ? location.origin : "";
+  var sameOrigin = /(\.onrender\.com|^(www\.)?dacweb\.tr)$/i.test(h) ? location.origin : "";
   window.DAC_CONFIG = { API_URL: sameOrigin || FALLBACK };
 })();

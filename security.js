@@ -17,7 +17,7 @@ const devBypass = () => !isProd() && process.env.DEV_AUTH_BYPASS === "true";
 const enforcePlans = () => isProd() || process.env.ENFORCE_PLANS === "true";
 
 // ---------- CORS ----------
-const DEFAULT_ORIGINS = ["https://dac-web-tfqf.onrender.com", "https://dac-web-yefr.onrender.com", "https://hz-yazilim.github.io"];
+const DEFAULT_ORIGINS = ["https://dac-web-tfqf.onrender.com", "https://dac-web-yefr.onrender.com", "https://hz-yazilim.github.io", "https://dacweb.tr", "https://www.dacweb.tr"];
 function allowedOrigins() {
   const extra = String(process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
   const dev = isProd() ? [] : ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5500", "http://127.0.0.1:5500"];
