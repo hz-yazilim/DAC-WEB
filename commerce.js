@@ -266,7 +266,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
       try {
         const s = await getSite(); const t = String((req.body && req.body.type) || "WEBSITE").toUpperCase(); if (!s.flags.disabledScanTypes.includes(t)) return next();
         try { const u = await getVerifyUser()(req); if (await getIsAdmin()(u)) return next(); } catch { /* yönetici değil */ }
-        res.status(503).json({ success: false, code: "FEATURE_DISABLED", error: "Bu tarama türü geçici olarak kapalı. Lütfen daha sonra tekrar deneyin." });
+        res.status(503).json({ success: false, code: "FEATURE_DISABLED", error: "Bu özellik yönetici tarafından kapatıldı." });
       } catch (e) { next(); }
     };
     return { maintenanceGuard, scanTypeGuard };

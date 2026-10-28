@@ -154,8 +154,10 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     }
 
     if (!iyziReady()) throw fail(503, "TL ödemesi henüz yapılandırılmadı (IYZICO_API_KEY / IYZICO_SECRET_KEY).");
-    const name = String(billing.name || "").trim(), address = String(billing.address || "").trim(), city = String(billing.city || "").trim();
-    if (!name || !address || !city) throw fail(400, "TL ödemesi için Ayarlar > Fatura Bilgileri (ad soyad, adres, şehir) doldurulmalı.");
+    // Fatura bilgisi artık kullanıcıdan istenmez: iyzico'nun zorunlu alanları hesaptan türetilir (varsa eski kayıtlı değerler önceliklidir)
+    const mailName = String(u.email || billing.email || "musteri").split("@")[0].replace(/[._-]+/g, " ").trim() || "Musteri";
+    const name = String(billing.name || u.name || u.displayName || (mailName.includes(" ") ? mailName : mailName + " Kullanici")).trim().slice(0, 80);
+    const address = String(billing.address || "Dijital hizmet - adres beyan edilmedi").trim().slice(0, 200), city = String(billing.city || "Istanbul").trim().slice(0, 60);
     const orderRef = db.collection("orders").doc();
     const priceStr = amount.toFixed(2);
     await orderRef.set({ uid: u.uid, plan, cycle, currency: "TRY", amount, status: "pending", returnUrl: back, consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });

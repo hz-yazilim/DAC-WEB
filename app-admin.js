@@ -220,13 +220,14 @@ function siteBody(d){
  <label class="consent"><input type="checkbox" id="st-aen"${a.enabled?' checked':''}><span>Duyuru yayında</span></label>
  <input class="field" id="st-atx" maxlength="280" placeholder="Duyuru metni (en çok 280 karakter)" value="${esc(a.text)}">
  <div class="row2"><select class="field" id="st-alv"><option value="info"${a.level==='info'?' selected':''}>Bilgi</option><option value="warn"${a.level==='warn'?' selected':''}>Uyarı</option><option value="bad"${a.level==='bad'?' selected':''}>Önemli</option></select><input class="field" id="st-aun" type="date" value="${esc(until)}" aria-label="Bitiş tarihi"></div>
- <button class="btn p w" data-act="adm-siteann">Duyuruyu kaydet</button></div>
+ <button class="btn p w" data-act="adm-siteann">Duyuruyu kaydet</button><button class="btn s d w" data-act="adm-anndel">Duyuruyu sil</button></div>
  <div class="card"><b>Bakım modu</b><div class="hint">Açıkken yöneticiler dışında kimse yeni tarama veya toplu iş başlatamaz; giriş, mevcut veriler ve ödeme çalışmaya devam eder. Üstte kırmızı bir bakım şeridi gösterilir.</div>
  <label class="consent"><input type="checkbox" id="st-men"${m.enabled?' checked':''}><span>Bakım modu açık</span></label>
  <input class="field" id="st-mms" maxlength="280" placeholder="Kullanıcıya gösterilecek mesaj" value="${esc(m.message)}">
- <button class="btn p w" data-act="adm-sitemnt">Bakım ayarını kaydet</button>
+ <button class="btn p w" data-act="adm-sitemnt">Bakım ayarını kaydet</button><button class="btn s d w" data-act="adm-mntdel">Bakım ayarını sıfırla</button>
  <div class="hint">Son güncelleme: ${esc(fdt(d.site.updatedAt))} • ${esc(d.site.updatedBy||'-')}${d.persistent===false?' • Firestore bağlı değil, kaydedilemez':''}</div></div>
- <div class="card"><b>Özellik bayrakları</b><div class="hint">Yeni kayıtları kapatır (mevcut kullanıcılar etkilenmez) ve seçilen tarama türlerini geçici olarak durdurur. Yöneticiler etkilenmez.</div><label class="consent"><input type="checkbox" id="st-reg"${fl.registrationOpen?' checked':''}><span>Yeni kayıtlara açık</span></label><input class="field" id="st-fty" placeholder="Kapalı tarama türleri (virgülle): SECURITY, SERVER" value="${esc((fl.disabledScanTypes||[]).join(', '))}"><button class="btn p w" data-act="adm-siteflags">Bayrakları kaydet</button></div>`;
+ <div class="card"><b>Özellik bayrakları</b><div class="hint">Tikli = açık. Tiki kaldırdığınız tarama türü kullanıcılar için kapanır; kullanıcı denediğinde "Bu özellik yönetici tarafından kapatıldı" uyarısını görür. Yöneticiler etkilenmez.</div><label class="consent"><input type="checkbox" id="st-reg"${fl.registrationOpen?' checked':''}><span>Yeni kayıtlara açık</span></label>
+  <div class="hint" style="margin-top:8px">Tarama türleri</div>${Object.entries(CATS).filter(([,v])=>v.api).map(([k,v])=>`<label class="consent"><input type="checkbox" class="st-ft" value="${esc(v.api)}"${(fl.disabledScanTypes||[]).includes(v.api)?'':' checked'}><span>${esc(v.label)}</span></label>`).join('')}<button class="btn p w" data-act="adm-siteflags">Bayrakları kaydet</button><button class="btn s d w" data-act="adm-flagdel">Bayrakları sıfırla (hepsi açık)</button></div></div>`;
 }
 
 /* --- Yönetici eylemleri (Ödemeler, kupon, site, kullanıcı müdahaleleri) --- */

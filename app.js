@@ -3,6 +3,8 @@ const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>{try{const a=new Uint32Array(3);crypto.getRandomValues(a);return Array.from(a,x=>x.toString(36)).join('').slice(0,16)+Date.now().toString(36)}catch{return Math.random().toString(36).slice(2,10)+Date.now().toString(36)}};
 const P=window.DAC_PLANS;
+const FEATURE_MSG='Bu özellik yönetici tarafından kapatıldı.';
+const featureClosed=t=>{try{return !!(SITE&&SITE.flags&&(SITE.flags.disabledScanTypes||[]).includes(String(t).toUpperCase())&&!(typeof BK!=='undefined'&&BK.isAdmin))}catch{return false}};
 var SITE=null,SITE_AT=0,PRICE_AT=0,CPN=null,PLANCPN=null; // V13.2 (var: hoisting, render erken çağrılsa bile güvenli)
 
 /* ---------- Kategoriler: ne taranır, neden önemli ---------- */
@@ -240,9 +242,11 @@ async function runScan(a){
  if(api){
   const target=URLCATS.includes(a.cat)?proto(a.target):a.target;
   if(['SERVER','SECURITY'].includes(CATS[a.cat].api)&&!a.consent){if(!confirm('Bu tarama hedefe bağlantı denemeleri (port / dosya yolu) yapar.\n\n"'+a.target+'" adresini taramaya yetkili olduğunuzu (sahibi olduğunuzu veya yazılı izniniz bulunduğunu) onaylıyor musunuz?\nİzinsiz tarama suç oluşturabilir; onayınız kaydedilir.'))throw new Error('Tarama, yetki onayı verilmediği için iptal edildi');a.consent=true;save()}
+  if(typeof featureClosed==='function'&&featureClosed(CATS[a.cat].api))throw new Error(FEATURE_MSG);
   let r;try{r=await fetch(api+'/api/scan',{method:'POST',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({assetId:a.id,type:CATS[a.cat].api,targetUrl:target,name:a.name,extra:a.extra||{},consent:a.consent===true})})}catch{throw new Error('Tarama sunucusuna ulaşılamadı ('+api+'). Adres yanlış olabilir veya Render uyanıyor, 30 sn sonra tekrar deneyin. Ayarlar > Scanner API adresini kontrol edin.')}
   let j;try{j=await r.json()}catch{throw new Error('Sunucu geçersiz yanıt verdi ('+r.status+'). Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.')}
   if(r.status===402){location.hash='plan';throw new Error(j.error||'Paket gerekli')}
+  if(j&&j.code==='FEATURE_DISABLED')throw new Error(FEATURE_MSG);
   if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
  }else throw new Error('Tarama sunucusu adresi bulunamadı. Ayarlar > Scanner API adresini girin.');
  a.result=res;a.lastScan=Date.now();
@@ -463,7 +467,7 @@ function ntfCard(){
 function settings(){
  const s=S.settings,b=s.billing||{},ps=planState(),kb=Math.round(JSON.stringify(S).length/1024);
  const f=(n,l,ph='',t='text')=>`<label class="hint">${l}</label><input class="field" name="${n}" type="${t}" value="${esc(b[n])}" placeholder="${ph}">`;
- return`<h2>Ayarlar</h2><p class="sub">Hesap, fatura, bağlantı ve veri yönetimi</p>
+ return`<h2>Ayarlar</h2><p class="sub">Hesap, bağlantı ve veri yönetimi</p>
  ${ntfCard()}
  <div class="card"><b>${ic('user-round')} Hesap</b><div class="item" style="border:0">${U?.photoURL?`<img class="pfp" src="${esc(U.photoURL)}" alt="">`:`<div class="ico">${ic('user-round')}</div>`}<div class="g"><b>${esc(U?.displayName||'Kullanıcı')}</b><span>${esc(U?.email||'')}</span></div></div>
  <div class="hint">Son giriş: ${U?.metadata?.lastSignInTime?fmt(U.metadata.lastSignInTime):'-'} • Paket: ${esc(planName(ps))}</div>
@@ -474,13 +478,7 @@ function settings(){
  <label class="hint">Scanner API adresi (boş bırakın; yalnızca aynı alan adı veya localhost kabul edilir)</label><input class="field" name="apiUrl" value="${esc(s.apiUrl)}" placeholder="${esc((window.DAC_CONFIG||{}).API_URL||'https://scanner.onrender.com')}">
  <button class="btn p w" type="submit">Kaydet</button></form>
  <div class="acts" style="margin-top:10px"><button class="btn s" data-act="ping">${ic('plug-zap')} Bağlantıyı test et</button></div><div class="hint" id="pingres" style="margin-top:8px"></div></div>
- <div class="card"><form data-form="billing"><b>${ic('receipt')} Fatura bilgileri</b><div class="hint">TL ödemesi (iyzico) için ad soyad, adres ve şehir zorunludur.</div><div style="height:10px"></div>
- ${f('name','Ad Soyad','Ali Veli')}${f('company','Şirket ünvanı (opsiyonel)')}
- <div class="row2"><div>${f('email','Fatura e-postası','fatura@sirket.com','email')}</div><div>${f('phone','Telefon','+90 5xx xxx xx xx','tel')}</div></div>
- ${f('taxId','Vergi No (isteğe bağlı)','10 haneli')}${f('address','Adres','Mahalle, cadde, no')}
- <div class="row2"><div>${f('city','Şehir','İstanbul')}</div><div>${f('zip','Posta kodu')}</div></div>
- ${f('country','Ülke','Turkey')}
- <button class="btn p w" type="submit">Fatura bilgilerini kaydet</button></form></div>
+
  <div class="card"><b>${ic('smartphone')} Uygulama (PWA)</b><div class="hint" style="margin:6px 0 10px">${standalone()?'Uygulama olarak çalışıyor.':DEFERRED?'Ana ekrana yükleyerek uygulama gibi kullanabilirsiniz.':'Tarayıcı menüsünden "Uygulamayı yükle / Ana ekrana ekle" seçeneğini kullanın.'}</div>
  <div class="acts">${DEFERRED&&!standalone()?`<button class="btn p" data-act="install">${ic('download')} Uygulamayı yükle</button>`:''}<button class="btn" data-act="clearcache">${ic('refresh-cw')} Önbelleği temizle ve yenile</button></div></div>
  <div class="card"><b>${ic('database')} Veri yönetimi</b><div class="hint" style="margin:6px 0 10px">${S.assets.length} varlık • ${S.scans.length} tarama kaydı • ~${kb} KB (cihazınızda ve hesabınıza bağlı bulut kopyasında saklanır)</div>
@@ -510,8 +508,7 @@ function checkout(plan){
  if(!api)return toast('Scanner API adresi yapılandırılmamış','err');
  const b=st.billing||{};
  const freeNow=!!(PAYCFG&&PAYCFG.free&&!(cur==='TRY'?PAYCFG.iyzico:PAYCFG.stripe));
- if(cur==='TRY'&&!freeNow&&(!b.name||!b.address||!b.city)){toast('TL ödemesi için önce Fatura Bilgilerini doldurun','warn');location.hash='settings';return}
- $('#box').innerHTML=`<div class="mh"><h2 style="margin:0">Siparişi onayla</h2><button class="btn s" data-act="close">${ic('x')}</button></div>
+  $('#box').innerHTML=`<div class="mh"><h2 style="margin:0">Siparişi onayla</h2><button class="btn s" data-act="close">${ic('x')}</button></div>
  <p class="hint">${freeNow?'Paketi etkinleştirmeden önce':'Ödeme sayfasına yönlendirilmeden önce'} aşağıdaki belgeleri okuyup onaylamanız gerekir.</p>
  <label class="consent"><input type="checkbox" id="c1"><span><a href="/mesafeli-satis" target="_blank" rel="noopener">Ön Bilgilendirme Formu</a>'nu ve <a href="/mesafeli-satis" target="_blank" rel="noopener">Mesafeli Satış Sözleşmesi</a>'ni okudum, kabul ediyorum.</span></label>
  <label class="consent"><input type="checkbox" id="c2"><span>Hizmetin ödeme anında elektronik ortamda ifa edilmeye başlanmasını onaylıyorum ve bu nedenle <b>cayma hakkımın bulunmadığı</b> konusunda bilgilendirildiğimi kabul ediyorum. (<a href="/iade-iptal" target="_blank" rel="noopener">İptal ve İade</a>)</span></label>
