@@ -434,7 +434,7 @@ function plan(){
  if(!PAYCFG&&!HEALTH_TRIED&&apiUrl()){HEALTH_TRIED=true;fetchHealth().then(()=>{if(location.hash==='#plan')render()})}
  const status=ps.paid?`<span class="badge ok">${ps.p.name} aktif</span>${st.planEnd?` <span class="hint">bitiş: ${new Date(st.planEnd).toLocaleDateString('tr-TR')}</span>`:''}`
   :ps.trial?`<span class="badge wn">Ücretsiz deneme: ${leftTxt(ps.left)} kaldı</span>`:`<span class="badge bd">Deneme süresi doldu</span>`;
- const provOk=c=>!PAYCFG||(c==='TRY'?PAYCFG.iyzico:PAYCFG.stripe),free=!!(PAYCFG&&PAYCFG.free),ready=c=>provOk(c)||free;
+ const provOk=c=>!PAYCFG||(c==='TRY'?PAYCFG.paytr:PAYCFG.usd),free=!!(PAYCFG&&PAYCFG.free),ready=c=>provOk(c)||free;
  const pc=PLANCPN&&PLANCPN.cur===cur&&PLANCPN.cyc===cyc?PLANCPN:null;
  if(PLANCPN&&!PLANCPN.err&&!pc&&!PLANCPN.busy){PLANCPN.busy=true;setTimeout(()=>planCpnApply(true),0)} // para birimi/dönem değişti: kodu yeniden doğrula
  const cpnCard=`<div class="card"><b>${ic('tag')} İndirim kodu</b><div class="row2" style="margin-top:8px"><input class="field" id="pcpn" placeholder="İndirim kodunuz" maxlength="32" autocomplete="off" autocapitalize="characters" value="${esc(PLANCPN?PLANCPN.code:'')}"><button class="btn s" data-act="pcpn-apply">Uygula</button></div>${pc&&!pc.err?`<div class="hint"><b>${esc(pc.code)}</b> uygulandı. Geçerli paketlerde indirimli fiyat görünür ve ödemede otomatik kullanılır. <button class="btn s" data-act="pcpn-clear">Kaldır</button></div>`:PLANCPN&&PLANCPN.err?`<div class="hint">${esc(PLANCPN.err)}</div>`:'<div class="hint">Size verilen indirim kodunu girin; ödeme adımında otomatik uygulanır.</div>'}</div>`;
@@ -450,7 +450,7 @@ function plan(){
  ${cpnCard}
  <div class="plans">${cards}</div>
  ${free&&!provOk(cur)?`<div class="paynote">Ödeme sistemi henüz bağlanmadı: <b>Satın al</b> butonu paketi kart bilgisi istemeden doğrudan etkinleştirir (geçici test dönemi).</div>`:''}
- <p class="hint">${cur==='TRY'?'TL ödemeleri iyzico ile alınır; kart bilgisi bu sitede saklanmaz. Süre dolmadan yeniden satın alarak uzatabilirsiniz. Ödeme için Ayarlar > Fatura Bilgileri doldurulmalıdır.':'USD ödemeleri Stripe ile alınır, abonelik otomatik yenilenir ve istediğiniz zaman iptal edilebilir.'}</p>
+ <p class="hint">${cur==='TRY'?'TL ödemeleri PayTR güvenli ödeme sayfasında alınır; kart bilgisi bu sitede saklanmaz. Ödeme tek seferlik dönem bedelidir, otomatik yenilenmez; süre dolmadan yeniden satın alarak uzatabilirsiniz.':'USD ödemeleri PayTR güvenli ödeme sayfasında alınır; kart bilgisi bu sitede saklanmaz. Ödeme tek seferlik dönem bedelidir, otomatik yenilenmez.'}</p>
  ${subCard(ps,st)}
  <button class="btn" data-act="syncplan" style="margin-top:8px">${ic('refresh-cw')} Ödememi kontrol et</button>`;
 }
@@ -508,7 +508,7 @@ function checkout(plan){
  const st=S.settings,cur=st.currency||'TRY',api=apiUrl();
  if(!api)return toast('Scanner API adresi yapılandırılmamış','err');
  const b=st.billing||{};
- const freeNow=!!(PAYCFG&&PAYCFG.free&&!(cur==='TRY'?PAYCFG.iyzico:PAYCFG.stripe));
+ const freeNow=!!(PAYCFG&&PAYCFG.free);
   $('#box').innerHTML=`<div class="mh"><h2 style="margin:0">Siparişi onayla</h2><button class="btn s" data-act="close">${ic('x')}</button></div>
  <p class="hint">${freeNow?'Paketi etkinleştirmeden önce':'Ödeme sayfasına yönlendirilmeden önce'} aşağıdaki belgeleri okuyup onaylamanız gerekir.</p>
  <label class="consent"><input type="checkbox" id="c1"><span><a href="/mesafeli-satis" target="_blank" rel="noopener">Ön Bilgilendirme Formu</a>'nu ve <a href="/mesafeli-satis" target="_blank" rel="noopener">Mesafeli Satış Sözleşmesi</a>'ni okudum, kabul ediyorum.</span></label>
@@ -555,15 +555,15 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.i
 function subCard(ps,st){
  if(!ps.paid)return'';
  const prov=st.provider,end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-',canc=!!st.cancelAtPeriodEnd;
- const provTxt=prov==='stripe'?'Stripe (USD, otomatik yenilenir)':prov==='iyzico'?'iyzico (TL, tek seferlik dönem bedeli)':'Ödemesiz / yönetici tanımlı paket';
+ const provTxt=prov==='paytr'?'PayTR (tek seferlik dönem bedeli)':prov==='stripe'?'Stripe (USD, otomatik yenilenir)':prov==='iyzico'?'iyzico (TL, tek seferlik dönem bedeli)':'Ödemesiz / yönetici tanımlı paket';
  const state=canc?`<span class="badge wn">İptal edildi • ${end} tarihinde sona erer</span>`:prov==='stripe'?`<span class="badge ok">Yenilenir • sonraki dönem ${end}</span>`:`<span class="badge ok">Aktif • ${end} tarihine kadar</span>`;
  return`<div class="card"><b>${ic('package')} Aboneliğim</b>
  <div class="item"><div class="g"><b>${esc(ps.p.name)}</b><span>${esc(provTxt)}</span></div>${state}</div>
  <div class="hint">${canc?'Paketiniz bitiş tarihine kadar kullanılabilir; sonrasında ücretli özellikler kapanır. Vazgeçtiyseniz iptali geri alabilirsiniz.':'İptal ederseniz paketiniz bitiş tarihine kadar kullanılabilir; yenilenmez ve yeni ücret alınmaz.'}</div>
- <div class="btns">${canc?`<button class="btn" data-act="sub-resume">${ic('rotate-ccw')} İptali geri al</button>`:`<button class="btn s d" data-act="sub-cancel">${ic('circle-x')} Aboneliği iptal et</button>`}${prov==='stripe'?`<button class="btn s" data-act="portal">${ic('credit-card')} Kart / fatura yönetimi</button>`:''}<a class="btn s" href="#support">${ic('life-buoy')} İade / iptal için destek</a></div></div>`;
+ <div class="btns">${canc?`<button class="btn" data-act="sub-resume">${ic('rotate-ccw')} İptali geri al</button>`:`<button class="btn s d" data-act="sub-cancel">${ic('circle-x')} Aboneliği iptal et</button>`}<a class="btn s" href="#support">${ic('life-buoy')} İade / iptal için destek</a></div></div>`;
 }
 function subCancelAsk(){
- const st=S.settings,prov=st.provider,paid=prov==='stripe'||prov==='iyzico',end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-';
+ const st=S.settings,prov=st.provider,paid=prov==='paytr'||prov==='stripe'||prov==='iyzico',end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-';
  $('#box').innerHTML=`<div class="mh"><h2 style="margin:0">Aboneliği iptal et</h2><button class="btn s" data-act="close">${ic('x')}</button></div>
  <p class="hint">Paketiniz <b>${end}</b> tarihine kadar kullanılabilir. Bu tarihten sonra yenilenmez${prov==='stripe'?' ve kartınızdan yeni ücret alınmaz':''}.</p>
  ${paid?'<p class="hint">Ödenmiş dönem için iade veya hemen sonlandırma isterseniz <a href="#support" data-act="close">Destek</a> sayfasından talep açın.</p>':''}
@@ -582,23 +582,18 @@ async function subResume(){
  try{const j=await bkApi('POST','/api/subscription/resume',{});await syncPlan();toast(j.note||'İptal geri alındı')}
  catch(e){toast(e.message,'err')}busy(false);
 }
-async function portal(){
- const api=apiUrl();busy(true);
- try{const r=await fetch(api+'/api/billing-portal',{method:'POST',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({returnPath:location.pathname})});const j=await r.json();if(!j.success)throw new Error(j.error);location.href=j.url}
- catch(e){toast(e.message,'err')}busy(false);
-}
 function handleReturn(){
  const p=new URLSearchParams(location.search).get('paid');if(p===null)return;
  history.replaceState(null,'',location.pathname+'#plan');
  if(p!=='1')return toast('Ödeme tamamlanmadı','warn');
  toast('Ödeme alındı, paketiniz etkinleştiriliyor…');
- let n=0;const t=setInterval(async()=>{n++;await syncPlan();if(P.PAID.includes(S.settings.plan)||n>=8){clearInterval(t);if(P.PAID.includes(S.settings.plan))toast('Paketiniz etkinleştirildi')}},3000);
+ let n=0;const t=setInterval(async()=>{n++;await syncPlan();if(P.PAID.includes(S.settings.plan)||n>=20){clearInterval(t);if(P.PAID.includes(S.settings.plan))toast('Paketiniz etkinleştirildi')}},3000);
 }
 async function ping(){
  const el=$('#pingres'),api=apiUrl();if(!el)return;
  if(!api){el.textContent='API adresi yok.';return}
  el.textContent='Bağlanıyor…';const t0=Date.now(),j=await fetchHealth(),ms=Date.now()-t0;
- el.textContent=j?`✔ Bağlandı (${ms} ms) • sürüm ${j.version} • TL ödeme: ${j.payments?.iyzico?'hazır':'yok'} • USD ödeme: ${j.payments?.stripe?'hazır':'yok'}`:'✘ Bağlanılamadı. Adresi kontrol edin; Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.';
+ el.textContent=j?`✔ Bağlandı (${ms} ms) • sürüm ${j.version} • TL ödeme (PayTR): ${j.payments?.paytr?'hazır':'yok'} • USD ödeme: ${j.payments?.usd?'hazır':'yok'}`:'✘ Bağlanılamadı. Adresi kontrol edin; Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.';
 }
 async function clearCache(){
  try{const rs=await navigator.serviceWorker?.getRegistrations();for(const r of rs||[])await r.unregister();for(const k of await caches.keys())await caches.delete(k)}catch{}

@@ -18,7 +18,7 @@ module.exports = function registerAdminOps(c) {
     const all = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((o) => o.status === "paid" || o.status === "refunded");
     const pending = all.filter((o) => o.status === "paid" && !o.invoice), done = all.filter((o) => o.invoice);
     const rows = (f === "done" ? done : pending).slice(0, 300); const em = await emailsOf(rows.map((o) => o.uid));
-    res.json({ success: true, available: true, filter: f, counts: { pending: pending.length, done: done.length }, rows: rows.map((o) => ({ id: o.id, uid: o.uid, email: em[o.uid] || null, plan: o.plan, planName: (PLANS.PLANS[o.plan] || {}).name || o.plan, cycle: o.cycle, currency: o.currency, amount: o.amount, refundedAmount: o.refundedAmount || 0, paidAt: ts(o.paidAt) || ts(o.createdAt), invoice: o.invoice || null, provider: o.currency === "USD" ? "stripe" : "iyzico" })),
+    res.json({ success: true, available: true, filter: f, counts: { pending: pending.length, done: done.length }, rows: rows.map((o) => ({ id: o.id, uid: o.uid, email: em[o.uid] || null, plan: o.plan, planName: (PLANS.PLANS[o.plan] || {}).name || o.plan, cycle: o.cycle, currency: o.currency, amount: o.amount, refundedAmount: o.refundedAmount || 0, paidAt: ts(o.paidAt) || ts(o.createdAt), invoice: o.invoice || null, provider: o.provider || (o.currency === "USD" ? "stripe" : "iyzico") })),
       note: "Fatura kesme işlemi bu sistemde otomatik değildir: faturayı muhasebe/e-arşiv programınızda kesin, numarasını buraya işleyin." });
   }));
   app.post("/api/admin/orders/:id/invoice", guard, writeGuard, wrap(async (req, res) => {
@@ -73,11 +73,11 @@ module.exports = function registerAdminOps(c) {
         else if (action === "revoke-sessions") await admin.auth().revokeRefreshTokens(uid);
         else if (action === "grant") {
           const prev = (await db.collection("subscriptions").doc(uid).get()); const pv = prev.exists ? prev.data() : null;
-          if (pv && ["stripe", "iyzico"].includes(pv.provider) && pv.status === "active" && ts(pv.periodEnd) > now()) { results.push({ uid, ok: false, error: "ödeme sağlayıcılı aktif abonelik" }); continue; }
+          if (pv && ["paytr", "stripe", "iyzico"].includes(pv.provider) && pv.status === "active" && ts(pv.periodEnd) > now()) { results.push({ uid, ok: false, error: "ödeme sağlayıcılı aktif abonelik" }); continue; }
           await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cancelAtPeriodEnd: false, cycle: days >= 365 ? "yearly" : "monthly", periodEnd: now() + days * 864e5, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
         } else if (action === "revoke") {
           const pv = (await db.collection("subscriptions").doc(uid).get()); const d = pv.exists ? pv.data() : null; if (!d) { results.push({ uid, ok: false, error: "abonelik yok" }); continue; }
-          if (["stripe", "iyzico"].includes(d.provider)) { results.push({ uid, ok: false, error: "ödeme sağlayıcılı" }); continue; }
+          if (["paytr", "stripe", "iyzico"].includes(d.provider)) { results.push({ uid, ok: false, error: "ödeme sağlayıcılı" }); continue; }
           await db.collection("subscriptions").doc(uid).set({ status: "canceled", periodEnd: now(), revokedBy: req.user.uid, updatedAt: now() }, { merge: true });
         }
         results.push({ uid, ok: true });

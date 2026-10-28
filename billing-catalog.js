@@ -51,7 +51,7 @@ function describe(PLANS) {
   return {
     currencies: currencyStatus(PLANS), rateProvider: { configured: rateProvider.configured, id: rateProvider.id, note: rateProvider.configured ? null : "Kur sağlayıcısı bağlı değil; dönüştürme yapılmaz." },
     affiliate: { enabled: affiliateEnabled(), fields: AFFILIATE_FIELDS, offersStored: 0, note: "Yalnızca veri modeli ve doğrulama hazır; aktif öneri/gelir yok." },
-    payments: { note: "Ödeme sağlayıcıları (Stripe/iyzico) /health ve payments.js durumundan okunur; burada gelir verisi uydurulmaz." }
+    payments: { note: "Ödeme sağlayıcısı (PayTR) /health ve payments.js durumundan okunur; burada gelir verisi uydurulmaz." }
   };
 }
 module.exports = { CURRENCIES, isCurrency, currencyStatus, registerRateProvider, convert, AFFILIATE_FIELDS, validateAffiliateOffer, affiliateEnabled, describe };

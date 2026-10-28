@@ -1,25 +1,35 @@
-/* Digital Asset Center - Ödeme ve abonelik altyapısı
- * TL  -> iyzico (Checkout Form)      USD -> Stripe (Checkout, aylık/yıllık abonelik)
+/* Digital Asset Center - Ödeme ve abonelik altyapısı (PayTR)
+ * TL ve (isteğe bağlı) USD -> PayTR iFrame API. Her ödeme TEK SEFERLİK dönem bedelidir (otomatik yenileme yoktur):
+ * süre dolmadan yeniden satın alınarak uzatılır.
  * Gerekli ortam değişkenleri (Render > Environment):
- *   FIREBASE_SERVICE_ACCOUNT   (zorunlu: kullanıcı doğrulama + abonelik kaydı; varlik-operasyonlari-ed334 projesine ait olmalı)
- *   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET            (USD için)
- *   IYZICO_API_KEY, IYZICO_SECRET_KEY, IYZICO_BASE_URL   (TL için; canlıda https://api.iyzipay.com)
- *   PUBLIC_API_URL   (opsiyonel: Render adresin, ör. https://dac-web-yefr.onrender.com)
+ *   FIREBASE_SERVICE_ACCOUNT   (zorunlu: kullanıcı doğrulama + abonelik kaydı)
+ *   PAYTR_MERCHANT_ID, PAYTR_MERCHANT_KEY, PAYTR_MERCHANT_SALT   (PayTR mağaza paneli > Bilgi)
+ *   PAYTR_TEST_MODE=1        (opsiyonel: test modu; canlıda boş bırakın veya 0)
+ *   PAYTR_USD=true           (opsiyonel: PayTR hesabınızda yabancı para birimi açıksa USD ödemesini etkinleştirir)
+ *   PAYTR_NO_INSTALLMENT=1   (opsiyonel, varsayılan 1: taksit yok) / PAYTR_MAX_INSTALLMENT=0 / PAYTR_TIMEOUT_MIN=30
+ *   PAYTR_DEFAULT_PHONE      (opsiyonel: kullanıcı telefon girmediyse PayTR'ye gönderilecek yer tutucu)
  *   ENFORCE_PLANS=true (opsiyonel: süresi biten deneme kullanıcılarının taramasını sunucuda da engeller)
+ * PayTR panelinde (Destek & Kurulum > Ayarlar > Bildirim URL Ayarları) şu adresi tanımlayın:  https://<API adresiniz>/api/paytr/callback
  */
 const crypto = require("crypto");
 const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })(); // klasörlü (public/js) veya düz yerleşim
 const SEC = require("./security");
 
+const PAYTR_TOKEN_URL = "https://www.paytr.com/odeme/api/get-token";
+const PAYTR_REFUND_URL = "https://www.paytr.com/odeme/iade";
+const PAYTR_PAGE_URL = "https://www.paytr.com/odeme/guvenli/";
+const PAID_PROVIDERS = ["paytr", "stripe", "iyzico"]; // stripe/iyzico: eski kayıtlar (yeni satış yalnızca PayTR)
+
 module.exports = function initPayments({ app, db, admin, http, commerce = null, mailer = null }) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
-  const stripeKey = () => process.env.STRIPE_SECRET_KEY || null;
-  const iyziReady = () => !!(process.env.IYZICO_API_KEY && process.env.IYZICO_SECRET_KEY);
-  // Ödeme sağlayıcısı (iyzico / Stripe) henüz bağlı değilse "Satın al" paketi doğrudan etkinleştirir.
-  // Ödeme anahtarlarını Render > Environment'a ekleyince bu mod o para birimi için OTOMATİK kapanır; tamamen kapatmak için ALLOW_FREE_ACTIVATION=false yazın.
-  const freeMode = () => process.env.ALLOW_FREE_ACTIVATION !== "false";
-  const providerReady = (currency) => (currency === "USD" ? !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET : iyziReady());
-  const status = () => ({ stripe: !!stripeKey() && !!process.env.STRIPE_WEBHOOK_SECRET, iyzico: iyziReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true", free: freeMode() });
+  const env = (k) => String(process.env[k] || "").trim();
+  const paytrReady = () => !!(env("PAYTR_MERCHANT_ID") && env("PAYTR_MERCHANT_KEY") && env("PAYTR_MERCHANT_SALT"));
+  const usdReady = () => paytrReady() && env("PAYTR_USD").toLowerCase() === "true";
+  const testMode = () => (env("PAYTR_TEST_MODE") === "1" || env("PAYTR_TEST_MODE").toLowerCase() === "true" ? "1" : "0");
+  // PayTR henüz bağlı değilse "Satın al" paketi doğrudan etkinleştirir (geçici test dönemi).
+  // PayTR anahtarlarını Render > Environment'a ekleyince bu mod OTOMATİK kapanır; tamamen kapatmak için ALLOW_FREE_ACTIVATION=false yazın.
+  const freeMode = () => process.env.ALLOW_FREE_ACTIVATION !== "false" && !paytrReady();
+  const status = () => ({ paytr: paytrReady(), usd: usdReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true", free: freeMode() });
   const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message, ...(e.pcode ? { code: e.pcode } : {}), ...(e.extra || {}) }); } };
 
   // ---------- Kullanıcı doğrulama ----------
@@ -65,7 +75,6 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
   const activate = (uid, data) => db.collection("subscriptions").doc(uid).set({ ...data, updatedAt: Date.now() }, { merge: true });
 
   // ---------- Yardımcılar ----------
-  const selfUrl = (req) => process.env.PUBLIC_API_URL || `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`;
   // X-Forwarded-For istemci tarafından sahtelenebilir; Express'in "trust proxy" ile çözdüğü req.ip kullanılır.
   const clientIp = (req) => String(req.ip || req.socket.remoteAddress || "").replace(/^::ffff:/, "") || "0.0.0.0";
   const payLimiter = SEC.makeLimiter(SEC.int(process.env.PAY_RATE_LIMIT, 20), 10 * 60 * 1000);
@@ -79,22 +88,24 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     return origin + p;
   };
   const withParam = (u, k, v) => u + (u.includes("?") ? "&" : "?") + k + "=" + v;
-  function toForm(obj, prefix, out = []) {
-    for (const [k, v] of Object.entries(obj)) {
-      if (v === undefined || v === null) continue;
-      const key = prefix ? `${prefix}[${k}]` : k;
-      if (Array.isArray(v)) v.forEach((x, i) => (typeof x === "object" ? toForm(x, `${key}[${i}]`, out) : out.push(`${encodeURIComponent(`${key}[${i}]`)}=${encodeURIComponent(x)}`)));
-      else if (typeof v === "object") toForm(v, key, out);
-      else out.push(`${encodeURIComponent(key)}=${encodeURIComponent(v)}`);
-    }
-    return out;
+  const paytrCur = (c) => (c === "USD" ? "USD" : "TL");
+
+  /* ---------- PayTR imza yardımcıları ----------
+   * get-token : base64( HMAC-SHA256( merchant_id+user_ip+merchant_oid+email+payment_amount+user_basket+no_installment+max_installment+currency+test_mode + merchant_salt , merchant_key ) )
+   * bildirim  : base64( HMAC-SHA256( merchant_oid + merchant_salt + status + total_amount , merchant_key ) )
+   * iade      : base64( HMAC-SHA256( merchant_id + merchant_oid + return_amount + merchant_salt , merchant_key ) ) */
+  const hmac64 = (data) => crypto.createHmac("sha256", env("PAYTR_MERCHANT_KEY")).update(data).digest("base64");
+  const paytrFormPost = async (url, fields) => {
+    const r = await http.request({ method: "POST", url, data: new URLSearchParams(fields).toString(), headers: { "Content-Type": "application/x-www-form-urlencoded" }, validateStatus: () => true, timeout: 20000 });
+    let d = r.data; if (typeof d === "string") { try { d = JSON.parse(d); } catch { d = null; } }
+    return { http: r.status, data: d || {} };
+  };
+  function verifyPaytrNotification(b) {
+    if (!b || !paytrReady() || typeof b.hash !== "string" || b.hash.length > 100) return false;
+    const expected = hmac64(String(b.merchant_oid || "") + env("PAYTR_MERCHANT_SALT") + String(b.status || "") + String(b.total_amount || ""));
+    const a = Buffer.from(b.hash), e = Buffer.from(expected);
+    return a.length === e.length && crypto.timingSafeEqual(a, e);
   }
-  async function stripeApi(method, path, params, extraHeaders = {}) {
-    const r = await http.request({ method, url: "https://api.stripe.com/v1" + path, auth: { username: stripeKey(), password: "" }, data: params ? toForm(params).join("&") : undefined, headers: { "Content-Type": "application/x-www-form-urlencoded", ...extraHeaders }, validateStatus: () => true, timeout: 15000 });
-    if (r.status >= 400) throw fail(502, "Stripe: " + (r.data?.error?.message || r.status));
-    return r.data;
-  }
-  const periodEndOf = (sub) => ((sub.current_period_end ?? sub.items?.data?.[0]?.current_period_end) || 0) * 1000 || null;
 
   // ---------- Abonelik durumu ----------
   app.get("/api/subscription", payGuard, handler(async (req, res) => {
@@ -131,50 +142,45 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     let redeemed = false;
     if (couponInfo) { await commerce.redeemCoupon(couponInfo.code, u.uid); redeemed = true; }
     try {
-    // Ödeme henüz entegre değil: paketi doğrudan ver (kart bilgisi istenmez). Sağlayıcı bağlanınca bu blok devre dışı kalır.
-    if (!providerReady(currency === "USD" ? "USD" : "TRY") && freeMode()) {
-      const cur = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
-      const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === plan ? cur.periodEnd : Date.now();
+    // PayTR henüz bağlanmadı: paketi doğrudan ver (kart bilgisi istenmez). PayTR anahtarları girilince bu blok devre dışı kalır.
+    if (freeMode()) {
+      const sub0 = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
+      const startFrom = sub0.status === "active" && sub0.periodEnd > Date.now() && sub0.plan === plan ? sub0.periodEnd : Date.now();
       const periodEnd = startFrom + (cycle === "yearly" ? 365 : 30) * 864e5;
-      await activate(u.uid, { plan, status: "active", provider: "manual", currency: currency === "USD" ? "USD" : "TRY", cycle, periodEnd, free: true, cancelAtPeriodEnd: false });
-      await db.collection("orders").add({ uid: u.uid, plan, cycle, currency: currency === "USD" ? "USD" : "TRY", amount, status: "activated-free", consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
+      await activate(u.uid, { plan, status: "active", provider: "manual", currency: cur, cycle, periodEnd, free: true, cancelAtPeriodEnd: false });
+      await db.collection("orders").add({ uid: u.uid, plan, cycle, currency: cur, amount, status: "activated-free", consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
       return res.json({ success: true, activated: true, plan, periodEnd, provider: "manual" });
     }
 
-    if (currency === "USD") {
-      if (!stripeKey()) throw fail(503, "USD ödemesi henüz yapılandırılmadı (STRIPE_SECRET_KEY).");
-      const prev = (await db.collection("subscriptions").doc(u.uid).get()).data() || {};
-      const meta = { uid: u.uid, plan, cycle, ...(couponInfo ? { coupon: couponInfo.code } : {}) };
-      const s = await stripeApi("POST", "/checkout/sessions", {
-        mode: "subscription", success_url: withParam(back, "paid", "1"), cancel_url: withParam(back, "paid", "0"),
-        client_reference_id: u.uid, ...(prev.stripeCustomerId ? { customer: prev.stripeCustomerId } : { customer_email: u.email }),
-        line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: Math.round(amount * 100), product_data: { name: label }, recurring: { interval: cycle === "yearly" ? "year" : "month" } } }],
-        metadata: meta, subscription_data: { metadata: meta }
-      });
-      return res.json({ success: true, provider: "stripe", url: s.url });
-    }
+    if (!paytrReady()) throw fail(503, "Ödeme henüz yapılandırılmadı (PAYTR_MERCHANT_ID / PAYTR_MERCHANT_KEY / PAYTR_MERCHANT_SALT).");
+    if (cur === "USD" && !usdReady()) throw fail(503, "USD ödemesi etkin değil. TL ile ödeme yapabilirsiniz.");
+    if (!(amount > 0)) throw fail(400, "Ödenecek tutar sıfırdan büyük olmalıdır.");
 
-    if (!iyziReady()) throw fail(503, "TL ödemesi henüz yapılandırılmadı (IYZICO_API_KEY / IYZICO_SECRET_KEY).");
-    // Fatura bilgisi artık kullanıcıdan istenmez: iyzico'nun zorunlu alanları hesaptan türetilir (varsa eski kayıtlı değerler önceliklidir)
+    // PayTR zorunlu alanları (ad, adres, telefon) hesaptan türetilir; kullanıcı Ayarlar > Fatura Bilgileri'ni doldurduysa o değerler kullanılır
+    const email = String(billing.email || u.email).trim().slice(0, 100);
     const mailName = String(u.email || billing.email || "musteri").split("@")[0].replace(/[._-]+/g, " ").trim() || "Musteri";
-    const name = String(billing.name || u.name || u.displayName || (mailName.includes(" ") ? mailName : mailName + " Kullanici")).trim().slice(0, 80);
-    const address = String(billing.address || "Dijital hizmet - adres beyan edilmedi").trim().slice(0, 200), city = String(billing.city || "Istanbul").trim().slice(0, 60);
-    const orderRef = db.collection("orders").doc();
-    const priceStr = amount.toFixed(2);
-    await orderRef.set({ uid: u.uid, plan, cycle, currency: "TRY", amount, status: "pending", returnUrl: back, consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
-    const Iyzipay = require("iyzipay");
-    const iyzi = new Iyzipay({ apiKey: process.env.IYZICO_API_KEY, secretKey: process.env.IYZICO_SECRET_KEY, uri: process.env.IYZICO_BASE_URL || "https://sandbox-api.iyzipay.com" });
-    const parts = name.split(/\s+/); const surname = parts.length > 1 ? parts.pop() : "-"; const first = parts.join(" ");
-    const addr = { contactName: name, city, country: billing.country || "Turkey", address };
-    const result = await new Promise((resolve, reject) => iyzi.checkoutFormInitialize.create({
-      locale: "tr", conversationId: orderRef.id, price: priceStr, paidPrice: priceStr, currency: "TRY", basketId: orderRef.id,
-      paymentGroup: "PRODUCT", callbackUrl: selfUrl(req) + "/api/iyzico/callback", enabledInstallments: [1],
-      buyer: { id: u.uid, name: first, surname, email: String(billing.email || u.email).slice(0, 120), identityNumber: "11111111111", registrationAddress: address, ip: clientIp(req), city, country: billing.country || "Turkey", ...(billing.phone ? { gsmNumber: billing.phone } : {}) },
-      shippingAddress: addr, billingAddress: addr,
-      basketItems: [{ id: plan + "_" + cycle, name: label, category1: "Yazılım", itemType: "VIRTUAL", price: priceStr }]
-    }, (err, r) => (err ? reject(err) : resolve(r))));
-    if (result.status !== "success") throw fail(502, "iyzico: " + (result.errorMessage || "ödeme formu oluşturulamadı"));
-    res.json({ success: true, provider: "iyzico", url: result.paymentPageUrl || null, html: result.paymentPageUrl ? null : result.checkoutFormContent });
+    const name = String(billing.name || u.name || (mailName.includes(" ") ? mailName : mailName + " Kullanici")).trim().slice(0, 60);
+    const address = String(billing.address || "Dijital hizmet - adres beyan edilmedi").trim().slice(0, 200);
+    const phone = String(billing.phone || env("PAYTR_DEFAULT_PHONE") || "05000000000").slice(0, 20);
+    const orderRef = db.collection("orders").doc(); // PayTR merchant_oid: yalnızca harf/rakam olmalı (Firestore kimliği uygundur)
+    const payAmount = String(Math.round(amount * 100)); // kuruş / cent
+    const basket = Buffer.from(JSON.stringify([[label, amount.toFixed(2), 1]])).toString("base64");
+    const noInst = env("PAYTR_NO_INSTALLMENT") === "0" ? "0" : "1", maxInst = noInst === "1" ? "0" : String(Math.max(0, Math.min(12, parseInt(env("PAYTR_MAX_INSTALLMENT") || "0", 10) || 0)));
+    const currencyP = paytrCur(cur), tm = testMode(), ip = clientIp(req);
+    await orderRef.set({ uid: u.uid, plan, cycle, currency: cur, amount, provider: "paytr", status: "pending", returnUrl: back, consentVersion: LEGAL_VERSION, createdAt: Date.now(), ...(couponInfo ? { couponCode: couponInfo.code, listAmount, discount: couponInfo.discount } : {}) });
+    const paytr_token = hmac64(env("PAYTR_MERCHANT_ID") + ip + orderRef.id + email + payAmount + basket + noInst + maxInst + currencyP + tm + env("PAYTR_MERCHANT_SALT"));
+    const r = await paytrFormPost(PAYTR_TOKEN_URL, {
+      merchant_id: env("PAYTR_MERCHANT_ID"), user_ip: ip, merchant_oid: orderRef.id, email, payment_amount: payAmount, paytr_token, user_basket: basket,
+      debug_on: tm === "1" ? "1" : "0", no_installment: noInst, max_installment: maxInst, user_name: name, user_address: address, user_phone: phone,
+      merchant_ok_url: withParam(back, "paid", "1"), merchant_fail_url: withParam(back, "paid", "0"),
+      timeout_limit: String(Math.max(1, Math.min(1440, parseInt(env("PAYTR_TIMEOUT_MIN") || "30", 10) || 30))), currency: currencyP, test_mode: tm, lang: "tr"
+    });
+    if (r.data.status !== "success" || !r.data.token) {
+      await orderRef.set({ status: "failed", gatewayStatus: String(r.data.reason || "token alınamadı").slice(0, 200) }, { merge: true });
+      throw fail(502, "PayTR: " + (r.data.reason || "ödeme formu oluşturulamadı"));
+    }
+    await orderRef.set({ paytrToken: String(r.data.token).slice(0, 100) }, { merge: true });
+    res.json({ success: true, provider: "paytr", url: PAYTR_PAGE_URL + encodeURIComponent(r.data.token), orderId: orderRef.id });
     } catch (e) { if (redeemed) await commerce.releaseCoupon(couponInfo.code, u.uid).catch(() => {}); throw e; } // ödeme başlatılamadıysa kupon hakkı iade edilir
   }));
 
@@ -183,117 +189,66 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     if (!mailer || !mailer.enabled() || !admin || !admin.apps.length) return;
     (async () => { const u = await admin.auth().getUser(uid); if (!u.email || !u.emailVerified) return; const m = mailer.tpl.receipt({ planName: (PLANS.PLANS[o.plan] || {}).name || o.plan, ...o }); await mailer.send({ to: u.email, ...m, type: "receipt", uid, dedupeKey: o.dedupe || null }); })().catch(() => {});
   }
-  // ---------- iyzico geri dönüş (tarayıcı POST) ----------
-  app.post("/api/iyzico/callback", payGuard, handler(async (req, res) => {
-    const token = req.body && typeof req.body.token === "string" && req.body.token.length < 300 ? req.body.token : null;
-    const back = (u, ok) => res.redirect(303, withParam(u || "/", "paid", ok ? "1" : "0") + "#plan");
-    if (!token || !iyziReady()) return back(null, false);
-    const Iyzipay = require("iyzipay");
-    const iyzi = new Iyzipay({ apiKey: process.env.IYZICO_API_KEY, secretKey: process.env.IYZICO_SECRET_KEY, uri: process.env.IYZICO_BASE_URL || "https://sandbox-api.iyzipay.com" });
-    const r = await new Promise((resolve, reject) => iyzi.checkoutForm.retrieve({ locale: "tr", token }, (err, x) => (err ? reject(err) : resolve(x))));
-    const orderId = String(r.basketId || r.conversationId || ""); if (!/^[A-Za-z0-9]{10,40}$/.test(orderId)) return back(null, false);
-    const ref = db.collection("orders").doc(orderId);
-    const order = (await ref.get()).data();
-    if (!order) return back(null, false);
-    const paid = r.status === "success" && r.paymentStatus === "SUCCESS" && Number(r.paidPrice) + 0.01 >= order.amount;
-    if (!paid) { await ref.set({ status: "failed", gatewayStatus: r.paymentStatus || r.errorMessage || null }, { merge: true }); if (commerce && order.couponCode && order.status !== "failed" && order.status !== "paid") await commerce.releaseCoupon(order.couponCode, order.uid).catch(() => {}); return back(order.returnUrl, false); }
-    // Tekrar/eşzamanlı callback süreyi iki kez uzatmasın: sipariş durumu transaction içinde "paid"e çekilir
-    const first = await db.runTransaction(async (t) => { const o = (await t.get(ref)).data(); if (!o || o.status === "paid") return false; t.set(ref, { status: "paid", paidAt: Date.now(), paymentId: r.paymentId || null, txIds: Array.isArray(r.itemTransactions) ? r.itemTransactions.map((x) => ({ id: String(x.paymentTransactionId || ""), price: Number(x.paidPrice || x.price || 0) })).filter((x) => x.id).slice(0, 5) : [] }, { merge: true }); return true; });
+
+  // ---------- PayTR bildirimi (sunucudan sunucuya POST; PayTR panelindeki "Bildirim URL"si) ----------
+  // Yanıt düz metin "OK" olmalıdır; aksi halde PayTR bildirimi tekrar tekrar gönderir. İmza doğrulanmadan hiçbir kayıt değiştirilmez.
+  app.post("/api/paytr/callback", handler(async (req, res) => {
+    if (!paytrReady() || !db) throw fail(503, "PayTR yapılandırılmadı.");
+    const b = req.body || {};
+    if (!verifyPaytrNotification(b)) throw fail(400, "PAYTR notification failed: bad hash");
+    const ok = () => res.type("text/plain").send("OK");
+    const oid = String(b.merchant_oid || ""); if (!/^[A-Za-z0-9]{10,40}$/.test(oid)) return ok();
+    const ref = db.collection("orders").doc(oid), order = (await ref.get()).data();
+    if (!order || order.provider !== "paytr") return ok(); // bilinmeyen sipariş: tekrar denemesin diye OK
+    if (order.status === "paid") return ok();              // yinelenen bildirim
+
+    if (b.status !== "success") {
+      const reason = String(b.failed_reason_msg || b.failed_reason_code || "failed").slice(0, 200);
+      await ref.set({ status: "failed", gatewayStatus: reason }, { merge: true });
+      if (commerce && order.couponCode && order.status !== "failed") await commerce.releaseCoupon(order.couponCode, order.uid).catch(() => {});
+      return ok();
+    }
+    // Tutar ve para birimi, sunucunun kaydettiği siparişle eşleşmeli (taksit/komisyon varsa toplam ≥ sipariş tutarı)
+    const total = Number(b.total_amount), need = Math.round(Number(order.amount) * 100);
+    const curOk = !b.currency || String(b.currency).toUpperCase() === paytrCur(order.currency);
+    if (!(total >= need) || !curOk) {
+      console.error("payments: PayTR tutar/para birimi uyuşmazlığı", oid, total, need, b.currency);
+      await ref.set({ status: "failed", gatewayStatus: "TUTAR_UYUSMAZLIGI", paytrTotal: Number.isFinite(total) ? total : null }, { merge: true });
+      return ok();
+    }
+    // Tekrar/eşzamanlı bildirim süreyi iki kez uzatmasın: sipariş durumu transaction içinde "paid"e çekilir
+    const first = await db.runTransaction(async (t) => { const o = (await t.get(ref)).data(); if (!o || o.status === "paid") return false; t.set(ref, { status: "paid", paidAt: Date.now(), gatewayStatus: "paytr", paytrTotal: total, paymentType: String(b.payment_type || "").slice(0, 20), ...(b.test_mode === "1" || b.test_mode === 1 ? { testPayment: true } : {}) }, { merge: true }); return true; });
     if (first) {
       const cur = (await db.collection("subscriptions").doc(order.uid).get()).data() || {};
       const startFrom = cur.status === "active" && cur.periodEnd > Date.now() && cur.plan === order.plan ? cur.periodEnd : Date.now();
       const periodEnd = startFrom + (order.cycle === "yearly" ? 365 : 30) * 864e5;
-      await activate(order.uid, { plan: order.plan, status: "active", provider: "iyzico", currency: "TRY", cycle: order.cycle, periodEnd, cancelAtPeriodEnd: false });
-      sendReceipt(order.uid, { plan: order.plan, cycle: order.cycle, amount: order.amount, currency: "TRY", periodEnd, couponCode: order.couponCode });
+      await activate(order.uid, { plan: order.plan, status: "active", provider: "paytr", currency: order.currency === "USD" ? "USD" : "TRY", cycle: order.cycle, periodEnd, cancelAtPeriodEnd: false });
+      sendReceipt(order.uid, { plan: order.plan, cycle: order.cycle, amount: order.amount, currency: order.currency === "USD" ? "USD" : "TRY", periodEnd, couponCode: order.couponCode, dedupe: "rcpt_" + oid });
     }
-    back(order.returnUrl, true);
-  }));
-
-  // ---------- Stripe webhook ----------
-  function verifyStripeSignature(raw, header, secret, tolerance = 300) {
-    const parts = Object.fromEntries(String(header || "").split(",").map(p => p.split("=")).filter(p => p.length === 2).map(([k, v]) => [k.trim(), v]));
-    const sigs = String(header || "").split(",").filter(p => p.trim().startsWith("v1=")).map(p => p.trim().slice(3));
-    if (!parts.t || !sigs.length) return false;
-    if (Math.abs(Date.now() / 1000 - Number(parts.t)) > tolerance) return false;
-    const expected = crypto.createHmac("sha256", secret).update(`${parts.t}.`).update(raw).digest("hex");
-    return sigs.some(s => /^[0-9a-f]{64}$/i.test(s) && crypto.timingSafeEqual(Buffer.from(s.toLowerCase()), Buffer.from(expected)));
-  }
-  async function stripeSync(sub, extra = {}) {
-    const m = sub.metadata || {}; if (!m.uid) return;
-    const st = ["active", "trialing"].includes(sub.status) ? "active" : sub.status === "canceled" ? "canceled" : "past_due";
-    await activate(m.uid, { plan: m.plan, cycle: m.cycle, status: st, provider: "stripe", currency: "USD", periodEnd: periodEndOf(sub), stripeCustomerId: sub.customer, stripeSubscriptionId: sub.id, cancelAtPeriodEnd: sub.cancel_at_period_end === true, ...extra });
-  }
-  app.post("/api/stripe/webhook", handler(async (req, res) => {
-    const secret = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!secret || !req.rawBody || !db) throw fail(503, "Webhook yapılandırılmadı.");
-    if (!verifyStripeSignature(req.rawBody, req.headers["stripe-signature"], secret)) throw fail(400, "İmza doğrulanamadı.");
-    const ev = req.body; const o = ev && ev.data && ev.data.object;
-    if (!ev || !ev.id || !o) throw fail(400, "Geçersiz olay.");
-    const evRef = db.collection("webhookEvents").doc(String(ev.id));
-    const isNew = await db.runTransaction(async (t) => { if ((await t.get(evRef)).exists) return false; t.set(evRef, { type: ev.type, at: Date.now() }); return true; });
-    if (!isNew) return res.json({ received: true, duplicate: true });
-    try {
-      if (ev.type === "checkout.session.completed" && o.subscription) await stripeSync(await stripeApi("GET", "/subscriptions/" + o.subscription));
-      else if (ev.type === "invoice.paid") {
-        const id = o.subscription || o.parent?.subscription_details?.subscription;
-        if (id) {
-          const sub = await stripeApi("GET", "/subscriptions/" + id); await stripeSync(sub);
-          // Yönetici panelinde Stripe tahsilatları da görünsün (idempotent: fatura kimliği belge kimliği olur)
-          try { const m = sub.metadata || {}, oid = "st_" + String(o.id || "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 60); if (m.uid && oid.length > 3) await db.collection("orders").doc(oid).set({ uid: m.uid, plan: m.plan, cycle: m.cycle, currency: "USD", amount: Math.round(Number(o.amount_paid || 0)) / 100, status: "paid", gatewayStatus: "stripe", paidAt: Date.now(), createdAt: Date.now(), invoiceId: String(o.id || "").slice(0, 80), ...(o.payment_intent ? { paymentIntent: String(o.payment_intent) } : {}), ...(o.charge ? { charge: String(o.charge) } : {}), ...(m.coupon ? { couponCode: m.coupon } : {}) }, { merge: true }); } catch (e) { console.error("payments: stripe sipariş kaydı yazılamadı:", e.message); }
-          try { const m = sub.metadata || {}; if (m.uid && Number(o.amount_paid) > 0) sendReceipt(m.uid, { plan: m.plan, cycle: m.cycle, amount: Number(o.amount_paid) / 100, currency: "USD", periodEnd: periodEndOf(sub), couponCode: m.coupon, dedupe: "rcpt_" + String(o.id || "") }); } catch { /* makbuz opsiyonel */ }
-        }
-      }
-      else if (ev.type === "checkout.session.expired") { const m = o.metadata || {}; if (commerce && m.coupon && m.uid) await commerce.releaseCoupon(m.coupon, m.uid).catch(() => {}); }
-      else if (ev.type === "customer.subscription.updated" || ev.type === "customer.subscription.deleted") await stripeSync(o);
-    } catch (e) { await evRef.delete().catch(() => {}); throw e; } // işlenemediyse Stripe tekrar deneyebilsin
-    res.json({ received: true });
-  }));
-
-  // ---------- Stripe müşteri portalı (iptal / kart değiştirme) ----------
-  app.post("/api/billing-portal", payGuard, handler(async (req, res) => {
-    const u = await verifyUser(req); if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı.");
-    const sub = (await db.collection("subscriptions").doc(u.uid).get()).data();
-    if (!sub || !sub.stripeCustomerId) throw fail(404, "Stripe aboneliği bulunamadı.");
-    const s = await stripeApi("POST", "/billing_portal/sessions", { customer: sub.stripeCustomerId, return_url: returnUrlOf(req) });
-    res.json({ success: true, url: s.url });
+    ok();
   }));
 
   /* ---------- Yönetici işlemleri: iade ve abonelik iptali (admin-ops.js çağırır) ---------- */
-  const iyziClient = () => { const Iyzipay = require("iyzipay"); return new Iyzipay({ apiKey: process.env.IYZICO_API_KEY, secretKey: process.env.IYZICO_SECRET_KEY, uri: process.env.IYZICO_BASE_URL || "https://sandbox-api.iyzipay.com" }); };
-  const iyziCall = (fn, body) => new Promise((resolve, reject) => fn(body, (err, r) => (err ? reject(err) : resolve(r))));
-  const istDay = (ms) => new Date(ms + 3 * 36e5).toISOString().slice(0, 10); // iyzico iptali aynı gün (TR saati) içindir
-  async function refundOrder(order, orderId, amount, ip) {
+  async function refundOrder(order, orderId, amount) {
     const full = Number(order.amount), already = Number(order.refundedAmount || 0), left = Math.round((full - already) * 100) / 100;
     const amt = amount == null ? left : Math.round(Number(amount) * 100) / 100;
     if (!(amt > 0) || amt > left + 0.001) throw fail(400, `İade tutarı geçersiz (iade edilebilir: ${left})`);
-    if (order.currency === "USD") {
-      if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı."); let pi = order.paymentIntent, ch = order.charge;
-      if (!pi && !ch && order.invoiceId) { const inv = await stripeApi("GET", "/invoices/" + encodeURIComponent(order.invoiceId)); pi = inv.payment_intent || null; ch = inv.charge || null; }
-      if (!pi && !ch) throw fail(409, "Bu siparişte Stripe ödeme kimliği yok; iadeyi Stripe panelinden yapın.");
-      const r = await stripeApi("POST", "/refunds", { ...(pi ? { payment_intent: pi } : { charge: ch }), amount: Math.round(amt * 100) }, { "Idempotency-Key": `dac_refund_${orderId}_${Math.round((already + amt) * 100)}` });
-      return { provider: "stripe", refundId: r.id, amount: amt };
-    }
-    if (!iyziReady()) throw fail(503, "iyzico yapılandırılmadı."); const iyzi = iyziClient(), ipx = String(ip || "127.0.0.1");
-    if (order.paymentId && already === 0 && amt === full && order.paidAt && istDay(order.paidAt) === istDay(Date.now())) {
-      const c = await iyziCall(iyzi.cancel.create.bind(iyzi.cancel), { locale: "tr", conversationId: orderId, paymentId: order.paymentId, ip: ipx });
-      if (c.status === "success") return { provider: "iyzico", method: "cancel", amount: amt };
-    }
-    const tx = (order.txIds || [])[0]; if (!tx || !tx.id) throw fail(409, "Bu siparişte iyzico işlem kimliği yok; iadeyi iyzico panelinden yapın.");
-    const r = await iyziCall(iyzi.refund.create.bind(iyzi.refund), { locale: "tr", conversationId: orderId, paymentTransactionId: tx.id, price: amt.toFixed(2), currency: "TRY", ip: ipx });
-    if (r.status !== "success") throw fail(502, "iyzico: " + (r.errorMessage || "iade başarısız"));
-    return { provider: "iyzico", method: "refund", amount: amt };
+    if (order.provider !== "paytr") throw fail(409, "Bu sipariş eski ödeme sağlayıcısıyla (Stripe/iyzico) alınmış; iadeyi o sağlayıcının panelinden yapın.");
+    if (!paytrReady()) throw fail(503, "PayTR yapılandırılmadı.");
+    const ret = amt.toFixed(2);
+    const r = await paytrFormPost(PAYTR_REFUND_URL, {
+      merchant_id: env("PAYTR_MERCHANT_ID"), merchant_oid: orderId, return_amount: ret,
+      paytr_token: hmac64(env("PAYTR_MERCHANT_ID") + orderId + ret + env("PAYTR_MERCHANT_SALT")),
+      reference_no: ("R" + orderId + Math.round((already + amt) * 100)).replace(/[^A-Za-z0-9]/g, "").slice(0, 64) // aynı iade tekrarlanırsa PayTR'de eşleşir
+    });
+    if (r.data.status !== "success") throw fail(502, "PayTR: " + (r.data.err_msg || r.data.reason || "iade başarısız"));
+    return { provider: "paytr", method: "refund", amount: amt };
   }
   // Abonelik iptali (yönetici ve kullanıcı ortak): immediate=false → dönem sonunda biter (yenilenmez, ödenmiş dönem geçerli kalır); immediate=true → hemen sonlanır.
-  // Stripe: sağlayıcıda iptal edilir. iyzico (tek seferlik dönem bedeli) / ödemesiz paket: yenileme zaten yoktur; iptal bayrağı (cancelAtPeriodEnd) kaydedilir.
+  // PayTR ödemeleri tek seferlik dönem bedelidir: sağlayıcıda iptal edilecek bir yenileme yoktur, yalnızca iptal bayrağı (cancelAtPeriodEnd) kaydedilir.
   async function cancelSubscription(uid, immediate, by = "admin") {
     const sub = (await db.collection("subscriptions").doc(uid).get()).data(); if (!sub) throw fail(404, "Abonelik bulunamadı");
     const mark = { cancelAtPeriodEnd: true, cancelRequestedAt: Date.now(), cancelRequestedBy: by };
-    if (sub.provider === "stripe" && sub.stripeSubscriptionId) {
-      if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı.");
-      if (immediate) { await stripeApi("DELETE", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId)); await activate(uid, { status: "canceled", periodEnd: Date.now(), ...mark, cancelAtPeriodEnd: false }); return { provider: "stripe", immediate: true }; }
-      await stripeApi("POST", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId), { cancel_at_period_end: "true" }); await activate(uid, mark);
-      return { provider: "stripe", immediate: false, periodEnd: sub.periodEnd || null, note: "Dönem sonunda sona erecek (şimdiki dönem geçerli kalır)." };
-    }
     if (immediate) { await activate(uid, { status: "canceled", periodEnd: Date.now(), ...mark, cancelAtPeriodEnd: false }); return { provider: sub.provider || "manual", immediate: true }; }
     await activate(uid, mark);
     return { provider: sub.provider || "manual", immediate: false, periodEnd: sub.periodEnd || null, note: "Abonelik iptal edildi: yenilenmeyecek, süresi dolunca sona erecek (şimdiki dönem geçerli kalır)." };
@@ -302,18 +257,17 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
   async function resumeSubscription(uid) {
     const sub = (await db.collection("subscriptions").doc(uid).get()).data(); if (!sub) throw fail(404, "Abonelik bulunamadı");
     if (!(sub.status === "active" && (!sub.periodEnd || sub.periodEnd > Date.now()))) throw fail(409, "Abonelik artık aktif değil; yeniden satın alın.");
-    if (sub.provider === "stripe" && sub.stripeSubscriptionId) { if (!stripeKey()) throw fail(503, "Stripe yapılandırılmadı."); await stripeApi("POST", "/subscriptions/" + encodeURIComponent(sub.stripeSubscriptionId), { cancel_at_period_end: "false" }); }
     await activate(uid, { cancelAtPeriodEnd: false, cancelRequestedAt: null, cancelRequestedBy: null });
     return { provider: sub.provider || "manual", note: "İptal geri alındı." };
   }
 
-  /* ---------- Kullanıcının kendi aboneliğini iptali (V13.4) ---------- */
-  // Ödeme sağlayıcılı (Stripe/iyzico) pakette kullanıcı yalnızca DÖNEM SONUNDA iptal edebilir; hemen sonlandırma/iade yönetici işlemidir (Destek talebi açılır).
+  /* ---------- Kullanıcının kendi aboneliğini iptali ---------- */
+  // Ödeme sağlayıcılı (PayTR) pakette kullanıcı yalnızca DÖNEM SONUNDA iptal edebilir; hemen sonlandırma/iade yönetici işlemidir (Destek talebi açılır).
   // Ödemesiz (yönetici verdiği/test etkinleştirmesi) pakette kullanıcı isterse hemen sonlandırabilir.
   app.post("/api/subscription/cancel", payGuard, handler(async (req, res) => {
     const u = await verifyUser(req), sub = (await db.collection("subscriptions").doc(u.uid).get()).data();
     if (!sub || !PLANS.PAID.includes(sub.plan) || sub.status !== "active" || (sub.periodEnd && sub.periodEnd <= Date.now())) throw fail(409, "İptal edilecek aktif bir ücretli paketiniz yok.");
-    const providerPaid = ["stripe", "iyzico"].includes(sub.provider), immediate = !providerPaid && (req.body || {}).immediate === true;
+    const providerPaid = PAID_PROVIDERS.includes(sub.provider), immediate = !providerPaid && (req.body || {}).immediate === true;
     if (!immediate && sub.cancelAtPeriodEnd === true) return res.json({ success: true, already: true, immediate: false, periodEnd: sub.periodEnd || null, note: "Abonelik zaten iptal edilmiş; dönem sonunda sona erecek." });
     const r = await cancelSubscription(u.uid, immediate, "user"); console.log("payments: kullanıcı aboneliği iptal etti", u.uid, r.provider, r.immediate ? "hemen" : "dönem sonu");
     res.json({ success: true, ...r });
@@ -322,5 +276,5 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     const u = await verifyUser(req); const r = await resumeSubscription(u.uid); res.json({ success: true, ...r });
   }));
 
-  return { verifyUser, getEntitlement, status, verifyStripeSignature, _stripeSync: stripeSync, refundOrder, cancelSubscription, resumeSubscription, trialHash };
+  return { verifyUser, getEntitlement, status, verifyPaytrNotification, refundOrder, cancelSubscription, resumeSubscription, trialHash };
 };

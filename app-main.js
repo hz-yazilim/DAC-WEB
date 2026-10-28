@@ -51,7 +51,7 @@ document.addEventListener('click',async e=>{
  else if(act==='cur'){st.currency=b.dataset.v;save();render()}
  else if(act==='cycle'){st.cycle=b.dataset.v;save();render()}
  else if(act==='buy')checkout(b.dataset.p);
- else if(act==='portal')portal();
+ 
  else if(act==='pcpn-apply')planCpnApply();else if(act==='pcpn-clear')planCpnClear();
  else if(act==='sub-cancel')subCancelAsk();else if(act==='sub-cancel-go')subCancelGo(b.dataset.v==='1');else if(act==='sub-resume')subResume();
  else if(act==='syncplan'){const p=await syncPlan();toast(p===null?'Sunucudan abonelik bilgisi alınamadı (API adresi ve Firebase yapılandırmasını kontrol edin)':P.PAID.includes(p)?'Paketiniz aktif: '+P.PLANS[p].name:'Aktif ücretli paket bulunamadı',p===null?'warn':'')}

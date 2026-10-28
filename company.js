@@ -1,7 +1,7 @@
 /* Digital Asset Center - ŞİRKET BİLGİLERİ (YASAL SAYFALARIN TEK KAYNAĞI)
  * Aşağıdaki değerleri GERÇEK şirket bilgilerinizle doldurun. KVKK Aydınlatma Metni, Mesafeli Satış Sözleşmesi,
  * Gizlilik, İletişim vb. tüm yasal sayfalar bu dosyadan beslenir. Köşeli parantezli "[...]" değer kaldığı sürece
- * yasal sayfaların üstünde "taslak" uyarısı görünür (iyzico/Stripe başvurusu ve yasal uyum için bilgiler eksiksiz olmalıdır).
+ * yasal sayfaların üstünde "taslak" uyarısı görünür (PayTR başvurusu ve yasal uyum için bilgiler eksiksiz olmalıdır).
  */
 window.DAC_COMPANY = {
   marka: "Digital Asset Center",

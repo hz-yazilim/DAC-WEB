@@ -96,7 +96,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     return map;
   }
   const orderView = (id, o, emails) => ({ id, uid: o.uid, email: (emails && emails[o.uid]) || null, plan: o.plan, planName: planName(o.plan), cycle: o.cycle || null, currency: o.currency || null, amount: o.amount == null ? null : o.amount, status: o.status || null,
-    provider: o.status === "activated-free" ? "manual" : (o.currency === "USD" ? "stripe" : "iyzico"), createdAt: ts(o.createdAt), paidAt: ts(o.paidAt), gatewayStatus: o.gatewayStatus || null, invoiceNo: (o.invoice && o.invoice.no) || null, refundedAmount: o.refundedAmount || 0, couponCode: o.couponCode || null, listAmount: o.listAmount == null ? null : o.listAmount, discount: o.discount == null ? null : o.discount });
+    provider: o.status === "activated-free" ? "manual" : (o.provider || (o.currency === "USD" ? "stripe" : "iyzico")), createdAt: ts(o.createdAt), paidAt: ts(o.paidAt), gatewayStatus: o.gatewayStatus || null, invoiceNo: (o.invoice && o.invoice.no) || null, refundedAmount: o.refundedAmount || 0, couponCode: o.couponCode || null, listAmount: o.listAmount == null ? null : o.listAmount, discount: o.discount == null ? null : o.discount });
 
   /* ---------- Uçlar ---------- */
   // Normal kullanıcı için güvenli rol sorgusu (menüyü göstermek için). Yetkisiz kullanıcıya hiçbir ayrıntı vermez.
@@ -273,7 +273,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     if (!(days >= 1 && days <= 3660)) return deny(res, 400, "Gün sayısı 1-3660 arasında olmalı");
     try { await admin.auth().getUser(uid); } catch { return deny(res, 404, "Kullanıcı bulunamadı"); }
     const prev = await subOf(uid);
-    if (prev && prev.provider && ["stripe", "iyzico"].includes(prev.provider) && prev.status === "active" && ts(prev.periodEnd) > now()) return deny(res, 409, "Kullanıcının ödeme sağlayıcısıyla aktif aboneliği var; üzerine yazılmadı.");
+    if (prev && prev.provider && ["paytr", "stripe", "iyzico"].includes(prev.provider) && prev.status === "active" && ts(prev.periodEnd) > now()) return deny(res, 409, "Kullanıcının ödeme sağlayıcısıyla aktif aboneliği var; üzerine yazılmadı.");
     const periodEnd = now() + days * 864e5;
     await db.collection("subscriptions").doc(uid).set({ plan, status: "active", provider: "admin", free: true, cancelAtPeriodEnd: false, cycle: days >= 365 ? "yearly" : "monthly", periodEnd, grantedBy: req.user.uid, updatedAt: now() }, { merge: true });
     await auditSafe(req, "plan.grant", uid, { plan, days, previous: prev ? prev.plan || null : null });
@@ -283,7 +283,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     const uid = String(req.params.uid || ""); if (!uidOk(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
     if (!db) return deny(res, 503, "Firestore bağlı değil");
     const prev = await subOf(uid); if (!prev) return deny(res, 404, "Bu kullanıcının aboneliği yok");
-    if (prev.provider === "stripe" || prev.provider === "iyzico") return deny(res, 409, "Ödeme sağlayıcılı abonelik buradan iptal edilmez; sağlayıcı panelinden iptal edin.");
+    if (["paytr", "stripe", "iyzico"].includes(prev.provider)) return deny(res, 409, "Ödeme sağlayıcılı abonelik buradan iptal edilmez; sağlayıcı panelinden iptal edin.");
     await db.collection("subscriptions").doc(uid).set({ status: "canceled", periodEnd: now(), revokedBy: req.user.uid, updatedAt: now() }, { merge: true });
     await auditSafe(req, "plan.revoke", uid, { plan: prev.plan || null });
     res.json({ success: true, uid });
@@ -306,7 +306,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     const view = commerce.adminPricingView(); let subscribers = null;
     if (db) { try { const snap = await db.collection("subscriptions").limit(5000).get(); subscribers = {}; for (const d of snap.docs) { const i = planInfo(d.data()); if (i.active) subscribers[i.plan] = (subscribers[i.plan] || 0) + 1; } } catch { subscribers = null; } }
     res.json({ success: true, ...view, subscribers, history: await commerce.pricingHistory(30).catch(() => []), persistent: !!db,
-      notes: ["Yeni fiyat yeni satın alımlarda ve yenilemelerde anında geçerlidir; mevcut Stripe aboneliklerinin fiyatı değişmez (Stripe'ta abonelik oluşturulurken sabitlenir).", "iyzico (TL) ödemeleri tek seferliktir; bir sonraki satın almada yeni fiyat uygulanır.", "Limit değişiklikleri (varlık/ekip/geçmiş) mevcut tüm kullanıcılar için anında uygulanır."] });
+      notes: ["Yeni fiyat yeni satın alımlarda ve yenilemelerde anında geçerlidir; mevcut (eski) Stripe aboneliklerinin fiyatı değişmez.", "PayTR ödemeleri (TL/USD) tek seferlik dönem bedelidir; bir sonraki satın almada yeni fiyat uygulanır.", "Limit değişiklikleri (varlık/ekip/geçmiş) mevcut tüm kullanıcılar için anında uygulanır."] });
   }));
   app.post("/api/admin/pricing", guard, writeGuard, wrap(async (req, res) => {
     const r = await commerce.savePricing(req.body || {}, req.user);
@@ -343,7 +343,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
       const subs = ssnap.docs.map((d) => ({ uid: d.id, ...planInfo(d.data()) }));
       for (const x of subs) {
         if (!x.active) continue;
-        if (!x.free && ["stripe", "iyzico"].includes(x.provider)) { activePaying++; const cur = x.currency || (x.provider === "stripe" ? "USD" : "TRY"); const p = PLANS.price(x.plan, cur, x.cycle === "yearly" ? "yearly" : "monthly"); if (p != null) mrr[cur] = Math.round(((mrr[cur] || 0) + (x.cycle === "yearly" ? p / 12 : p)) * 100) / 100; }
+        if (!x.free && ["paytr", "stripe", "iyzico"].includes(x.provider)) { activePaying++; const cur = x.currency || (x.provider === "stripe" ? "USD" : "TRY"); const p = PLANS.price(x.plan, cur, x.cycle === "yearly" ? "yearly" : "monthly"); if (p != null) mrr[cur] = Math.round(((mrr[cur] || 0) + (x.cycle === "yearly" ? p / 12 : p)) * 100) / 100; }
         if (x.periodEnd && x.periodEnd - t < 7 * 864e5) expiring.push(x);
       }
       expiring.sort((a, b) => a.periodEnd - b.periodEnd); expiring = expiring.slice(0, 50);

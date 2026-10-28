@@ -72,7 +72,7 @@ module.exports = function createOps({ db, admin, http, mailer, metrics, PLANS, n
     const subs = (await db.collection("subscriptions").limit(5000).get()).docs;
     for (const d of subs) {
       const s = d.data(); const pe = ts(s.periodEnd); if (!PAID.includes(s.plan) || s.status !== "active" || !pe || pe <= t) continue; activeUids.add(d.id);
-      if (s.provider === "stripe") continue; // Stripe aboneliği kendiliğinden yenilenir
+      if (s.provider === "stripe") continue; // eski Stripe aboneliği kendiliğinden yenilenir (PayTR/iyzico tek seferlik: hatırlatma gider)
       const days = Math.ceil((pe - t) / 864e5); if (days > 7) continue; const level = days <= 1 ? 1 : days <= 3 ? 3 : 7;
       todo.push({ kind: "renew", uid: d.id, plan: s.plan, pe, level, free: !!s.free || s.provider === "admin" || s.provider === "manual" });
     }

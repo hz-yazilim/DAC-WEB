@@ -19,7 +19,6 @@
     "express": "^4.19.0",
     "firebase-admin": "^13.10.0",
     "helmet": "^7.2.0",
-    "iyzipay": "^2.0.64",
     "ssl-checker": "^2.0.10",
     "web-push": "^3.6.7"
   },

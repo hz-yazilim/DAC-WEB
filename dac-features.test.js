@@ -319,7 +319,7 @@ test("Para birimi / affiliate: fiyatlar kodla saklanır, kur uydurulmaz, yapıla
 // ================= GİZLİ ANAHTAR SIZINTISI / DAĞITIM =================
 test("Gizli anahtarlar: tarayıcıya giden dosyalarda ve statik yayında sızıntı yok; sunucu dosyaları yayınlanmaz", async () => {
   const pubFiles = [...APP_FILES, "support-form.js", "login.js", "config.js", "plans.js", "company.js", "legal.js", "cookie-consent.js", "sw-register.js", "sw.js", "index.html", "style.css", "manifest.json"];
-  for (const f of pubFiles) { const t = _fs.readFileSync(PUBFILE(f), "utf8"); assert.ok(!/private_key|BEGIN (RSA |EC )?PRIVATE|FIREBASE_SERVICE_ACCOUNT|sk_live_|whsec_|CRON_SECRET|IYZICO_SECRET|ADMIN_UIDS|"type":\s*"service_account"/.test(t), f + " içinde gizli bilgi"); }
+  for (const f of pubFiles) { const t = _fs.readFileSync(PUBFILE(f), "utf8"); assert.ok(!/private_key|BEGIN (RSA |EC )?PRIVATE|FIREBASE_SERVICE_ACCOUNT|sk_live_|whsec_|CRON_SECRET|IYZICO_SECRET|PAYTR_MERCHANT_KEY|PAYTR_MERCHANT_SALT|ADMIN_UIDS|"type":\s*"service_account"/.test(t), f + " içinde gizli bilgi"); }
   const s = await listen(APP); for (const p of ["/admin.js", "/jobs.js", "/scoring.js", "/metrics.js", "/validators.js", "/ai-provider.js", "/billing-catalog.js", "/server/admin.js", "/.env", "/.env.example", "/dac-features.test.js", "/package.json"]) { const r = await fetch(url(s, p)); assert.ok([301, 404].includes(r.status) && !(r.headers.get("content-type") || "").includes("javascript"), `${p} -> ${r.status}`); await r.arrayBuffer(); } s.close();
 });
 test("Dağıtım: Render başlangıcı, ortam örneği, .gitignore ve sağlık ucu", () => {

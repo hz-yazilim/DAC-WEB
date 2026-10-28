@@ -24,7 +24,7 @@
 <ul>
 <li><b>Hesap verileri:</b> e-posta adresi, ad (Google girişinde), doğrulama durumu.</li>
 <li><b>Uygulama verileri:</b> eklediğiniz varlıklar, tarama sonuçları ve geçmişi, ayarlar, ekip ve proje kayıtları. Bu veriler cihazınızda (tarayıcı depolaması) ve hesabınıza bağlı olarak sunucumuzda (Firestore) saklanır.</li>
-<li><b>Ödeme verileri:</b> fatura bilgileri ve sipariş kayıtları. Kart numaranız bize ulaşmaz; iyzico veya Stripe tarafından işlenir.</li>
+<li><b>Ödeme verileri:</b> fatura bilgileri ve sipariş kayıtları. Kart numaranız bize ulaşmaz; PayTR tarafından işlenir.</li>
 <li><b>Teknik veriler:</b> IP adresi, tarih-saat, tarayıcı bilgisi; güvenlik, hız sınırı ve suistimal önleme amacıyla.</li>
 </ul>
 
@@ -32,7 +32,7 @@
 <p>Bir varlığı taramanız için girdiğiniz adres, tarama türünün gerektirdiği kadar ağ isteğine konu olur (DNS sorguları, HTTP/TLS bağlantıları, genel kayıt servisleri). Bu taramalar yalnızca <b>sahibi olduğunuz veya tarama yetkisine sahip olduğunuz</b> varlıklar için yapılmalıdır (bkz. <a href="/kabul-edilebilir-kullanim">Kabul Edilebilir Kullanım</a>). Sunucu ve Güvenlik taramaları için yetki beyanınız kayda alınır. Taranan sitelerin içeriği saklanmaz; yalnızca analiz sonucu (puan, bulgular, ölçümler) hesabınıza kaydedilir.</p>
 
 <h2>3. Üçüncü taraf hizmetler</h2>
-<p>Google/Firebase (giriş ve veritabanı), Render (barındırma), iyzico ve Stripe (ödeme), ile taramanın gerektirdiği genel servisler (Cloudflare/Google DNS, crt.sh, RDAP, ipwho.is/ipapi.co, GitHub, uygulama mağazaları). Arayüz yazı tipleri ve simgeler <b>kendi sunucumuzdan</b> yüklenir; sayfa açılışında Google Fonts veya CDN'lere istek yapılmaz.</p>
+<p>Google/Firebase (giriş ve veritabanı), Render (barındırma), PayTR (ödeme), ile taramanın gerektirdiği genel servisler (Cloudflare/Google DNS, crt.sh, RDAP, ipwho.is/ipapi.co, GitHub, uygulama mağazaları). Arayüz yazı tipleri ve simgeler <b>kendi sunucumuzdan</b> yüklenir; sayfa açılışında Google Fonts veya CDN'lere istek yapılmaz.</p>
 
 <h2>4. Çerezler ve yerel depolama</h2>
 <p>Ayrıntılar için <a href="/cerez-politikasi">Çerez Politikası</a>'na bakınız. İsteğe bağlı analitik, yalnızca onayınızla çalışır.</p>

@@ -83,8 +83,8 @@ app.use(require("helmet")({
       fontSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'", "https://*.onrender.com", "https://*.googleapis.com", "https://*.google-analytics.com", "https://*.analytics.google.com", "https://*.googletagmanager.com", "https://*.firebaseio.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.gstatic.com", "https://www.google.com", ...AUTH_DOMAIN_SRC],
-      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.google.com", "https://recaptcha.google.com", ...AUTH_DOMAIN_SRC, "https://*.iyzipay.com", "https://js.stripe.com", "https://challenges.cloudflare.com"],
-      formAction: ["'self'", "https://*.iyzipay.com", "https://checkout.stripe.com"],
+      frameSrc: ["'self'", "https://accounts.google.com", "https://*.firebaseapp.com", "https://*.web.app", "https://www.google.com", "https://recaptcha.google.com", ...AUTH_DOMAIN_SRC, "https://www.paytr.com", "https://challenges.cloudflare.com"],
+      formAction: ["'self'", "https://www.paytr.com"],
       manifestSrc: ["'self'"], workerSrc: ["'self'"],
       objectSrc: ["'none'"], baseUri: ["'self'"], frameAncestors: ["'none'"],
       upgradeInsecureRequests: []
@@ -2733,12 +2733,12 @@ async function getHealthDetail() {
   if (db) { const t0 = Date.now(); try { await withTimeout(db.collection("adminRoles").limit(1).get(), 4000, "Firestore"); fsState = { configured: true, reachable: true, latencyMs: Date.now() - t0 }; } catch (e) { fsState = { configured: true, reachable: false, latencyMs: Date.now() - t0, error: String(e.message).slice(0, 120) }; } }
   return { version: SCANNER_VERSION, node: process.version, environment: SEC.isProd() ? "production" : "development", uptimeSeconds: Math.round(process.uptime()), memoryMB: { rss: Math.round(mem.rss / 1048576), heapUsed: Math.round(mem.heapUsed / 1048576) },
     firebase: { adminReady: !!firebaseStatus.ok, mode: firebaseStatus.mode || null }, firestore: fsState, auth: { verifiesTokens: !!p.auth },
-    payments: { stripe: p.stripe, iyzico: p.iyzico, freeMode: p.free }, autoScan: { enabled: AUTO_ENABLED && !!db, running: autoRunning, cronEndpoint: !!process.env.CRON_SECRET },
+    payments: { paytr: p.paytr, usd: p.usd, freeMode: p.free }, autoScan: { enabled: AUTO_ENABLED && !!db, running: autoRunning, cronEndpoint: !!process.env.CRON_SECRET },
     rdap: { bootstrapLoaded: rdapBoot.ok === true }, scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP }, ai: AI.status(), devBypassActive: SEC.devBypass() };
 }
 const ADMIN = SRV("admin")({ app, db, admin, verifyUser: payments.verifyUser, SEC, metrics: METRICS, jobs: JOBS, getHealth: getHealthDetail, platform: async () => ({ ai: AI.describe(), billing: BILLING.describe(PLANS), scoring: { weights: SCORING.COMPOSITE_WEIGHTS, criticalCap: SCORING.CRITICAL_CAP, legacyWebWeights: SCORING.WEB_LEGACY_WEIGHTS } }), getEntitlement: db ? payments.getEntitlement : null, commerce: COMMERCE, payments, userState: USER_STATE, ops: OPS, mailer: MAILER });
 
-app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { stripe: p.stripe, iyzico: p.iyzico, free: p.free }, timestamp: new Date().toISOString() }); });
+app.get("/health", (req, res) => { const p = payments.status(); res.set("Cache-Control", "no-store"); res.json({ ok: true, version: SCANNER_VERSION, payments: { paytr: p.paytr, usd: p.usd, free: p.free }, timestamp: new Date().toISOString() }); });
 // JSON ayrıştırma vb. hatalar için düzgün yanıt
 // Tüm rotalardan SONRA: bilinmeyen adresler için JSON 404 (Python sürümüyle aynı biçim)
 app.use((q, r) => r.status(404).json({ success: false, error: "Bulunamadı" }));

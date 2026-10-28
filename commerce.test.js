@@ -144,7 +144,7 @@ const post = (s, path, body, tok = "t1") => fetch(url(s, path), { method: "POST"
 const CB = { plan: "freelance", cycle: "monthly", currency: "TRY", billing: {}, consent: { distanceSales: true, withdrawalWaiver: true } };
 
 test("Satın alma: yönetici fiyatı değiştirince sipariş yeni tutarla oluşur; eski tutarı bekleyen istemci 409 PRICE_CHANGED alır", async () => {
-  delete process.env.IYZICO_API_KEY; delete process.env.IYZICO_SECRET_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.ALLOW_FREE_ACTIVATION;
+  delete process.env.PAYTR_MERCHANT_ID; delete process.env.PAYTR_MERCHANT_KEY; delete process.env.PAYTR_MERCHANT_SALT; delete process.env.ALLOW_FREE_ACTIVATION;
   const db = memFs(); const C = LOAD("commerce")({ db, PLANS }); const { s } = await payApp(db, C);
   await C.savePricing({ plans: { freelance: { TRY: 650 } } }, { uid: "root" });
   let r = await post(s, "/api/checkout", { ...CB, expectedAmount: 499.99 }); let j = await r.json();
@@ -155,7 +155,7 @@ test("Satın alma: yönetici fiyatı değiştirince sipariş yeni tutarla oluşu
 });
 
 test("Satın alma: kupon indirimi sunucuda uygulanır, sipariş kuponu kaydeder, hak bir kez kullanılır; geçersiz kupon ödemeyi durdurur", async () => {
-  delete process.env.IYZICO_API_KEY; delete process.env.IYZICO_SECRET_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.ALLOW_FREE_ACTIVATION;
+  delete process.env.PAYTR_MERCHANT_ID; delete process.env.PAYTR_MERCHANT_KEY; delete process.env.PAYTR_MERCHANT_SALT; delete process.env.ALLOW_FREE_ACTIVATION;
   const db = memFs(); const C = LOAD("commerce")({ db, PLANS }); const { s } = await payApp(db, C);
   await C.createCoupon({ code: "INDIRIM20", type: "percent", value: 20, maxUses: 5 }, { uid: "root" });
   let r = await post(s, "/api/checkout", { ...CB, coupon: "yok-kod" }); assert.equal(r.status, 404); assert.equal(db.store["subscriptions/u1"], undefined);
@@ -171,22 +171,43 @@ test("Satın alma: kupon indirimi sunucuda uygulanır, sipariş kuponu kaydeder,
   const { s: s2 } = await payApp(memFs(), null); r = await post(s2, "/api/checkout", { ...CB, coupon: "X1X" }); assert.equal(r.status, 400); s.close(); s2.close();
 });
 
-test("Stripe webhook: invoice.paid sipariş kaydı yazar (idempotent); checkout.session.expired kupon hakkını iade eder", async () => {
-  process.env.STRIPE_SECRET_KEY = "sk_test_x"; process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
-  const db = memFs(); const C = LOAD("commerce")({ db, PLANS }); const crypto = require("crypto");
-  await C.createCoupon({ code: "USDKUP", type: "percent", value: 10, maxUses: 3 }, { uid: "root" }); await C.redeemCoupon("USDKUP", "u1"); assert.equal(db.store["coupons/USDKUP"].usedCount, 1);
-  const app = express(); app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
-  const http2 = { request: async ({ url: u }) => ({ status: 200, data: { id: "sub_1", status: "active", customer: "cus_1", current_period_end: Math.floor(Date.now() / 1000) + 86400 * 30, metadata: { uid: "u1", plan: "freelance", cycle: "monthly", coupon: "USDKUP" } } }) };
-  LOAD("payments")({ app, db, admin: { apps: [1], auth: () => ({}) }, http: http2, commerce: C }); const s = await listen(app);
-  const send = async (ev) => { const raw = JSON.stringify(ev), t = Math.floor(Date.now() / 1000), sig = crypto.createHmac("sha256", "whsec_test").update(`${t}.`).update(raw).digest("hex"); return fetch(url(s, "/api/stripe/webhook"), { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": `t=${t},v1=${sig}` }, body: raw }); };
-  assert.equal((await send({ id: "evt_1", type: "invoice.paid", data: { object: { id: "in_123", subscription: "sub_1", amount_paid: 1079 } } })).status, 200);
-  const o = db.store["orders/st_in_123"]; assert.ok(o, "Stripe tahsilatı siparişlerde görünür"); assert.equal(o.amount, 10.79); assert.equal(o.currency, "USD"); assert.equal(o.status, "paid"); assert.equal(o.couponCode, "USDKUP");
-  assert.equal(db.store["subscriptions/u1"].status, "active");
-  assert.equal((await send({ id: "evt_2", type: "invoice.paid", data: { object: { id: "in_123", subscription: "sub_1", amount_paid: 1079 } } })).status, 200);
-  assert.equal(Object.keys(db.store).filter((k) => k.startsWith("orders/")).length, 1, "aynı fatura ikinci sipariş yaratmaz");
-  assert.equal((await send({ id: "evt_3", type: "checkout.session.expired", data: { object: { metadata: { uid: "u1", coupon: "USDKUP" } } } })).status, 200);
-  assert.equal(db.store["coupons/USDKUP"].usedCount, 0, "yarım kalan ödemenin kupon hakkı iade edilir"); s.close();
-  delete process.env.STRIPE_SECRET_KEY; delete process.env.STRIPE_WEBHOOK_SECRET;
+test("PayTR bildirimi: imza şart; başarılı ödeme siparişi 'paid' yapıp paketi açar (idempotent); başarısız ödeme kupon hakkını iade eder; tutar uyuşmazlığı paket vermez", async () => {
+  Object.assign(process.env, { PAYTR_MERCHANT_ID: "123456", PAYTR_MERCHANT_KEY: "k", PAYTR_MERCHANT_SALT: "s" });
+  const crypto = require("crypto"), mk = (uid, o) => ({ uid, plan: "freelance", cycle: "monthly", currency: "TRY", amount: 100, status: "pending", provider: "paytr", ...o });
+  const db = memFs({ "orders/ordSuccess01": mk("u1", { couponCode: "KUP10" }), "orders/ordFailed001": mk("u1", { couponCode: "KUP10" }), "orders/ordMismatch1": mk("u2"), "orders/ordLegacy001": { uid: "u3", plan: "freelance", cycle: "monthly", currency: "TRY", amount: 100, status: "pending" } });
+  const C = LOAD("commerce")({ db, PLANS }); await C.createCoupon({ code: "KUP10", type: "percent", value: 10, maxUses: 3 }, { uid: "root" }); await C.redeemCoupon("KUP10", "u1"); assert.equal(db.store["coupons/KUP10"].usedCount, 1);
+  const app = express(); app.use(express.urlencoded({ extended: false }));
+  LOAD("payments")({ app, db, admin: { apps: [1], auth: () => ({}) }, http: null, commerce: C }); const s = await listen(app);
+  const send = (b, badHash) => { const f = { payment_type: "card", currency: "TL", test_mode: "0", ...b }; f.hash = badHash ? "AAAA" : crypto.createHmac("sha256", "k").update(f.merchant_oid + "s" + f.status + f.total_amount).digest("base64"); return fetch(url(s, "/api/paytr/callback"), { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(f).toString() }); };
+  assert.equal((await send({ merchant_oid: "ordSuccess01", status: "success", total_amount: "10000" }, true)).status, 400, "imzasız/bozuk imzalı bildirim reddedilir"); assert.equal(db.store["orders/ordSuccess01"].status, "pending"); assert.equal(db.store["subscriptions/u1"], undefined);
+  const ok = await send({ merchant_oid: "ordSuccess01", status: "success", total_amount: "10000" }); assert.equal(ok.status, 200); assert.equal(await ok.text(), "OK");
+  assert.equal(db.store["orders/ordSuccess01"].status, "paid"); const sub = db.store["subscriptions/u1"]; assert.equal(sub.status, "active"); assert.equal(sub.provider, "paytr"); assert.equal(sub.plan, "freelance"); assert.ok(sub.periodEnd > Date.now() + 29 * 864e5);
+  const pe = sub.periodEnd; assert.equal(await (await send({ merchant_oid: "ordSuccess01", status: "success", total_amount: "10000" })).text(), "OK"); assert.equal(db.store["subscriptions/u1"].periodEnd, pe, "tekrarlanan bildirim süreyi ikinci kez uzatmaz");
+  assert.equal((await send({ merchant_oid: "ordFailed001", status: "failed", total_amount: "10000", failed_reason_code: "99", failed_reason_msg: "Kart reddedildi" })).status, 200);
+  assert.equal(db.store["orders/ordFailed001"].status, "failed"); assert.equal(db.store["coupons/KUP10"].usedCount, 0, "başarısız ödemenin kupon hakkı iade edilir");
+  assert.equal(await (await send({ merchant_oid: "ordMismatch1", status: "success", total_amount: "5000" })).text(), "OK"); assert.equal(db.store["orders/ordMismatch1"].status, "failed"); assert.equal(db.store["orders/ordMismatch1"].gatewayStatus, "TUTAR_UYUSMAZLIGI"); assert.equal(db.store["subscriptions/u2"], undefined, "eksik tutarla paket verilmez");
+  assert.equal(await (await send({ merchant_oid: "ordLegacy001", status: "success", total_amount: "10000" })).text(), "OK"); assert.equal(db.store["subscriptions/u3"], undefined, "PayTR'ye ait olmayan sipariş etkinleştirilmez");
+  assert.equal(await (await send({ merchant_oid: "yokSiparis001", status: "success", total_amount: "10000" })).text(), "OK", "bilinmeyen sipariş: PayTR tekrar denemesin diye OK"); s.close();
+  for (const k of ["PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT"]) delete process.env[k];
+});
+
+test("Satın alma (PayTR): token isteği imzalı ve doğru tutarlı gider, sipariş 'pending' yazılır; USD varsayılan kapalı; PayTR hata verirse sipariş 'failed' + kupon iade", async () => {
+  Object.assign(process.env, { PAYTR_MERCHANT_ID: "123456", PAYTR_MERCHANT_KEY: "k", PAYTR_MERCHANT_SALT: "s", PAYTR_TEST_MODE: "1" }); delete process.env.PAYTR_USD;
+  const crypto = require("crypto"), db = memFs(); const C = LOAD("commerce")({ db, PLANS }); await C.createCoupon({ code: "KUPON10", type: "percent", value: 10, maxUses: 5 }, { uid: "root" });
+  let mode = "ok"; const calls = []; const http2 = { request: async (o) => { calls.push(o); return { status: 200, data: mode === "ok" ? { status: "success", token: "tok_abc123" } : { status: "failed", reason: "Gecersiz merchant" } }; } };
+  const app = express(); app.use(express.json());
+  LOAD("payments")({ app, db, admin: { apps: [1], auth: () => ({ verifyIdToken: async (t) => ({ uid: t === "t2" ? "u2" : "u1", email: (t === "t2" ? "u2" : "u1") + "@ornek.com", email_verified: true, firebase: { sign_in_provider: "google.com" } }) }) }, http: http2, commerce: C }); const s = await listen(app);
+  let r = await post(s, "/api/checkout", CB); let j = await r.json(); assert.equal(r.status, 200, JSON.stringify(j)); assert.equal(j.provider, "paytr"); assert.equal(j.url, "https://www.paytr.com/odeme/guvenli/tok_abc123");
+  const q = new URLSearchParams(calls[0].data), oid = q.get("merchant_oid"); assert.match(oid, /^[A-Za-z0-9]+$/, "merchant_oid yalnızca harf/rakam içerir"); assert.equal(calls[0].url, "https://www.paytr.com/odeme/api/get-token");
+  assert.equal(q.get("payment_amount"), "49999"); assert.equal(q.get("currency"), "TL"); assert.equal(q.get("test_mode"), "1"); assert.equal(q.get("no_installment"), "1"); assert.equal(q.get("max_installment"), "0");
+  const basket = JSON.parse(Buffer.from(q.get("user_basket"), "base64").toString()); assert.equal(basket.length, 1); assert.match(basket[0][0], /Freelance/); assert.equal(basket[0][1], "499.99"); assert.equal(basket[0][2], 1);
+  const hs = q.get("merchant_id") + q.get("user_ip") + oid + q.get("email") + q.get("payment_amount") + q.get("user_basket") + q.get("no_installment") + q.get("max_installment") + q.get("currency") + q.get("test_mode") + "s";
+  assert.equal(q.get("paytr_token"), crypto.createHmac("sha256", "k").update(hs).digest("base64"), "paytr_token PayTR formülüne uyar"); assert.match(q.get("merchant_ok_url"), /paid=1$/); assert.match(q.get("merchant_fail_url"), /paid=0$/);
+  assert.equal(db.store["orders/" + oid].status, "pending"); assert.equal(db.store["orders/" + oid].provider, "paytr"); assert.equal(db.store["subscriptions/u1"], undefined, "ödeme onaylanmadan paket verilmez");
+  r = await post(s, "/api/checkout", { ...CB, currency: "USD" }); assert.equal(r.status, 503, "PAYTR_USD açık değilken USD ödemesi bedava etkinleşmez"); assert.equal(db.store["subscriptions/u1"], undefined);
+  mode = "fail"; r = await post(s, "/api/checkout", { ...CB, coupon: "KUPON10" }, "t2"); assert.equal(r.status, 502); assert.equal(db.store["coupons/KUPON10"].usedCount, 0, "token alınamazsa kupon hakkı iade edilir");
+  assert.ok(Object.values(db.store).some((o) => o && o.status === "failed" && /Gecersiz merchant/.test(o.gatewayStatus || "")), "başarısız token isteği siparişi 'failed' yapar"); s.close();
+  for (const k of ["PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT", "PAYTR_TEST_MODE"]) delete process.env[k];
 });
 
 // ================= DUYURU / BAKIM =================

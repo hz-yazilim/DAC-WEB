@@ -10,7 +10,7 @@ const listen = (app) => new Promise((r) => { const s = http.createServer(app).li
 const url = (s, p) => `http://127.0.0.1:${s.address().port}${p}`;
 const as = (uid, extra = {}) => ({ "x-test-user": JSON.stringify({ uid, email: uid + "@ornek.com", emailVerified: true, ...extra }), "Content-Type": "application/json" });
 const jpost = (s, p, h, body) => fetch(url(s, p), { method: "POST", headers: h, body: JSON.stringify(body || {}) });
-const ENVKEYS = ["RESEND_API_KEY", "MAIL_FROM", "ADMIN_REQUIRE_2FA", "TURNSTILE_SECRET", "TURNSTILE_SITE_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ALERT_WEBHOOK_URL", "ALERT_EMAIL", "BACKUP_BUCKET", "STRIPE_SECRET_KEY", "IYZICO_API_KEY", "IYZICO_SECRET_KEY", "SUPPORT_RATE_LIMIT"];
+const ENVKEYS = ["RESEND_API_KEY", "MAIL_FROM", "ADMIN_REQUIRE_2FA", "TURNSTILE_SECRET", "TURNSTILE_SITE_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "ALERT_WEBHOOK_URL", "ALERT_EMAIL", "BACKUP_BUCKET", "PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT", "PAYTR_USD", "PAYTR_TEST_MODE", "SUPPORT_RATE_LIMIT"];
 test.afterEach(() => { for (const k of ENVKEYS) delete process.env[k]; });
 
 function memFs(seed = {}) {
@@ -120,31 +120,34 @@ test("Bayraklar: kapatılan tarama türü yöneticiler hariç 503 FEATURE_DISABL
 });
 
 // ================= İADE / İPTAL / FATURA =================
-const payFor = (db, H, env = {}) => { Object.assign(process.env, { STRIPE_SECRET_KEY: "sk_test_x", ...env }); return LOAD("payments")({ app: express(), db, admin: { apps: [1], auth: () => ({}) }, http: H }); };
-test("İade: Stripe kısmi + tam iade, fazla iade/ödenmemiş sipariş reddi, Idempotency-Key, durum ve toplam güncellenir, aboneliği bitirme", async () => {
-  const H = fakeHttp((o) => (/\/refunds$/.test(o.url) ? { status: 200, data: { id: "re_" + H.calls.length } } : /\/subscriptions\//.test(o.url) ? { status: 200, data: { id: "sub_1" } } : { status: 200, data: {} }));
-  const seed = { "orders/o1": { uid: "u1", plan: "kobi", cycle: "monthly", currency: "USD", amount: 100, status: "paid", paymentIntent: "pi_1", createdAt: 1 }, "orders/o2": { uid: "u1", plan: "kobi", currency: "USD", amount: 50, status: "pending" }, "orders/o3": { uid: "u1", plan: "kobi", currency: "USD", amount: 50, status: "paid", createdAt: 2 }, "subscriptions/u1": { plan: "kobi", status: "active", provider: "stripe", stripeSubscriptionId: "sub_1", periodEnd: Date.now() + 864e5 }, "users/dummy": {} };
+const PAYTR_ENV = { PAYTR_MERCHANT_ID: "123456", PAYTR_MERCHANT_KEY: "testkey", PAYTR_MERCHANT_SALT: "testsalt" };
+const payFor = (db, H, env = {}) => { Object.assign(process.env, PAYTR_ENV, env); return LOAD("payments")({ app: express(), db, admin: { apps: [1], auth: () => ({}) }, http: H }); };
+test("İade: PayTR kısmi + tam iade (imzalı istek, reference_no), fazla iade/ödenmemiş/eski sağlayıcı siparişi reddi, durum ve toplam güncellenir, aboneliği bitirme", async () => {
+  const H = fakeHttp((o) => (/\/odeme\/iade$/.test(o.url) ? (/merchant_oid=o4/.test(o.data) ? { status: 200, data: { status: "error", err_no: "007", err_msg: "Iade basarisiz" } } : { status: 200, data: { status: "success", is_test: 0 } }) : { status: 200, data: {} }));
+  const seed = { "orders/o1": { uid: "u1", plan: "kobi", cycle: "monthly", currency: "TRY", amount: 100, status: "paid", provider: "paytr", createdAt: 1 }, "orders/o2": { uid: "u1", plan: "kobi", currency: "TRY", amount: 50, status: "pending", provider: "paytr" }, "orders/o3": { uid: "u1", plan: "kobi", currency: "TRY", amount: 50, status: "paid", createdAt: 2 }, "orders/o4": { uid: "u1", plan: "kobi", currency: "TRY", amount: 20, status: "paid", provider: "paytr", createdAt: 3 }, "subscriptions/u1": { plan: "kobi", status: "active", provider: "paytr", periodEnd: Date.now() + 864e5 }, "users/dummy": {} };
   const h2 = adminHarness({ users: { root: mkU("root") }, seed, payments: (db) => payFor(db, H), httpImpl: H }); const s = await listen(h2.app), A = as("root");
   assert.equal((await jpost(s, "/api/admin/orders/o2/refund", A, {})).status, 400); assert.equal((await jpost(s, "/api/admin/orders/yok/refund", A, {})).status, 404);
   assert.equal((await jpost(s, "/api/admin/orders/o1/refund", A, { amount: 150 })).status, 400, "ödenenden fazla iade"); assert.equal((await jpost(s, "/api/admin/orders/o1/refund", A, { amount: -5 })).status, 400);
-  let j = await (await jpost(s, "/api/admin/orders/o1/refund", A, { amount: 30 })).json(); assert.equal(j.success, true); assert.equal(j.total, 30); assert.equal(j.status, "paid");
-  const rc = H.calls.find((c) => /refunds/.test(c.url)); assert.match(rc.data, /payment_intent=pi_1/); assert.match(rc.data, /amount=3000/); assert.ok(rc.headers["Idempotency-Key"].startsWith("dac_refund_o1_"));
+  let j = await (await jpost(s, "/api/admin/orders/o1/refund", A, { amount: 30 })).json(); assert.equal(j.success, true); assert.equal(j.total, 30); assert.equal(j.status, "paid"); assert.equal(j.provider, "paytr");
+  const rc = H.calls.find((c) => /odeme\/iade/.test(c.url)), q = new URLSearchParams(rc.data);
+  assert.equal(q.get("merchant_oid"), "o1"); assert.equal(q.get("return_amount"), "30.00"); assert.equal(q.get("merchant_id"), "123456"); assert.equal(q.get("reference_no"), "Ro13000");
+  assert.equal(q.get("paytr_token"), crypto.createHmac("sha256", "testkey").update("123456" + "o1" + "30.00" + "testsalt").digest("base64"), "iade imzası PayTR formülüne uyar");
   assert.equal((await jpost(s, "/api/admin/orders/o1/refund", A, { amount: 80 })).status, 400, "kalan 70'ten fazla");
-  j = await (await jpost(s, "/api/admin/orders/o1/refund", A, { endSubscription: true })).json(); assert.equal(j.refunded, 70); assert.equal(j.status, "refunded"); assert.equal(h2.db.store["orders/o1"].refundedAmount, 100); assert.equal(h2.db.store["subscriptions/u1"].status, "canceled"); assert.ok(H.calls.some((c) => c.method === "DELETE" && /subscriptions\/sub_1/.test(c.url)));
+  j = await (await jpost(s, "/api/admin/orders/o1/refund", A, { endSubscription: true })).json(); assert.equal(j.refunded, 70); assert.equal(j.status, "refunded"); assert.equal(h2.db.store["orders/o1"].refundedAmount, 100); assert.equal(h2.db.store["subscriptions/u1"].status, "canceled");
   assert.equal((await jpost(s, "/api/admin/orders/o1/refund", A, {})).status, 400, "iade edilmiş sipariş tekrar iade edilmez");
-  const rev = await (await fetch(url(s, "/api/admin/revenue"), { headers: A })).json(); assert.deepEqual(rev.paid.totals, { USD: 50 }, "gelir iade düşülerek hesaplanır"); assert.equal(rev.refunded.count, 1);
-  // ödeme kimliği olmayan sipariş: panelden iade edilemez, açık mesaj
-  h2.db.store["orders/o3"].invoiceId = undefined; const nr = await jpost(s, "/api/admin/orders/o3/refund", A, {}); assert.equal(nr.status, 409); assert.match((await nr.json()).error, /Stripe panelinden/); s.close();
+  const rev = await (await fetch(url(s, "/api/admin/revenue"), { headers: A })).json(); assert.deepEqual(rev.paid.totals, { TRY: 70 }, "gelir iade düşülerek hesaplanır (o3: 50 + o4: 20)"); assert.equal(rev.refunded.count, 1);
+  const lg = await jpost(s, "/api/admin/orders/o3/refund", A, {}); assert.equal(lg.status, 409, "eski sağlayıcı siparişi panelden iade edilmez"); assert.match((await lg.json()).error, /eski ödeme sağlayıcısıyla/);
+  const er = await jpost(s, "/api/admin/orders/o4/refund", A, {}); assert.equal(er.status, 502, "PayTR hata dönerse iade kaydedilmez"); assert.equal(h2.db.store["orders/o4"].refundedAmount || 0, 0); s.close();
 });
-test("İade: iyzico siparişinde işlem kimliği yoksa panelden iade yönlendirmesi; aksi halde yapılandırma hatası", async () => {
-  const H = fakeHttp(); const h2 = adminHarness({ users: { root: mkU("root") }, seed: { "orders/i1": { uid: "u1", currency: "TRY", amount: 500, status: "paid", paidAt: 1 } }, payments: (db) => payFor(db, H, { IYZICO_API_KEY: "a", IYZICO_SECRET_KEY: "b" }) }); const s = await listen(h2.app);
-  const r = await jpost(s, "/api/admin/orders/i1/refund", as("root"), {}); assert.equal(r.status, 409); assert.match((await r.json()).error, /iyzico panelinden/);
-  delete process.env.IYZICO_API_KEY; const r2 = await jpost(s, "/api/admin/orders/i1/refund", as("root"), {}); assert.equal(r2.status, 503); s.close();
+test("İade: PayTR yapılandırılmamışsa 503; eski (iyzico/Stripe) sipariş panelden iade edilmez", async () => {
+  const H = fakeHttp(); const h2 = adminHarness({ users: { root: mkU("root") }, seed: { "orders/i1": { uid: "u1", currency: "TRY", amount: 500, status: "paid", paidAt: 1, paymentId: "pay_1" }, "orders/i2": { uid: "u1", currency: "TRY", amount: 500, status: "paid", provider: "paytr", paidAt: 1 } }, payments: (db) => payFor(db, H) }); const s = await listen(h2.app);
+  const r = await jpost(s, "/api/admin/orders/i1/refund", as("root"), {}); assert.equal(r.status, 409); assert.match((await r.json()).error, /eski ödeme sağlayıcısıyla/);
+  delete process.env.PAYTR_MERCHANT_KEY; const r2 = await jpost(s, "/api/admin/orders/i2/refund", as("root"), {}); assert.equal(r2.status, 503); assert.equal(H.calls.length, 0); s.close();
 });
-test("Abonelik iptali: Stripe dönem sonu / hemen; ödemesiz paket hemen; yönetici olmayan 403", async () => {
-  const H = fakeHttp(); const h2 = adminHarness({ users: { root: mkU("root") }, seed: { "subscriptions/s": { plan: "kobi", status: "active", provider: "stripe", stripeSubscriptionId: "sub_9", periodEnd: Date.now() + 864e5 }, "subscriptions/m": { plan: "kobi", status: "active", provider: "admin", periodEnd: Date.now() + 864e5 } }, payments: (db) => payFor(db, H) }); const s = await listen(h2.app), A = as("root");
+test("Abonelik iptali: PayTR dönem sonu / hemen (sağlayıcı çağrısı yok); ödemesiz paket hemen; yönetici olmayan 403", async () => {
+  const H = fakeHttp(); const h2 = adminHarness({ users: { root: mkU("root") }, seed: { "subscriptions/s": { plan: "kobi", status: "active", provider: "paytr", periodEnd: Date.now() + 864e5 }, "subscriptions/m": { plan: "kobi", status: "active", provider: "admin", periodEnd: Date.now() + 864e5 } }, payments: (db) => payFor(db, H) }); const s = await listen(h2.app), A = as("root");
   assert.equal((await jpost(s, "/api/admin/users/s/subscription/cancel", as("u1"), {})).status, 403);
-  let j = await (await jpost(s, "/api/admin/users/s/subscription/cancel", A, {})).json(); assert.equal(j.immediate, false); assert.match(H.calls.at(-1).data, /cancel_at_period_end=true/); assert.equal(h2.db.store["subscriptions/s"].status, "active");
+  let j = await (await jpost(s, "/api/admin/users/s/subscription/cancel", A, {})).json(); assert.equal(j.immediate, false); assert.equal(H.calls.length, 0, "PayTR tek seferlik: sağlayıcıda iptal edilecek yenileme yok"); assert.equal(h2.db.store["subscriptions/s"].status, "active"); assert.equal(h2.db.store["subscriptions/s"].cancelAtPeriodEnd, true);
   j = await (await jpost(s, "/api/admin/users/s/subscription/cancel", A, { immediate: true })).json(); assert.equal(j.immediate, true); assert.equal(h2.db.store["subscriptions/s"].status, "canceled");
   await jpost(s, "/api/admin/users/m/subscription/cancel", A, { immediate: true }); assert.equal(h2.db.store["subscriptions/m"].status, "canceled"); assert.equal((await jpost(s, "/api/admin/users/yok/subscription/cancel", A, {})).status, 404); s.close();
 });
@@ -225,14 +228,14 @@ test("Yönetici operasyon uçları: durum (gizli değer sızmaz), test uyarısı
   assert.equal((await (await jpost(s, "/api/admin/ops/test-alert", A)).json()).channels[0], "telegram"); assert.equal((await jpost(s, "/api/admin/ops/backup", A)).status, 503); assert.equal((await (await jpost(s, "/api/admin/ops/reminders", A)).json()).success, true);
   assert.equal((await jpost(s, "/api/admin/ops/test-mail", A, { to: "x@y.com" })).status, 200); assert.equal((await (await fetch(url(s, "/api/admin/errors/history"), { headers: A })).json()).success, true); s.close();
 });
-test("Makbuz: Stripe invoice.paid doğrulanmış e-postaya makbuz gönderir (tekrarda yinelenmez)", async () => {
-  process.env.STRIPE_SECRET_KEY = "sk_x"; process.env.STRIPE_WEBHOOK_SECRET = "whsec_t"; process.env.RESEND_API_KEY = "re"; process.env.MAIL_FROM = "D <d@o.com>";
-  const db = memFs(); const H = fakeHttp((o) => (/subscriptions/.test(o.url) ? { status: 200, data: { id: "sub_1", status: "active", customer: "c", current_period_end: Math.floor(Date.now() / 1000) + 86400 * 30, metadata: { uid: "u1", plan: "freelance", cycle: "monthly" } } } : { status: 200, data: {} }));
-  const mailer = LOAD("mailer")({ db, http: H }); const app = express(); app.use(express.json({ verify: (q, r, b) => { q.rawBody = b; } }));
+test("Makbuz: PayTR bildirimi (success) doğrulanmış e-postaya makbuz gönderir (tekrarda yinelenmez)", async () => {
+  Object.assign(process.env, PAYTR_ENV, { RESEND_API_KEY: "re", MAIL_FROM: "D <d@o.com>" });
+  const db = memFs({ "orders/ordPaytr0001": { uid: "u1", plan: "freelance", cycle: "monthly", currency: "TRY", amount: 100, status: "pending", provider: "paytr" } });
+  const H = fakeHttp(); const mailer = LOAD("mailer")({ db, http: H }); const app = express(); app.use(express.urlencoded({ extended: false }));
   LOAD("payments")({ app, db, admin: { apps: [1], auth: () => ({ getUser: async () => ({ email: "u1@ornek.com", emailVerified: true }) }) }, http: H, commerce: null, mailer }); const s = await listen(app);
-  const send = async (id) => { const raw = JSON.stringify({ id, type: "invoice.paid", data: { object: { id: "in_7", subscription: "sub_1", amount_paid: 1199, payment_intent: "pi_77" } } }), t = Math.floor(Date.now() / 1000), sig = crypto.createHmac("sha256", "whsec_t").update(`${t}.`).update(raw).digest("hex"); return fetch(url(s, "/api/stripe/webhook"), { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": `t=${t},v1=${sig}` }, body: raw }); };
-  assert.equal((await send("e1")).status, 200); await new Promise((r) => setTimeout(r, 50)); const mails = H.calls.filter((c) => /resend/.test(c.url)); assert.equal(mails.length, 1); assert.match(mails[0].data.subject, /Freelance/); assert.equal(db.store["orders/st_in_7"].paymentIntent, "pi_77");
-  await send("e2"); await new Promise((r) => setTimeout(r, 50)); assert.equal(H.calls.filter((c) => /resend/.test(c.url)).length, 1, "aynı fatura için ikinci makbuz yok"); s.close(); delete process.env.STRIPE_WEBHOOK_SECRET;
+  const send = async () => { const b = { merchant_oid: "ordPaytr0001", status: "success", total_amount: "10000", payment_type: "card", currency: "TL", test_mode: "0" }; b.hash = crypto.createHmac("sha256", "testkey").update(b.merchant_oid + "testsalt" + b.status + b.total_amount).digest("base64"); return fetch(url(s, "/api/paytr/callback"), { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(b).toString() }); };
+  const r1 = await send(); assert.equal(r1.status, 200); assert.equal(await r1.text(), "OK"); await new Promise((r) => setTimeout(r, 50)); const mails = H.calls.filter((c) => /resend/.test(c.url)); assert.equal(mails.length, 1); assert.match(mails[0].data.subject, /Freelance/); assert.equal(db.store["orders/ordPaytr0001"].status, "paid"); assert.equal(db.store["subscriptions/u1"].provider, "paytr");
+  await send(); await new Promise((r) => setTimeout(r, 50)); assert.equal(H.calls.filter((c) => /resend/.test(c.url)).length, 1, "aynı sipariş için ikinci makbuz yok"); s.close();
 });
 
 // ================= V13.4: KULLANICI DESTEK PANELİ + KULLANICI ABONELİK İPTALİ =================
@@ -296,24 +299,25 @@ test("İletişim formu: aynı e-postayla sonuçlanmamış talep varken yeni tale
   db.store[k].status = "resolved"; assert.equal((await send(body)).status, 200, "sonuçlanınca yeni talep açılabilir"); s.close();
 });
 function subApp(db, H, env = {}) {
-  Object.assign(process.env, { STRIPE_SECRET_KEY: "sk_test_x", ...env }); const app = express(); app.use(express.json());
+  Object.assign(process.env, PAYTR_ENV, env); const app = express(); app.use(express.json());
   const admin = { apps: [1], auth: () => ({ verifyIdToken: async (t) => ({ uid: t, email: t + "@ornek.com", email_verified: true, firebase: { sign_in_provider: "google.com" } }) }) };
   LOAD("payments")({ app, db, admin, http: H, commerce: null, mailer: null }); return app;
 }
 const bearer = (uid) => ({ Authorization: "Bearer " + uid, "Content-Type": "application/json" });
-test("Kullanıcı abonelik iptali: giriş şart; Stripe dönem sonu iptal + geri alma; iyzico yalnızca dönem sonu; ödemesiz pakette hemen sonlandırma; paketi olmayana 409", async () => {
-  const now = Date.now(), H = fakeHttp(), db = memFs({ "subscriptions/st": { plan: "kobi", status: "active", provider: "stripe", stripeSubscriptionId: "sub_1", periodEnd: now + 864e5 }, "subscriptions/iy": { plan: "kobi", status: "active", provider: "iyzico", periodEnd: now + 864e5 }, "subscriptions/fr": { plan: "kobi", status: "active", provider: "admin", free: true, periodEnd: now + 864e5 }, "subscriptions/gone": { plan: "kobi", status: "canceled", provider: "stripe", periodEnd: now - 1 } });
+test("Kullanıcı abonelik iptali: giriş şart; PayTR dönem sonu iptal + geri alma (sağlayıcı çağrısı yok); eski iyzico yalnızca dönem sonu; ödemesiz pakette hemen sonlandırma; paketi olmayana 409", async () => {
+  const now = Date.now(), H = fakeHttp(), db = memFs({ "subscriptions/st": { plan: "kobi", status: "active", provider: "paytr", periodEnd: now + 864e5 }, "subscriptions/iy": { plan: "kobi", status: "active", provider: "iyzico", periodEnd: now + 864e5 }, "subscriptions/fr": { plan: "kobi", status: "active", provider: "admin", free: true, periodEnd: now + 864e5 }, "subscriptions/gone": { plan: "kobi", status: "canceled", provider: "paytr", periodEnd: now - 1 } });
   const s = await listen(subApp(db, H));
   assert.equal((await jpost(s, "/api/subscription/cancel", { "Content-Type": "application/json" }, {})).status, 401, "girişsiz iptal edilemez");
   assert.equal((await jpost(s, "/api/subscription/cancel", bearer("yok"), {})).status, 409, "aboneliği olmayan"); assert.equal((await jpost(s, "/api/subscription/cancel", bearer("gone"), {})).status, 409, "süresi dolmuş");
-  let j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), {})).json(); assert.equal(j.success, true); assert.equal(j.immediate, false); assert.match(H.calls.at(-1).data, /cancel_at_period_end=true/);
+  let j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), {})).json(); assert.equal(j.success, true); assert.equal(j.immediate, false);
   assert.equal(db.store["subscriptions/st"].status, "active"); assert.equal(db.store["subscriptions/st"].cancelAtPeriodEnd, true); assert.equal(db.store["subscriptions/st"].cancelRequestedBy, "user");
-  const n = H.calls.length; j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), {})).json(); assert.equal(j.already, true); assert.equal(H.calls.length, n, "ikinci iptal Stripe'ı tekrar çağırmaz");
+  j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), {})).json(); assert.equal(j.already, true);
   assert.equal((await (await fetch(url(s, "/api/subscription"), { headers: bearer("st") })).json()).cancelAtPeriodEnd, true, "durum ucu iptal bayrağını döner");
-  j = await (await jpost(s, "/api/subscription/resume", bearer("st"), {})).json(); assert.equal(j.success, true); assert.match(H.calls.at(-1).data, /cancel_at_period_end=false/); assert.equal(db.store["subscriptions/st"].cancelAtPeriodEnd, false);
-  // Stripe: kullanıcı "hemen" istese de ödeme sağlayıcılı pakette yalnızca dönem sonu uygulanır (iade/hemen sonlandırma yönetici işlemi)
+  j = await (await jpost(s, "/api/subscription/resume", bearer("st"), {})).json(); assert.equal(j.success, true); assert.equal(db.store["subscriptions/st"].cancelAtPeriodEnd, false);
+  // PayTR: kullanıcı "hemen" istese de ödeme sağlayıcılı pakette yalnızca dönem sonu uygulanır (iade/hemen sonlandırma yönetici işlemi)
   j = await (await jpost(s, "/api/subscription/cancel", bearer("st"), { immediate: true })).json(); assert.equal(j.immediate, false); assert.equal(db.store["subscriptions/st"].status, "active");
-  j = await (await jpost(s, "/api/subscription/cancel", bearer("iy"), { immediate: true })).json(); assert.equal(j.immediate, false); assert.equal(db.store["subscriptions/iy"].status, "active"); assert.equal(db.store["subscriptions/iy"].cancelAtPeriodEnd, true); assert.ok(!H.calls.some((c) => /iyzipay/.test(c.url || "")));
+  j = await (await jpost(s, "/api/subscription/cancel", bearer("iy"), { immediate: true })).json(); assert.equal(j.immediate, false); assert.equal(db.store["subscriptions/iy"].status, "active"); assert.equal(db.store["subscriptions/iy"].cancelAtPeriodEnd, true);
+  assert.equal(H.calls.length, 0, "hiçbir iptal/geri alma ödeme sağlayıcısını çağırmaz");
   j = await (await jpost(s, "/api/subscription/cancel", bearer("fr"), { immediate: true })).json(); assert.equal(j.immediate, true); assert.equal(db.store["subscriptions/fr"].status, "canceled");
   assert.equal((await jpost(s, "/api/subscription/resume", bearer("fr"), {})).status, 409, "sonlanmış abonelik geri alınamaz"); s.close();
 });

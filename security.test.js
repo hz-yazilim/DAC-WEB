@@ -72,7 +72,7 @@ test("Gövde boyut sınırı: 256kb üstü reddedilir", async () => {
 test("/health: hassas yapılandırma bilgisi sızdırmaz", async () => {
   const s = await listen(require(INDEX)); const j = await (await call(s, "GET", "/health")).json();
   assert.deepEqual(Object.keys(j).sort(), ["ok", "payments", "timestamp", "version"]);
-  assert.deepEqual(Object.keys(j.payments).sort(), ["free", "iyzico", "stripe"]); s.close();
+  assert.deepEqual(Object.keys(j.payments).sort(), ["free", "paytr", "usd"]); s.close();
 });
 test("Güvenlik başlıkları ve CORS: izinsiz origin CORS başlığı almaz", async () => {
   const s = await listen(require(INDEX));
@@ -118,15 +118,15 @@ test("Kota: deneme paketi 3 varlıkla sınırlı", async () => {
 });
 
 // ---------- Ödeme: Stripe imzası ----------
-test("Stripe webhook imza doğrulaması: geçerli kabul, bozuk/eski ret", () => {
-  const crypto = require("crypto");
-  const { verifyStripeSignature } = LOAD("payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
-  const raw = Buffer.from('{"id":"evt_1"}'), secret = "whsec_test", t = Math.floor(Date.now() / 1000);
-  const sig = crypto.createHmac("sha256", secret).update(`${t}.`).update(raw).digest("hex");
-  assert.equal(verifyStripeSignature(raw, `t=${t},v1=${sig}`, secret), true);
-  assert.equal(verifyStripeSignature(raw, `t=${t},v1=${sig.slice(0, -1) + (sig.slice(-1) === "0" ? "1" : "0")}`, secret), false);
-  assert.equal(verifyStripeSignature(raw, `t=${t - 4000},v1=${sig}`, secret), false);
-  assert.equal(verifyStripeSignature(Buffer.from("x"), `t=${t},v1=${sig}`, secret), false);
+test("PayTR bildirim imzası: geçerli kabul; değiştirilmiş tutar/durum, eksik, bozuk, ASCII dışı ve null reddedilir (istisna fırlatmaz)", () => {
+  const crypto = require("crypto"); Object.assign(process.env, { PAYTR_MERCHANT_ID: "1", PAYTR_MERCHANT_KEY: "key", PAYTR_MERCHANT_SALT: "salt" });
+  const { verifyPaytrNotification: v } = LOAD("payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
+  const b = { merchant_oid: "ord123", status: "success", total_amount: "10000" }, h = crypto.createHmac("sha256", "key").update("ord123" + "salt" + "success" + "10000").digest("base64");
+  assert.equal(v({ ...b, hash: h }), true);
+  assert.equal(v({ ...b, hash: h.slice(0, -2) + "AA" }), false); assert.equal(v({ ...b, total_amount: "100", hash: h }), false, "tutar değiştirilemez"); assert.equal(v({ ...b, merchant_oid: "ord999", hash: h }), false); assert.equal(v({ ...b, status: "failed", hash: h }), false);
+  assert.equal(v({ ...b }), false); assert.equal(v({ ...b, hash: "é".repeat(44) }), false); assert.equal(v({ ...b, hash: "x".repeat(500) }), false); assert.equal(v(null), false);
+  delete process.env.PAYTR_MERCHANT_ID; delete process.env.PAYTR_MERCHANT_KEY; delete process.env.PAYTR_MERCHANT_SALT;
+  assert.equal(v({ ...b, hash: h }), false, "anahtarlar yokken hiçbir bildirim kabul edilmez");
 });
 test("Paket fiyatları tutarlı (yıllık = 10 ay)", () => {
   const P = require(PUB("js/plans.js")); assert.equal(P.price("kobi", "TRY", "yearly"), Math.round(4999.99 * 10 * 100) / 100);
@@ -255,11 +255,13 @@ test("Hesap uç noktaları ve ödeme: token yoksa reddedilir", async () => {
   }
   s.close();
 });
-test("Stripe imzası: ASCII dışı / hatalı biçimli imza istisna fırlatmaz", () => {
-  const { verifyStripeSignature } = LOAD("payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null });
-  const t = Math.floor(Date.now() / 1000);
-  assert.equal(verifyStripeSignature(Buffer.from("{}"), `t=${t},v1=${"é".repeat(64)}`, "whsec_x"), false);
-  assert.equal(verifyStripeSignature(Buffer.from("{}"), `t=${t},v1=zz`, "whsec_x"), false);
+test("PayTR: ödeme anahtarları yokken durum kapalı, bedava mod açık; anahtarlar girilince bedava mod kapanır", () => {
+  for (const k of ["PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT", "PAYTR_USD", "ALLOW_FREE_ACTIVATION"]) delete process.env[k];
+  const st = () => LOAD("payments")({ app: { get() {}, post() {} }, db: null, admin: { apps: [] }, http: null }).status();
+  assert.deepEqual([st().paytr, st().usd, st().free], [false, false, true]);
+  Object.assign(process.env, { PAYTR_MERCHANT_ID: "1", PAYTR_MERCHANT_KEY: "k", PAYTR_MERCHANT_SALT: "s" }); assert.deepEqual([st().paytr, st().usd, st().free], [true, false, false]);
+  process.env.PAYTR_USD = "true"; assert.equal(st().usd, true);
+  for (const k of ["PAYTR_MERCHANT_ID", "PAYTR_MERCHANT_KEY", "PAYTR_MERCHANT_SALT", "PAYTR_USD"]) delete process.env[k];
 });
 test("Yasal sayfalar ve yerel varlıklar yayınlanır; üçüncü taraf CDN/font yok", async () => {
   const fs = require("fs"); const s = await listen(require(INDEX));
@@ -322,8 +324,8 @@ async function payApp(db) {
   return { s: await listen(app), pay };
 }
 const checkoutBody = { plan: "freelance", cycle: "monthly", currency: "TRY", billing: {}, consent: { distanceSales: true, withdrawalWaiver: true } };
-test("Satın al: iyzico/Stripe yokken paket doğrudan etkinleşir (kart istenmez)", async () => {
-  delete process.env.IYZICO_API_KEY; delete process.env.IYZICO_SECRET_KEY; delete process.env.STRIPE_SECRET_KEY; delete process.env.ALLOW_FREE_ACTIVATION;
+test("Satın al: PayTR yokken paket doğrudan etkinleşir (kart istenmez)", async () => {
+  delete process.env.PAYTR_MERCHANT_ID; delete process.env.PAYTR_MERCHANT_KEY; delete process.env.PAYTR_MERCHANT_SALT; delete process.env.ALLOW_FREE_ACTIVATION;
   const db = memDb(); const { s, pay } = await payApp(db);
   const r = await call(s, "POST", "/api/checkout", { headers: { Authorization: "Bearer x", Origin: "http://localhost:3000" }, body: checkoutBody });
   const j = await r.json(); assert.equal(r.status, 200); assert.equal(j.activated, true); assert.equal(j.plan, "freelance");
