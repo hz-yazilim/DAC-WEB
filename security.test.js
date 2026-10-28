@@ -263,7 +263,7 @@ test("Stripe imzası: ASCII dışı / hatalı biçimli imza istisna fırlatmaz",
 });
 test("Yasal sayfalar ve yerel varlıklar yayınlanır; üçüncü taraf CDN/font yok", async () => {
   const fs = require("fs"); const s = await listen(require(INDEX));
-  for (const p of ["/kvkk", "/gizlilik", "/cerez-politikasi", "/kullanim-kosullari", "/mesafeli-satis", "/iade-iptal", "/iletisim", "/kabul-edilebilir-kullanim", "/js/lucide.min.js", "/fonts/inter-latin.woff2", "/js/company.js", "/js/cookie-consent.js", "/js/legal.js", "/css/style.css", "/icons/icon-192.png", "/manifest.json", "/sw.js"]) {
+  for (const p of ["/kvkk", "/gizlilik", "/cerez-politikasi", "/kullanim-kosullari", "/mesafeli-satis", "/iade-iptal", "/iletisim", "/kabul-edilebilir-kullanim", "/hakkimizda", "/llms.txt", "/js/lucide.min.js", "/fonts/inter-latin.woff2", "/js/company.js", "/js/cookie-consent.js", "/js/legal.js", "/css/style.css", "/icons/icon-192.png", "/manifest.json", "/sw.js"]) {
     const r = await call(s, "GET", p); assert.equal(r.status, 200, p); await r.arrayBuffer();
   }
   const html = fs.readFileSync(PUB("index.html"), "utf8"), css = fs.readFileSync(PUB("css/style.css"), "utf8");

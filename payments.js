@@ -118,6 +118,7 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
     if (!PLANS.PAID.includes(plan)) throw fail(400, "Geçersiz paket.");
     if (!["monthly", "yearly"].includes(cycle)) throw fail(400, "Geçersiz dönem.");
     await db.collection("consents").add({ uid: u.uid, type: "distance-sales", version: LEGAL_VERSION, granted: true, plan: String(plan).slice(0, 30), at: Date.now(), ip: req.ip || null, ua: String(req.headers["user-agent"] || "").slice(0, 200) });
+    await db.collection("consents").add({ uid: u.uid, type: "withdrawal-waiver", version: LEGAL_VERSION, granted: true, plan: String(plan).slice(0, 30), at: Date.now(), ip: req.ip || null, ua: String(req.headers["user-agent"] || "").slice(0, 200) });
     const P = PLANS.PLANS[plan]; const cur = currency === "USD" ? "USD" : "TRY";
     if (commerce) await commerce.ensureFresh(5000); // yönetici panelinden değişen fiyat/kupon anında geçerli olsun
     const listAmount = PLANS.price(plan, cur, cycle); let amount = listAmount, couponInfo = null;

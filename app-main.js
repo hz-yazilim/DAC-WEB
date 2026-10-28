@@ -126,9 +126,27 @@ async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu a
  busy(true);try{const r=await fetch(api+'/api/account',{method:'DELETE',headers:{'Content-Type':'application/json',...await authH()},body:JSON.stringify({confirm:'HESABIMI SIL'})});const j=await r.json();if(!r.ok||!j.success)throw new Error(j.error||'Hesap silinemedi');
   try{localStorage.removeItem(KEY);localStorage.removeItem(KEY+'_bak');localStorage.removeItem('dac_last_uid')}catch{}
   toast('Hesabınız silindi');setTimeout(()=>{try{window.dacLogout&&window.dacLogout()}catch{}location.hash='';location.reload()},800)}catch(e){toast(e.message,'err')}busy(false)}
-// Üyelik onayı (giriş ekranındaki kutu) sunucuya kayıt olarak iletilir
-async function sendConsents(){let v=null;try{v=localStorage.getItem('dac_terms_pending')}catch{}if(!v)return;const api=apiUrl();if(!api)return;try{const h=await authH();if(!h.Authorization)return;for(const type of['terms','privacy']){const r=await fetch(api+'/api/consent',{method:'POST',headers:{'Content-Type':'application/json',...h},body:JSON.stringify({type,version:v})});if(!r.ok)return}localStorage.removeItem('dac_terms_pending')}catch{}}
-window.dacStop=()=>{BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;bdgStop();syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+// Üyelik/KVKK onayı sunucuya yazılır. Giriş kutusundaki onay önce yerelde bekler, giriş sonrası gönderilir (tekrar denemede çift kayıt oluşmaz).
+// Sunucuda güncel sürüm için kayıt yoksa (başka cihazda e-posta doğrulama, eski hesap, yeni sürüm) onay alınana kadar uygulama kilitlenir.
+const LEGAL_V=(window.DAC_COMPANY&&window.DAC_COMPANY.surum)||'2026-10';
+async function postConsent(api,h,type,version,granted){try{const r=await fetch(api+'/api/consent',{method:'POST',headers:{'Content-Type':'application/json',...h},body:JSON.stringify({type,version,granted})});return r.ok}catch{return false}}
+async function sendConsents(){const api=apiUrl();if(!api)return;try{const h=await authH();if(!h.Authorization)return;
+ let v=null;try{v=localStorage.getItem('dac_terms_pending')}catch{}
+ if(v){const a=await postConsent(api,h,'terms',v,true),b=await postConsent(api,h,'privacy',v,true);if(a&&b){try{localStorage.removeItem('dac_terms_pending')}catch{}}}
+ // Çerez tercihi (zorunlu / analitik): değiştiğinde bir kez kayda geçer
+ let ck=null,at='',sent=null;try{ck=localStorage.getItem('dac_cookie_consent');at=localStorage.getItem('dac_cookie_consent_at')||'';sent=localStorage.getItem('dac_cookie_sent')}catch{}
+ if(ck&&sent!==ck+'@'+at&&await postConsent(api,h,'cookies-analytics',LEGAL_V,ck==='all')){try{localStorage.setItem('dac_cookie_sent',ck+'@'+at)}catch{}}
+ await consentGate(api,h)}catch{}}
+async function consentGate(api,h){try{const r=await fetch(api+'/api/consent/status?version='+encodeURIComponent(LEGAL_V),{headers:h,cache:'no-store'});if(!r.ok)return;const j=await r.json();if(j&&j.success&&!(j.terms&&j.privacy))showConsentGate(api)}catch{}}
+function showConsentGate(api){if(document.getElementById('cgate'))return;const d=document.createElement('div');d.id='cgate';d.setAttribute('role','dialog');d.setAttribute('aria-modal','true');
+ d.style.cssText='position:fixed;inset:0;z-index:300;background:rgba(5,8,16,.94);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto';
+ d.innerHTML='<div class="lbox" style="text-align:left"><h2 style="margin:0 0 10px">Onayınız gerekiyor</h2><p class="hint" style="margin:0 0 14px">Devam etmek için güncel Kullanım Koşulları ve KVKK Aydınlatma Metni onayınız kaydedilmelidir.</p><label class="consent"><input type="checkbox" id="cg-ok"><span><a href="/kullanim-kosullari" target="_blank" rel="noopener">Kullanım Koşulları</a>\'nı ve <a href="/kvkk" target="_blank" rel="noopener">KVKK Aydınlatma Metni</a>\'ni okudum, kabul ediyorum.</span></label><button class="btn p w" id="cg-btn" type="button" disabled>Kabul ediyorum</button><button class="lnk" id="cg-out" type="button">Çıkış yap</button><div id="cg-err" class="hint" role="status"></div></div>';
+ document.body.appendChild(d);const ok=d.querySelector('#cg-ok'),btn=d.querySelector('#cg-btn'),err=d.querySelector('#cg-err');
+ ok.onchange=()=>{btn.disabled=!ok.checked};
+ btn.onclick=async()=>{btn.disabled=true;err.textContent='';const h=await authH();const a=await postConsent(api,h,'terms',LEGAL_V,true),b=await postConsent(api,h,'privacy',LEGAL_V,true);if(a&&b)d.remove();else{err.textContent='Onay kaydedilemedi. Bağlantınızı kontrol edip tekrar deneyin.';btn.disabled=!ok.checked}};
+ d.querySelector('#cg-out').onclick=()=>{d.remove();try{window.dacLogout&&window.dacLogout()}catch{}}}
+window.addEventListener('dac-cookie-consent',()=>{if(U)sendConsents()});
+window.dacStop=()=>{const cg=document.getElementById('cgate');if(cg)cg.remove();BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;bdgStop();syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
 
 /* ---------- rozetler: yönetici = kırmızı, kullanıcı = koyu mor ---------- */
 /* Yönetici: bekleyen destek + son baktığından beri yeni kullanıcı/sipariş/hata. Kullanıcı: yöneticiden gelen destek yanıtı/kapatma ve yeni duyuru. */

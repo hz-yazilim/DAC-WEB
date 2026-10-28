@@ -8,6 +8,8 @@ window.DAC_COMPANY = {
   kisaMarka: "DAC",
   web: "https://dac-web-tfqf.onrender.com",
   unvan: "HZ Yazılım",
+  kurucu: "Hamza Genç",
+  portfoy: "https://hz-yazilim.github.io",
   eposta: "hz.yazilimm@gmail.com",
   destekEposta: "hz.yazilimm@gmail.com",
   kvkkEposta: "hz.yazilimm@gmail.com",

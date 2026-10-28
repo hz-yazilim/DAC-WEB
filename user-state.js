@@ -94,8 +94,22 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     const type = String((req.body || {}).type || ""), version = String((req.body || {}).version || "").slice(0, 40);
     if (!CONSENT_TYPES.has(type) || !version) return res.status(400).json({ success: false, error: "Geçersiz onay kaydı." });
     const granted = (req.body || {}).granted !== false;
-    await db.collection("consents").add({ uid: req.user.uid, type, version, granted, at: Date.now(), ip: req.ip || null, ua: String(req.headers["user-agent"] || "").slice(0, 200) });
+    const row = { uid: req.user.uid, type, version, granted, at: Date.now(), ip: req.ip || null, ua: String(req.headers["user-agent"] || "").slice(0, 200) };
+    if (type === "terms" || type === "privacy") {
+      // Aynı kullanıcı + tür + sürüm için tek kayıt (yeniden denemede çift kayıt oluşmaz; ilk onay zamanı korunur)
+      const d = db.collection("consents").doc(`${req.user.uid}_${type}_${version}`.replace(/[\/\s]/g, "_"));
+      if (!(await d.get()).exists) await d.set(row);
+    } else await db.collection("consents").add(row);
     res.json({ success: true });
+  }));
+
+  // Kullanıcının kendi onay kayıtları: arayüz, güncel sürüm için Kullanım Koşulları + KVKK onayının sunucuda olup olmadığını buradan kontrol eder
+  app.get("/api/consent/status", guard, wrap(async (req, res) => {
+    const version = String(req.query.version || "").slice(0, 40);
+    const list = await rows("consents", "uid", req.user.uid, 200);
+    const has = (t) => list.some(c => c.type === t && c.granted !== false && (!version || c.version === version));
+    res.set("Cache-Control", "no-store");
+    res.json({ success: true, version, terms: has("terms"), privacy: has("privacy"), records: list.map(({ type, version: v, granted, at }) => ({ type, version: v, granted, at })).sort((a, b) => b.at - a.at) });
   }));
 
   app.get("/api/account/export", accGuard, wrap(async (req, res) => {
