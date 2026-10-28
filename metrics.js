@@ -42,7 +42,7 @@ function createMetrics({ windowMs = 3600e3, maxSamples = 20000, maxErrors = 200,
     return (req_, res, next) => {
       if (!req_.path.startsWith(prefix) && req_.path !== "/health") return next();
       const t0 = process.hrtime.bigint();
-      res.on("finish", () => { observeRequest(Number(process.hrtime.bigint() - t0) / 1e6, res.statusCode); if (res.statusCode >= 500) recordError({ source: "api", status: res.statusCode, path: req_.path, message: `HTTP ${res.statusCode} ${req_.method}` }); });
+      res.on("finish", () => { const expected = !!(res.locals && res.locals.expectedBlock); observeRequest(Number(process.hrtime.bigint() - t0) / 1e6, expected ? 403 : res.statusCode); if (res.statusCode >= 500 && !expected) recordError({ source: "api", status: res.statusCode, path: req_.path, message: `HTTP ${res.statusCode} ${req_.method}` }); });
       next();
     };
   }

@@ -10,7 +10,7 @@ function render(){
  const r=location.hash.slice(1)||'dash',[p,k]=r.split('/'),ps=planState();
  const counts={};Object.keys(CATS).forEach(c=>counts[c]=S.assets.filter(a=>a.cat===c).length);
  $('#side').innerHTML=`<div class="brand"><div class="logo">${ic('shield')}</div><div><b>Digital Asset Center</b><small>v11 • ${esc(planName(ps))}</small></div></div>
- <nav class="nav">${NAV().map(([t,it])=>`<h6>${t}</h6>`+it.map(([h,l,i])=>`<a href="#${h}" class="${h===r?'on':''}" data-nb="${h}">${ic(i)}${l}${h.startsWith('cat/')?`<b>${counts[h.slice(4)]}</b>`:''}${nbHtml(...nbOf(h))}</a>`).join('')).join('')}</nav>
+ <nav class="nav">${NAV().map(([t,it])=>`<h6>${t}</h6>`+it.map(([h,l,i])=>`<a href="#${h}" class="${h===r?'on':''}" data-nb="${h}">${ic(i)}${l}${h.startsWith('cat/')?(CATS[h.slice(4)]&&featureClosed(CATS[h.slice(4)].api)?`<b>${ic('lock')}</b>`:`<b>${counts[h.slice(4)]}</b>`):''}${nbHtml(...nbOf(h))}</a>`).join('')).join('')}</nav>
  <div class="org"><div class="orgc"><div class="r"><div class="av">${esc(S.settings.org.slice(0,2).toUpperCase())}</div><div><b>${esc(S.settings.org)}</b><br><small>${esc(planName(ps))} • ${S.assets.length}/${limTxt(ps)} varlık${ps.trial?' • '+leftTxt(ps.left):''}</small></div></div>
  <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="logout">${ic('log-out')} Çıkış</button></div></div></div>`;
  $('#av').textContent=S.settings.org.slice(0,2).toUpperCase();
@@ -99,7 +99,7 @@ $('#q').addEventListener('input',e=>{
  r.classList.toggle('on',!!q);
 });
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#q').focus()}if(e.key==='Escape')close()});
-addEventListener('hashchange',()=>{render();scrollTo(0,0)});
+addEventListener('hashchange',()=>{render();scrollTo(0,0);if((location.hash.slice(1)||'').startsWith('cat/'))loadSite(true)});
 addEventListener('focus',()=>{if(S&&U&&apiUrl()&&!document.hidden){pullLatest();syncPlan();SYNC.pulled?schedulePush():pullState()}});
 
 /* ---------- giriş (Firebase Auth index.html içinden çağırır) ---------- */

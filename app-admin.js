@@ -3,7 +3,7 @@
 const ADMTABS=[['overview','Genel Bakış'],['users','Kullanıcılar'],['jobs','Tarama Kuyruğu'],['subs','Paketler'],['orders','Ödemeler'],['errors','Sistem Hataları'],['audit','İşlem Kayıtları'],['admins','Yetkili Hesaplar'],['health','Sağlık'],['site','Duyuru ve Bakım'],['support','Destek'],['ops','Operasyon'],['security','Güvenlik'],['platform','AI ve Altyapı']];
 const admPath={overview:'/api/admin/overview',users:'/api/admin/users',jobs:'/api/admin/jobs',subs:'/api/admin/subscriptions',orders:'/api/admin/orders',errors:'/api/admin/errors',audit:'/api/admin/audit',admins:'/api/admin/admins',health:'/api/admin/health',site:'/api/admin/site',support:'/api/admin/support',ops:'/api/admin/ops',security:'/api/admin/2fa/status',platform:'/api/admin/platform'};
 async function admLoad0(tab){BK.tab=tab;const qs=tab==='users'?'?'+new URLSearchParams({q:BK.adm.uq||'',status:BK.adm.us||'all'}):tab==='subs'?'?'+new URLSearchParams({q:BK.adm.sq||'',plan:BK.adm.sp||'all'}):tab==='orders'?'?'+new URLSearchParams({status:BK.adm.os||''}):'';try{BK.adm[tab]=await bkApi('GET',admPath[tab]+qs);BK.adm.err=null}catch(e){BK.adm.err=e.message}}
-function adminPage(){if(!BK.adm[BK.tab]&&!BK.adm.err)admLoad(BK.tab).then(admPaint);return`<div class="mh"><div><h2>Yönetici Paneli</h2><div class="hint">Panel sürümü: 20261030a</div></div><button class="btn s" data-act="adm-refresh">${ic('refresh-cw')} Yenile</button></div><div class="bktabs" id="adm-tabs">${admTabs()}</div><div id="adm-body">${admBody()}</div>`}
+function adminPage(){if(!BK.adm[BK.tab]&&!BK.adm.err)admLoad(BK.tab).then(admPaint);return`<div class="mh"><div><h2>Yönetici Paneli</h2><div class="hint">Panel sürümü: 20261030b</div></div><button class="btn s" data-act="adm-refresh">${ic('refresh-cw')} Yenile</button></div><div class="bktabs" id="adm-tabs">${admTabs()}</div><div id="adm-body">${admBody()}</div>`}
 const admTabs=()=>ADMTABS.map(([k,l])=>`<button class="btn s${BK.tab===k?' p':''}" data-act="adm-tab" data-id="${k}">${esc(l)}${nbHtml(((typeof BADGE!=='undefined'&&BADGE.adm)||{})[k==='orders'?'orders':k]|0,'nb-r')}</button>`).join('');
 function admPaint(){const t=$('#adm-tabs');if(t)t.innerHTML=admTabs();const el=$('#adm-body');if(el){el.innerHTML=admBody();icons()}}
 const av=x=>x&&x.available===false?`<span class="hint">Veri yok: ${esc(x.reason||'')}</span>`:x&&x.value!=null?String(x.value):'-';
@@ -101,7 +101,7 @@ function applyPricing(pub){
 async function loadPricing(force){const api=apiUrl();if(!api||(!force&&Date.now()-PRICE_AT<60000))return;PRICE_AT=Date.now();try{const j=await (await fetch(api+'/api/pricing')).json();if(j&&j.success&&applyPricing(j))render()}catch{}}
 async function loadSite(force){
  const api=apiUrl();if(!api||(!force&&Date.now()-SITE_AT<60000))return;SITE_AT=Date.now();
- try{const j=await (await fetch(api+'/api/site-status')).json();if(j&&j.success){const k=x=>JSON.stringify([x&&x.announcement,x&&x.maintenance&&x.maintenance.enabled,x&&x.maintenance&&x.maintenance.message]);const ch=k(j)!==k(SITE);SITE=j;if(ch)render()}}catch{}
+ try{const j=await (await fetch(api+'/api/site-status')).json();if(j&&j.success){const k=x=>JSON.stringify([x&&x.announcement,x&&x.maintenance&&x.maintenance.enabled,x&&x.maintenance&&x.maintenance.message,x&&x.flags&&x.flags.disabledScanTypes]);const ch=k(j)!==k(SITE);SITE=j;if(ch)render()}}catch{}
 }
 function startSiteTimer(){if(window.__dacSiteT)return;window.__dacSiteT=setInterval(()=>{loadSite();loadPricing()},120000)}
 function siteBanner(){

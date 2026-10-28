@@ -2378,7 +2378,7 @@ for (const f of Object.values(LEGAL_PAGES)) LEGACY_URLS["/" + f] = "/legal/" + f
 Object.entries(LEGACY_URLS).forEach(([from, to]) => app.get(from, (q, r) => r.redirect(301, to)));
 app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "ignore", etag: true, setHeaders: (res, file) => {
   const base = path.basename(file);
-  res.setHeader("Cache-Control", base === "index.html" ? "no-cache" : base === "manifest.json" ? "public, max-age=3600" : "public, max-age=86400, stale-while-revalidate=604800");
+  res.setHeader("Cache-Control", /\.(js|css|html)$/i.test(base) ? "no-cache" : base === "manifest.json" ? "public, max-age=3600" : "public, max-age=86400, stale-while-revalidate=604800");
 } }));
 } else {
   // Düz yerleşim: yalnızca bu izin listesindeki dosyalar yayınlanır (sunucu kodu asla yayınlanmaz)
@@ -2389,7 +2389,7 @@ app.use(express.static(PUBLIC_DIR, { index: false, redirect: false, dotfiles: "i
     if (req.method !== "GET" && req.method !== "HEAD") return next();
     const m = /^\/(?:(?:css|js|fonts|icons)\/)?([A-Za-z0-9._-]+)$/.exec(req.path);
     if (!m || !FLAT_OK.has(m[1])) return next();
-    res.set("Cache-Control", m[1] === "manifest.json" ? "public, max-age=3600" : "public, max-age=86400, stale-while-revalidate=604800");
+    res.set("Cache-Control", /\.(js|css|html)$/i.test(m[1]) ? "no-cache" : m[1] === "manifest.json" ? "public, max-age=3600" : "public, max-age=86400, stale-while-revalidate=604800");
     res.sendFile(path.join(__dirname, m[1]));
   });
 }
