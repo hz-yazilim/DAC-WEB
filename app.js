@@ -5,6 +5,9 @@ const uid=()=>{try{const a=new Uint32Array(3);crypto.getRandomValues(a);return A
 const P=window.DAC_PLANS;
 const FEATURE_MSG='Bu özellik yönetici tarafından kapatıldı.';
 const featureClosed=t=>{try{return !!(SITE&&SITE.flags&&(SITE.flags.disabledScanTypes||[]).includes(String(t).toUpperCase())&&!(typeof BK!=='undefined'&&BK.isAdmin))}catch{return false}};
+const NAVFLAGS=[['assets','Varlıklarım'],['history','Tarama Geçmişi'],['renewals','Yenileme Takvimi'],['reports','Raporlar'],['team','Ekip Yönetimi'],['projects','Müşteri Projeleri'],['bulk','Toplu Tarama'],['plan','Paket ve Faturalandırma'],['support','Destek'],['settings','Ayarlar']]; // YÖNETİM menüsü: admin panelinden açılıp kapatılır (bayrak adı: NAV_<ANAHTAR>)
+const navClosed=k=>NAVFLAGS.some(x=>x[0]===k)&&featureClosed('NAV_'+String(k).toUpperCase());
+const navClosedPage=k=>{const l=(NAVFLAGS.find(x=>x[0]===k)||[])[1]||'';return`<div class="mh"><h2>${l}</h2></div><div class="card" style="text-align:center;padding:36px 20px"><div style="color:var(--rd,#ef4444);margin-bottom:10px">${ic('lock')}</div><b style="font-size:18px">${FEATURE_MSG}</b><p class="sub" style="margin-top:8px">Bu bölüm şu anda kullanıma kapalı. Lütfen daha sonra tekrar deneyin.</p><a class="btn s" href="#dash">Genel Bakışa dön</a></div>`};
 var SITE=null,SITE_AT=0,PRICE_AT=0,CPN=null,PLANCPN=null; // V13.2 (var: hoisting, render erken çağrılsa bile güvenli)
 
 /* ---------- Kategoriler: ne taranır, neden önemli ---------- */
