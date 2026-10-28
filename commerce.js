@@ -196,10 +196,10 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
   }
 
   /* =================== DUYURU / BAKIM =================== */
-  const defaultSite = () => ({ announcement: { enabled: false, text: "", level: "info", until: null }, maintenance: { enabled: false, message: "" }, flags: { registrationOpen: true, disabledScanTypes: [] }, updatedAt: null, updatedBy: null });
+  const defaultSite = () => ({ announcement: { enabled: false, text: "", level: "info", until: null, at: null }, maintenance: { enabled: false, message: "" }, flags: { registrationOpen: true, disabledScanTypes: [] }, updatedAt: null, updatedBy: null });
   function sanitizeSite(d) {
     const base = defaultSite(), a = (d && d.announcement) || {}, m = (d && d.maintenance) || {};
-    return { announcement: { enabled: a.enabled === true, text: String(a.text || "").slice(0, 280), level: LEVELS.includes(a.level) ? a.level : "info", until: Number.isFinite(a.until) ? a.until : null }, maintenance: { enabled: m.enabled === true, message: String(m.message || "").slice(0, 280) }, flags: { registrationOpen: !(d && d.flags && d.flags.registrationOpen === false), disabledScanTypes: Array.isArray(d && d.flags && d.flags.disabledScanTypes) ? d.flags.disabledScanTypes.filter((x) => /^[A-Z_]{2,30}$/.test(x)).slice(0, 40) : [] }, updatedAt: (d && d.updatedAt) || base.updatedAt, updatedBy: (d && d.updatedBy) || base.updatedBy };
+    return { announcement: { enabled: a.enabled === true, text: String(a.text || "").slice(0, 280), level: LEVELS.includes(a.level) ? a.level : "info", until: Number.isFinite(a.until) ? a.until : null, at: Number.isFinite(a.at) ? a.at : null }, maintenance: { enabled: m.enabled === true, message: String(m.message || "").slice(0, 280) }, flags: { registrationOpen: !(d && d.flags && d.flags.registrationOpen === false), disabledScanTypes: Array.isArray(d && d.flags && d.flags.disabledScanTypes) ? d.flags.disabledScanTypes.filter((x) => /^[A-Z_]{2,30}$/.test(x)).slice(0, 40) : [] }, updatedAt: (d && d.updatedAt) || base.updatedAt, updatedBy: (d && d.updatedBy) || base.updatedBy };
   }
   let siteCache = { at: 0, val: defaultSite() };
   async function getSite(force) {
@@ -217,7 +217,8 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
       const level = a.level === undefined ? "info" : a.level; if (!LEVELS.includes(level)) throw bad(400, "Seviye info, warn veya bad olmalı");
       let until = a.until === undefined || a.until === null || a.until === "" ? null : (typeof a.until === "number" ? a.until : Date.parse(a.until)); if (until !== null && !Number.isFinite(until)) throw bad(400, "Bitiş tarihi geçersiz");
       if (a.enabled && until !== null && until <= now()) throw bad(400, "Bitiş tarihi geçmişte olamaz");
-      next.announcement = { enabled: a.enabled, text, level, until };
+      const pv = cur.announcement || {}; const fresh = a.enabled && (!pv.enabled || pv.text !== text || pv.level !== level); // yeni yayın/değişiklik: kullanıcıda rozet çıkar
+      next.announcement = { enabled: a.enabled, text, level, until, at: fresh ? now() : (pv.at || null) };
     }
     if (input.maintenance !== undefined) {
       const m = input.maintenance || {}; if (typeof m.enabled !== "boolean") throw bad(400, "maintenance.enabled true/false olmalı");
@@ -234,7 +235,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
   }
   async function publicSite() {
     const s = await getSite(); const a = s.announcement, t = now();
-    return { announcement: a.enabled && a.text && (!a.until || a.until > t) ? { text: a.text, level: a.level, until: a.until } : null, maintenance: { enabled: s.maintenance.enabled, message: s.maintenance.message || "Sistem bakımda. Kısa süre sonra tekrar deneyin." }, flags: { registrationOpen: s.flags.registrationOpen, disabledScanTypes: s.flags.disabledScanTypes }, serverTime: t };
+    return { announcement: a.enabled && a.text && (!a.until || a.until > t) ? { text: a.text, level: a.level, until: a.until, at: a.at || null } : null, maintenance: { enabled: s.maintenance.enabled, message: s.maintenance.message || "Sistem bakımda. Kısa süre sonra tekrar deneyin." }, flags: { registrationOpen: s.flags.registrationOpen, disabledScanTypes: s.flags.disabledScanTypes }, serverTime: t };
   }
 
   /* =================== GENEL UÇLAR =================== */

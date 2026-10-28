@@ -188,3 +188,13 @@ textarea.field{resize:vertical;min-height:110px;font-family:inherit}
 .sup-me{align-self:flex-end;background:#2f6bff22;border-color:#2f6bff66}.sup-staff{align-self:flex-start;background:var(--card)}
 .sup-tx{white-space:pre-wrap;word-break:break-word;margin-top:4px}
 #sup-body .field{margin-bottom:8px}
+
+/* ---------- rozetler: yönetici = kırmızı, kullanıcı = koyu mor ---------- */
+.nb{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;font:700 11px/1 var(--mono);font-style:normal;color:#fff;flex:none;vertical-align:middle}
+.nb-r{background:#ef4444}
+.nb-p{background:#5b21b6;box-shadow:inset 0 0 0 1px #a78bfa88}
+.nav a .nb{margin-left:auto}
+.nav a b+.nb{margin-left:8px}
+.ib>.nb{position:absolute;top:-6px;right:-6px;z-index:1;box-shadow:0 0 0 2px var(--bg)}
+.ib:has(>.nb) #dot{top:auto;bottom:-3px}
+.btn .nb{margin-left:2px}

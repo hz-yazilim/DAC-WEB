@@ -6,16 +6,19 @@ const NAV=()=>{const n=NAV0();if(BK.isAdmin)n.push(['SİSTEM',[['admin','Yöneti
 const icons=()=>window.lucide&&lucide.createIcons();
 function render(){
  if(!S)return;
+ const nv0=$('#side .nav'),navTop=nv0?nv0.scrollTop:0; // yan menü kaydırması yeniden çizimde sıfırlanmasın
  const r=location.hash.slice(1)||'dash',[p,k]=r.split('/'),ps=planState();
  const counts={};Object.keys(CATS).forEach(c=>counts[c]=S.assets.filter(a=>a.cat===c).length);
  $('#side').innerHTML=`<div class="brand"><div class="logo">${ic('shield')}</div><div><b>Digital Asset Center</b><small>v11 • ${esc(planName(ps))}</small></div></div>
- <nav class="nav">${NAV().map(([t,it])=>`<h6>${t}</h6>`+it.map(([h,l,i])=>`<a href="#${h}" class="${h===r?'on':''}">${ic(i)}${l}${h.startsWith('cat/')?`<b>${counts[h.slice(4)]}</b>`:''}</a>`).join('')).join('')}</nav>
+ <nav class="nav">${NAV().map(([t,it])=>`<h6>${t}</h6>`+it.map(([h,l,i])=>`<a href="#${h}" class="${h===r?'on':''}" data-nb="${h}">${ic(i)}${l}${h.startsWith('cat/')?`<b>${counts[h.slice(4)]}</b>`:''}${nbHtml(...nbOf(h))}</a>`).join('')).join('')}</nav>
  <div class="org"><div class="orgc"><div class="r"><div class="av">${esc(S.settings.org.slice(0,2).toUpperCase())}</div><div><b>${esc(S.settings.org)}</b><br><small>${esc(planName(ps))} • ${S.assets.length}/${limTxt(ps)} varlık${ps.trial?' • '+leftTxt(ps.left):''}</small></div></div>
  <div class="btns"><a class="btn s" href="#settings">${ic('settings')} Ayarlar</a><button class="btn s" data-act="logout">${ic('log-out')} Çıkış</button></div></div></div>`;
  $('#av').textContent=S.settings.org.slice(0,2).toUpperCase();
  $('#dot').style.display=alerts().length?'block':'none';
  $('#view').innerHTML=siteBanner()+(p==='cat'&&CATS[k]?catPage(k):p==='assets'?assets():p==='bulk'?bulkPage():p==='whoami'?whoamiPage():p==='domains'?domainsPage():p==='admin'&&BK.isAdmin?adminPage():p==='history'?history():p==='reports'?reports():p==='renewals'?renewals():LISTS[p]?listPage(p):p==='plan'?plan():p==='support'?supportPage():p==='settings'?settings():dash());
  icons();bkPoll();
+ const nv1=$('#side .nav');if(nv1){nv1.scrollTop=navTop;navShowActive(false)}
+ bdgPaint();
 }
 
 /* ---------- olaylar ---------- */
@@ -29,15 +32,20 @@ document.addEventListener('click',async e=>{
  if(e.target.id==='shade')return close();
  if(!b){if(e.target.closest('#side a'))close();return}
  const {act,id}=b.dataset,A=id&&find(id),st=S&&S.settings;
- if(act==='menu'){$('#side').classList.add('open');$('#shade').classList.add('on')}
+ if(act==='menu'){$('#side').classList.add('open');$('#shade').classList.add('on');navShowActive(true)}
  else if(act==='close')close();
  else if(act==='detail')showDetail(id);
  else if(act==='rescan')rescan(id,$('#modal').classList.contains('on'));
  else if(act==='cat-refresh')refreshCat(id);
  else if(act==='del'){if(A&&confirm(`"${A.name}" silinsin mi?`)){S.assets=S.assets.filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();close();render();delRemote(id);toast('Varlık silindi')}}
  else if(act==='sug'){const i=$('[name=t]');if(i)i.value=b.dataset.v}
- else if(act==='goto')location.hash=b.dataset.to;
- else if(act==='bell'){const al=alerts();$('#bell').innerHTML=al.length?al.map(a=>`<a data-act="detail" data-id="${esc(a.id)}">${ic('triangle-alert')} ${esc(a.name)} <span class="badge ${sc(a)!=null?tone(sc(a)):'bd'}">${sc(a)??'!'}</span></a>`).join(''):'<div class="it hint">Bildirim yok</div>';$('#bell').classList.toggle('on');icons()}
+ else if(act==='goto'){$('#bell').classList.remove('on');location.hash=b.dataset.to}
+ else if(act==='bell'){const al=alerts(),sp=bdgUserSupport(),an=bdgUserAnn(),ad=SITE&&SITE.announcement,parts=[];
+  if(an&&ad)parts.push(`<div class="it">${ic('megaphone')} <b>Duyuru</b><div class="hint">${esc(ad.text)}</div></div>`);
+  sp.forEach(t=>parts.push(`<a data-act="goto" data-to="support">${ic('life-buoy')} #${esc(t.no)} ${esc(bdgSupTxt(t))}</a>`));
+  al.forEach(a=>parts.push(`<a data-act="detail" data-id="${esc(a.id)}">${ic('triangle-alert')} ${esc(a.name)} <span class="badge ${sc(a)!=null?tone(sc(a)):'bd'}">${sc(a)??'!'}</span></a>`));
+  $('#bell').innerHTML=parts.length?parts.join(''):'<div class="it hint">Bildirim yok</div>';$('#bell').classList.toggle('on');icons();
+  if(an&&ad&&$('#bell').classList.contains('on')){bdgSet('aseen',ad.at);bdgPaint()}}
  else if(act==='clearhist'){S.scans=[];save();render()}
  else if(act==='cur'){st.currency=b.dataset.v;save();render()}
  else if(act==='cycle'){st.cycle=b.dataset.v;save();render()}
@@ -108,7 +116,7 @@ window.dacStart=u=>{
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.assets=Array.isArray(S.assets)?S.assets.filter(a=>a&&typeof a==='object'&&CATS[a.cat]&&typeof a.id==='string'):[];S.scans=Array.isArray(S.scans)?S.scans.filter(x=>x&&!x.mock):[];S.team=Array.isArray(S.team)?S.team:[];S.projects=Array.isArray(S.projects)?S.projects:[];
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
- syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();loadPricing(true);loadSite(true);startSiteTimer();
+ syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();loadPricing(true);loadSite(true);startSiteTimer();bdgStart();
 };
 async function exportAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');busy(true);try{const r=await fetch(api+'/api/account/export',{headers:await authH()});const j=await r.json();if(!r.ok||!j.success)throw new Error(j.error||'Dışa aktarılamadı');dl('dac-verilerim-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(j,null,2));toast('Verileriniz indirildi')}catch(e){toast(e.message,'err')}busy(false)}
 async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');
@@ -119,4 +127,63 @@ async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu a
   toast('Hesabınız silindi');setTimeout(()=>{try{window.dacLogout&&window.dacLogout()}catch{}location.hash='';location.reload()},800)}catch(e){toast(e.message,'err')}busy(false)}
 // Üyelik onayı (giriş ekranındaki kutu) sunucuya kayıt olarak iletilir
 async function sendConsents(){let v=null;try{v=localStorage.getItem('dac_terms_pending')}catch{}if(!v)return;const api=apiUrl();if(!api)return;try{const h=await authH();if(!h.Authorization)return;for(const type of['terms','privacy']){const r=await fetch(api+'/api/consent',{method:'POST',headers:{'Content-Type':'application/json',...h},body:JSON.stringify({type,version:v})});if(!r.ok)return}localStorage.removeItem('dac_terms_pending')}catch{}}
-window.dacStop=()=>{BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+window.dacStop=()=>{BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;bdgStop();syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+
+/* ---------- rozetler: yönetici = kırmızı, kullanıcı = koyu mor ---------- */
+/* Yönetici: bekleyen destek + son baktığından beri yeni kullanıcı/sipariş/hata. Kullanıcı: yöneticiden gelen destek yanıtı/kapatma ve yeni duyuru. */
+var BADGE={adm:{support:0,users:0,orders:0,errors:0},sup:[],off:0,timer:null,busy:false};
+const BDG_ADM=['users','orders','errors'];
+const bdgKey=n=>'dac_bdg_'+n+'_'+(U&&U.uid||'');
+const bdgGet=(n,d)=>{try{const v=JSON.parse(localStorage.getItem(bdgKey(n)));return v==null?d:v}catch{return d}};
+const bdgSet=(n,v)=>{try{localStorage.setItem(bdgKey(n),JSON.stringify(v))}catch{}};
+const bdgNow=()=>Date.now()+(BADGE.off||0); // sunucu saatine göre (cihaz saati kaymasına karşı)
+const nbHtml=(n,c)=>n>0?`<em class="nb ${c}">${n>99?'99+':n}</em>`:'';
+const bdgAdmTotal=()=>BK.isAdmin?Object.values(BADGE.adm).reduce((a,b)=>a+(b|0),0):0;
+const nbOf=h=>h==='support'?[bdgUserSupport().length,'nb-p']:h==='admin'?[bdgAdmTotal(),'nb-r']:[0,''];
+const bdgSupTxt=t=>t.status==='closed'?'talebiniz kapatıldı':t.status==='resolved'?'talebiniz sonuçlandı':t.status==='answered'?'talebinize yanıt geldi':'talebiniz yeniden açıldı';
+function bdgUserSupport(){const base=bdgGet('sbase',0),seen=bdgGet('sseen',{});return BADGE.sup.filter(t=>t.staffAt>Math.max(base,seen[t.id]||0))}
+function bdgUserAnn(){const a=SITE&&SITE.announcement;if(!a||!a.at)return 0;return a.at>Math.max(bdgGet('abase',0),bdgGet('aseen',0))?1:0}
+function bdgSupSeen(list){const seen=bdgGet('sseen',{});let ch=false;(list||[]).forEach(t=>{if((seen[t.id]||0)<t.staffAt){seen[t.id]=t.staffAt;ch=true}});if(ch)bdgSet('sseen',seen);bdgPaint()}
+function bdgAdmSeen(tab){if(!BDG_ADM.includes(tab))return;const s=bdgGet('admseen',{});s[tab]=bdgNow();bdgSet('admseen',s);if(BADGE.adm[tab]){BADGE.adm[tab]=0;bdgPaint()}}
+function setNb(host,n,cls){if(!host)return;let el=host.querySelector(':scope > .nb');if(!n){if(el)el.remove();return}if(!el){el=document.createElement('em');host.append(el)}el.className='nb '+cls;el.textContent=n>99?'99+':String(n)}
+function bdgPaint(){
+ if(!S)return;
+ const sp=bdgUserSupport().length,an=bdgUserAnn(),adm=bdgAdmTotal();
+ document.querySelectorAll('#side .nav a[data-nb]').forEach(a=>{const [n,c]=nbOf(a.dataset.nb);setNb(a,n,c)});
+ setNb($('[data-act=bell]'),sp+an,'nb-p');
+ setNb($('[data-act=menu]'),adm||sp+an,adm?'nb-r':'nb-p');
+ if(typeof admTabs==='function'){const t=$('#adm-tabs');if(t)t.innerHTML=admTabs()}
+}
+/* sunucu çağrısı: arka plan yoklaması hiçbir zaman 2FA penceresi açmaz, hata verirse sessiz kalır */
+async function bdgFetch(path){const api=apiUrl();if(!api)return null;try{const r=await fetch(api+path,{headers:{...await authH(),...(path.startsWith('/api/admin/')?a2faH():{})}});if(!r.ok)return null;const j=await r.json();if(!j||j.success===false)return null;if(j.serverTime)BADGE.off=j.serverTime-Date.now();return j}catch{return null}}
+async function bdgUserPull(){
+ const j=await bdgFetch('/api/support/my/summary');
+ if(j&&Array.isArray(j.tickets)){if(bdgGet('sbase',null)==null)bdgSet('sbase',j.serverTime||Date.now());BADGE.sup=j.tickets}
+ if(SITE&&bdgGet('abase',null)==null)bdgSet('abase',SITE.serverTime||Date.now());
+}
+async function bdgAdminPull(){
+ if(!BK.isAdmin)return;
+ const seen=bdgGet('admseen',{});let ch=false;BDG_ADM.forEach(k=>{if(!seen[k]){seen[k]=bdgNow();ch=true}});if(ch)bdgSet('admseen',seen);
+ const j=await bdgFetch('/api/admin/badges?'+new URLSearchParams({users:seen.users,orders:seen.orders,errors:seen.errors}));
+ if(j)BADGE.adm={support:j.support|0,users:j.users|0,orders:j.orders|0,errors:j.errors|0};
+}
+async function bdgPull(){
+ if(!S||!U||BADGE.busy)return;BADGE.busy=true;
+ try{await Promise.all([bdgUserPull(),bdgAdminPull()])}catch{}
+ BADGE.busy=false;
+ const r=(location.hash.slice(1)||'').split('/')[0];
+ if(r==='support')bdgSupSeen(BADGE.sup);
+ if(r==='admin')bdgAdmSeen(BK.tab);
+ bdgPaint();
+}
+function bdgStart(){if(BADGE.timer)return;bdgPull();BADGE.timer=setInterval(()=>{if(!document.hidden)bdgPull()},60000)}
+function bdgStop(){clearInterval(BADGE.timer);BADGE.timer=null;BADGE.adm={support:0,users:0,orders:0,errors:0};BADGE.sup=[]}
+addEventListener('focus',()=>{if(S&&U)bdgPull()});
+addEventListener('hashchange',()=>{const r=(location.hash.slice(1)||'').split('/')[0];if(r==='support')bdgSupSeen(BADGE.sup);if(r==='admin')bdgAdmSeen(BK.tab)});
+
+/* ---------- yan menü: seçili öğeyi görünür tut ---------- */
+function navShowActive(center){
+ const nv=$('#side .nav'),on=nv&&nv.querySelector('a.on');if(!on)return;
+ const a=on.getBoundingClientRect(),b=nv.getBoundingClientRect();
+ if(center||a.top<b.top||a.bottom>b.bottom)nv.scrollTop=Math.max(0,a.top-b.top+nv.scrollTop-(b.height-a.height)/2);
+}

@@ -4,7 +4,7 @@ const ADMTABS=[['overview','Genel Bakış'],['users','Kullanıcılar'],['jobs','
 const admPath={overview:'/api/admin/overview',users:'/api/admin/users',jobs:'/api/admin/jobs',subs:'/api/admin/subscriptions',orders:'/api/admin/orders',errors:'/api/admin/errors',audit:'/api/admin/audit',admins:'/api/admin/admins',health:'/api/admin/health',site:'/api/admin/site',support:'/api/admin/support',ops:'/api/admin/ops',security:'/api/admin/2fa/status',platform:'/api/admin/platform'};
 async function admLoad0(tab){BK.tab=tab;const qs=tab==='users'?'?'+new URLSearchParams({q:BK.adm.uq||'',status:BK.adm.us||'all'}):tab==='subs'?'?'+new URLSearchParams({q:BK.adm.sq||'',plan:BK.adm.sp||'all'}):tab==='orders'?'?'+new URLSearchParams({status:BK.adm.os||''}):'';try{BK.adm[tab]=await bkApi('GET',admPath[tab]+qs);BK.adm.err=null}catch(e){BK.adm.err=e.message}}
 function adminPage(){if(!BK.adm[BK.tab]&&!BK.adm.err)admLoad(BK.tab).then(admPaint);return`<div class="mh"><div><h2>Yönetici Paneli</h2><div class="hint">Panel sürümü: 20261028a</div></div><button class="btn s" data-act="adm-refresh">${ic('refresh-cw')} Yenile</button></div><div class="bktabs" id="adm-tabs">${admTabs()}</div><div id="adm-body">${admBody()}</div>`}
-const admTabs=()=>ADMTABS.map(([k,l])=>`<button class="btn s${BK.tab===k?' p':''}" data-act="adm-tab" data-id="${k}">${esc(l)}</button>`).join('');
+const admTabs=()=>ADMTABS.map(([k,l])=>`<button class="btn s${BK.tab===k?' p':''}" data-act="adm-tab" data-id="${k}">${esc(l)}${nbHtml(((typeof BADGE!=='undefined'&&BADGE.adm)||{})[k==='orders'?'orders':k]|0,'nb-r')}</button>`).join('');
 function admPaint(){const t=$('#adm-tabs');if(t)t.innerHTML=admTabs();const el=$('#adm-body');if(el){el.innerHTML=admBody();icons()}}
 const av=x=>x&&x.available===false?`<span class="hint">Veri yok: ${esc(x.reason||'')}</span>`:x&&x.value!=null?String(x.value):'-';
 const kv=(l,v)=>`<div class="item"><div class="g"><b>${esc(l)}</b></div><span>${v}</span></div>`;
@@ -74,7 +74,7 @@ async function admReloadDetail(uid){
 async function admAct(act,id,b){
  if(ADM2.has(act))return ADM2_ROUTE(act,id,b);
  if(act==='adm-refresh'){await admLoad(BK.tab);return admPaint()}
- if(act==='adm-tab'){BK.tab=id;BK.adm.err=null;admPaint();await admLoad(id);return admPaint()}
+ if(act==='adm-tab'){BK.tab=id;BK.adm.err=null;bdgAdmSeen(id);admPaint();await admLoad(id);return admPaint()}
  if(act==='adm-search'){BK.adm.uq=$('#adm-uq').value.trim();BK.adm.us=$('#adm-us').value;await admLoad('users');return admPaint()}
  if(act==='adm-user'){BK.adm.detail=await bkApi('GET','/api/admin/users/'+encodeURIComponent(id));admPaint();const el=$('#adm-detail');if(el&&el.scrollIntoView)el.scrollIntoView({block:'start',behavior:'smooth'});return}
  if(act==='adm-close'){BK.adm.detail=null;return admPaint()}

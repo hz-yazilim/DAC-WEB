@@ -14,7 +14,7 @@ async function supLoad(quiet){
   const j=await bkApi('GET','/api/support/my'),sig=supSig(j.tickets);
   if(quiet&&sig===SUP.sig&&SUP.loaded){SUP.at=Date.now();SUP.loading=false;return}
   if(quiet&&supFocused()){SUP.loading=false;return} // kullanıcı yazarken ekranı yenileme; sonraki turda güncellenir
-  SUP.tickets=j.tickets;SUP.sig=sig;SUP.err=null;SUP.loaded=true;SUP.at=Date.now();supPaint();
+  SUP.tickets=j.tickets;SUP.sig=sig;SUP.err=null;SUP.loaded=true;SUP.at=Date.now();supPaint();if((location.hash.slice(1)||'').split('/')[0]==='support')bdgSupSeen(j.tickets);
  }catch(e){if(!quiet||!SUP.loaded){SUP.err=e.message;SUP.loaded=true;supPaint()}}
  SUP.loading=false;
 }

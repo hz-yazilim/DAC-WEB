@@ -37,8 +37,14 @@ module.exports = function createSupport({ db, http, mailer, SEC, verifyUser = nu
 
   /* ---------- Kullanıcı destek paneli (giriş gerekli) ---------- */
   const ticketNo = (id) => id.slice(0, 6).toUpperCase();
+  // Yönetici tarafının son işlem zamanı (yanıt / sonuçlandırma / kapatma / yeniden açma). Eski kayıtlarda yoksa yanıtlardan türetilir.
+  const staffAtOf = (t) => {
+    if (Number.isFinite(t.staffAt)) return t.staffAt;
+    let m = 0; for (const r of t.replies || []) if (r.role !== "user" && Number.isFinite(r.at) && r.at > m) m = r.at;
+    return isFinal(t.status) ? Math.max(m, t.updatedAt || 0) : m;
+  };
   // Kullanıcıya giden görünüm: yönetici kimliği (e-posta) gizlenir; yanıtlar "staff" / "user" olarak etiketlenir.
-  const userView = (id, t) => ({ id, no: ticketNo(id), subject: t.subject, category: t.category || "general", status: t.status, createdAt: t.createdAt, updatedAt: t.updatedAt,
+  const userView = (id, t) => ({ id, no: ticketNo(id), subject: t.subject, category: t.category || "general", status: t.status, createdAt: t.createdAt, updatedAt: t.updatedAt, staffAt: staffAtOf(t),
     message: t.message, replies: (t.replies || []).map((r) => ({ at: r.at, from: r.role === "user" ? "user" : "staff", message: r.message })) });
   const authed = async (req) => { if (!verifyUser) throw bad(503, "Destek paneli şu an kullanılamıyor"); if (!db) throw bad(503, "Destek sistemi şu an kullanılamıyor"); return verifyUser(req); };
   async function listMine(uid) {
@@ -89,6 +95,14 @@ module.exports = function createSupport({ db, http, mailer, SEC, verifyUser = nu
       const u = await authed(req); if (write && !userLim(u.uid)) throw bad(429, "Çok fazla mesaj gönderdiniz. Bir saat sonra tekrar deneyin.");
       res.set("Cache-Control", "no-store"); await fn(req, res, u);
     });
+    // Rozet için hafif özet (tam mesajlar yok); kendi hız sınırı vardır
+    const sumIpLim = SEC.makeLimiter(SEC.int(process.env.SUPPORT_SUMMARY_IP_LIMIT, 600), 10 * 60 * 1000);
+    app.get("/api/support/my/summary", wrap(async (req, res) => {
+      if (!sumIpLim(req.ip)) throw bad(429, "Çok fazla istek. Biraz sonra tekrar deneyin.");
+      const u = await authed(req); res.set("Cache-Control", "no-store");
+      const snap = await db.collection("supportTickets").where("uid", "==", u.uid).limit(100).get();
+      res.json({ success: true, serverTime: now(), tickets: snap.docs.map((d) => { const t = d.data(); return { id: d.id, no: ticketNo(d.id), subject: t.subject, status: t.status, staffAt: staffAtOf(t), updatedAt: t.updatedAt }; }) });
+    }));
     app.get("/api/support/my", panel(async (req, res, u) => res.json({ success: true, categories: CATEGORIES, tickets: await listMine(u.uid) })));
     app.post("/api/support/my", panel(async (req, res, u) => res.json({ success: true, ticket: await createMine(u, req.body || {}) }), { write: true }));
     app.post("/api/support/my/:id/reply", panel(async (req, res, u) => res.json({ success: true, ticket: await replyMine(u, String(req.params.id), req.body || {}) }), { write: true }));

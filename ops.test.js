@@ -320,3 +320,22 @@ test("Abonelik iptali: yönetici dönem sonu iptali bayrak yazar, geri alabilir;
   assert.equal((await jpost(s, "/api/admin/users/yok/subscription/resume", A, {})).status, 404);
   await jpost(s, "/api/admin/users/s/subscription/cancel", A, {}); assert.equal(h2.db.store["subscriptions/s"].cancelAtPeriodEnd, true); s.close();
 });
+
+// ================= ROZETLER: kullanıcı destek özeti (staffAt) + duyuru yayın zamanı =================
+test("Rozet: destek özeti yalnızca kendi talepleri + yönetici işlem zamanı (staffAt); duyuru yayın zamanı (at) yalnızca yeni/değişen duyuruda yenilenir", async () => {
+  const db = memFsWhere(), H = fakeHttp(), mailer = LOAD("mailer")({ db, http: H });
+  const S = LOAD("support")({ db, http: H, mailer, SEC: LOAD("security"), verifyUser: supVerify }); const app = express(); app.use(express.json()); S.mount(app); const s = await listen(app);
+  const U1 = as("u1"), get = (p, h) => fetch(url(s, p), { headers: h });
+  assert.equal((await get("/api/support/my/summary", {})).status, 401, "girişsiz erişilemez");
+  const c = await (await jpost(s, "/api/support/my", U1, { subject: "Fatura sorunu", message: "Faturamı alamadım lütfen yardım edin" })).json(), id = c.ticket.id;
+  let sm = await (await get("/api/support/my/summary", U1)).json(); assert.equal(sm.tickets.length, 1); assert.equal(sm.tickets[0].staffAt, 0, "yönetici işlemi yok → 0"); assert.ok(!("message" in sm.tickets[0]) && sm.serverTime > 0);
+  assert.equal((await (await get("/api/support/my/summary", as("u2"))).json()).tickets.length, 0, "başka kullanıcı görmez");
+  db.store["supportTickets/" + id] = { ...db.store["supportTickets/" + id], status: "closed", updatedAt: 5000, staffAt: 7000 };
+  sm = await (await get("/api/support/my/summary", U1)).json(); assert.equal(sm.tickets[0].staffAt, 7000); assert.equal(sm.tickets[0].status, "closed");
+  delete db.store["supportTickets/" + id].staffAt; sm = await (await get("/api/support/my/summary", U1)).json(); assert.equal(sm.tickets[0].staffAt, 5000, "eski kayıtta kapalı talep → updatedAt");
+  s.close();
+  let t = 1000; const C = LOAD("commerce")({ db: memFs(), PLANS: require("./plans"), now: () => t }), by = { email: "a@b.com" };
+  await C.saveSite({ announcement: { enabled: true, text: "Bakım var", level: "info" } }, by); const a1 = (await C.publicSite()).announcement.at; assert.equal(a1, 1000);
+  t = 2000; await C.saveSite({ announcement: { enabled: true, text: "Bakım var", level: "info" } }, by); assert.equal((await C.publicSite()).announcement.at, 1000, "aynı duyuru yeniden kaydedilince rozet yenilenmez");
+  t = 3000; await C.saveSite({ announcement: { enabled: true, text: "Yeni metin", level: "info" } }, by); assert.equal((await C.publicSite()).announcement.at, 3000, "metin değişince yeni duyuru");
+});

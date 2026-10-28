@@ -128,6 +128,27 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
       timings: snap.series, health: await getHealth(), recentErrors: metrics.recentErrors(10) });
   }));
 
+  /* Menü rozetleri: destek (bekleyen), yeni kullanıcı / sipariş / hata (istemcinin son baktığı zamandan beri). Hafif; arka planda yoklanır. */
+  let createdCache = { at: 0, val: [] };
+  async function userCreations() {
+    if (!authOk()) return [];
+    if (now() - createdCache.at < 120000) return createdCache.val;
+    const CAP = SEC.int(process.env.ADMIN_USER_SCAN_CAP, 20000), arr = []; let token;
+    do { const page = await admin.auth().listUsers(1000, token); for (const u of page.users) { const t = u.metadata && u.metadata.creationTime ? Date.parse(u.metadata.creationTime) : 0; if (t) arr.push(t); } token = page.pageToken; if (arr.length >= CAP && token) break; } while (token);
+    createdCache = { at: now(), val: arr }; return arr;
+  }
+  app.get("/api/admin/badges", guard, wrap(async (req, res) => {
+    const since = (k) => { const v = Number(req.query[k]); return Number.isFinite(v) && v > 0 ? v : now(); }; // süre verilmezse "şimdi": eskiler yeni sayılmaz
+    const su = since("users"), so = since("orders"), se = since("errors"), out = { success: true, serverTime: now(), support: 0, users: 0, orders: 0, errors: 0 };
+    if (db) {
+      out.support = (await countOf(db.collection("supportTickets").where("status", "==", "open"))) || 0;
+      try { const snap = await db.collection("orders").orderBy("createdAt", "desc").limit(100).get(); out.orders = snap.docs.filter((d) => { const o = d.data(); return o.status === "paid" && (ts(o.paidAt) || ts(o.createdAt) || 0) > so; }).length; } catch { /* sayılamadı */ }
+    }
+    try { out.users = (await userCreations()).filter((t) => t > su).length; } catch { /* kullanıcı listesi alınamadı */ }
+    try { out.errors = metrics.recentErrors(200).filter((e) => Date.parse(e.at) > se).length; } catch { /* hata kaydı yok */ }
+    res.json(out);
+  }));
+
   app.get("/api/admin/health", guard, wrap(async (req, res) => res.json({ success: true, health: await getHealth(), jobs: await jobs.stats().catch(() => null) })));
   app.get("/api/admin/errors", guard, wrap(async (req, res) => res.json({ success: true, volatile: true, errors: metrics.recentErrors(Math.min(200, +req.query.limit || 100)) })));
 
