@@ -730,6 +730,106 @@ const normStatus = (s) => String(s).toLowerCase().replace(/[\s_-]/g, "");
 // Transfer kilidi anlamlı olan (EPP) uzantılar
 const LOCKABLE_TLDS = new Set(["com", "net", "org", "info", "biz", "io", "co", "app", "dev", "online", "store", "tech", "ai", "xyz", "site", "me", "us", "mobi", "tv", "cc", "club", "shop"]);
 
+// ---------- v13.5: tarih ayrıştırma, WHOIS yedeği, bitiş profili ----------
+const EXPIRY_ACTIONS = ["expiration", "expiry", "expiration date", "registrar expiration", "registry expiry date", "expires", "expire", "expiry date"];
+// Bitiş tarihini herkese açık yayınlamayan uzantılar (RDAP ve WHOIS'te de yoktur; yalnızca kayıt kuruluşu panelinde görünür)
+const NO_PUBLIC_EXPIRY = new Set(["de", "nl", "eu", "ch", "li", "at", "be"]);
+const MON3 = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+function parseLooseDate(input) {
+  if (input == null) return null;
+  if (input instanceof Date) return Number.isNaN(input.getTime()) ? null : input;
+  let s = String(input).trim().replace(/\s*\(.*?\)\s*$/, "").replace(/[.\s]+$/, "").replace(/\s+(UTC|GMT)$/i, "");
+  if (!s) return null;
+  const mk = (y, mo, d, hh, mi, ss) => { const dt = new Date(Date.UTC(+y, +mo, +d, +(hh || 0), +(mi || 0), +(ss || 0))); return dt.getUTCFullYear() === +y && dt.getUTCMonth() === +mo && dt.getUTCDate() === +d ? dt : null; };
+  let m;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) { const t = Date.parse(s); return Number.isFinite(t) ? new Date(t) : null; }
+  if ((m = s.match(/^(\d{4})-([A-Za-z]{3})[a-z]*-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/))) { const mo = MON3[m[2].toLowerCase()]; return mo == null ? null : mk(m[1], mo, m[3], m[4], m[5], m[6]); }
+  if ((m = s.match(/^(\d{1,2})[-\s]([A-Za-z]{3})[a-z]*[-\s](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/))) { const mo = MON3[m[2].toLowerCase()]; return mo == null ? null : mk(m[3], mo, m[1], m[4], m[5], m[6]); }
+  if ((m = s.match(/^([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})/))) { const mo = MON3[m[1].toLowerCase()]; return mo == null ? null : mk(m[3], mo, m[2]); }
+  if ((m = s.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/))) return mk(m[1], +m[2] - 1, m[3], m[4], m[5], m[6]);
+  if ((m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/))) return mk(m[3], +m[2] - 1, m[1]);
+  if ((m = s.match(/^(\d{4})(\d{2})(\d{2})$/))) return mk(m[1], +m[2] - 1, m[3]);
+  const t = Date.parse(s); return Number.isFinite(t) ? new Date(t) : null;
+}
+// WHOIS metnini ayrıştırır (Verisign/ICANN, nic.tr, Nominet, JPRS vb. biçimleri). Uydurma yok: bulunamayan alan null kalır.
+function parseWhois(textIn) {
+  const text = String(textIn || "").slice(0, 200000); const lines = text.split(/\r?\n/);
+  const out = { expiry: null, created: null, updated: null, registrar: null, statuses: [], nameservers: [], notFound: false };
+  const pick = (labels) => { for (const l of lines) { const m = l.match(new RegExp("^\\s*(?:" + labels + ")\\b[.\\s]*:\\s*(.+?)\\s*$", "i")); if (m && m[1] && !/^(n\/a|-|none|not disclosed|redacted.*)$/i.test(m[1])) { const d = parseLooseDate(m[1]); if (d) return d; } } return null; };
+  out.expiry = pick("Registry Expiry Date") || pick("Registrar Registration Expiration Date|Expiration Date|Expiry Date|Expires On|Expires|Expire Date|Expire|Renewal Date|paid-till|Expiration Time|Domain Expiration Date|Valid Until");
+  out.created = pick("Creation Date|Created On|Created|Registered On|Registered|Registration Time|Domain Registration Date");
+  out.updated = pick("Updated Date|Last Updated|Last Modified|Last Update|Modified|Changed");
+  const txt = (labels) => { for (const l of lines) { const m = l.match(new RegExp("^\\s*(?:" + labels + ")\\b[.\\s]*:\\s*(.+?)\\s*$", "i")); if (m && m[1] && m[1].trim()) return m[1].trim(); } return null; };
+  out.registrar = txt("Sponsoring Registrar|Registrar Name|Registrar");
+  if (!out.registrar) { const i = lines.findIndex(l => /^\s*\*\*\s*Registrar/i.test(l)); if (i >= 0) { for (let k = i + 1; k < Math.min(lines.length, i + 12); k++) { const m = lines[k].match(/Organization Name\s*:\s*(.+?)\s*$/i); if (m) { out.registrar = m[1]; break; } if (/^\s*\*\*/.test(lines[k])) break; } } }
+  for (const l of lines) { const m = l.match(/^\s*(?:Domain Status|Status|state)\s*:\s*([A-Za-z][A-Za-z -]*[A-Za-z])(?:\s+https?:\S+)?\s*$/i); if (m && !/^(active|ok|registered)$/i.test(m[1].trim()) ) out.statuses.push(m[1].replace(/\s+/g, "")); else if (m) out.statuses.push(m[1].trim()); }
+  out.statuses = [...new Set(out.statuses)].slice(0, 12);
+  const ns = new Set();
+  for (const l of lines) { const m = l.match(/^\s*(?:Name Server|Nameserver|nserver|Name servers?)\s*:\s*([A-Za-z0-9._-]+\.[A-Za-z]{2,})/i); if (m) ns.add(m[1].toLowerCase().replace(/\.$/, "")); }
+  const di = lines.findIndex(l => /^\s*\*\*\s*Domain Servers/i.test(l));
+  if (di >= 0) for (let k = di + 1; k < Math.min(lines.length, di + 12); k++) { const v = lines[k].trim(); if (!v) { if (ns.size) break; continue; } if (/^\*\*/.test(v)) break; const m = v.match(/^([A-Za-z0-9._-]+\.[A-Za-z]{2,})\b/); if (m) ns.add(m[1].toLowerCase()); }
+  out.nameservers = [...ns].slice(0, 13);
+  if (!out.expiry && !out.created && !out.registrar && /(^|\n)\s*%?\s*(No match for|NOT FOUND|No Data Found|Domain not found|No entries found|No match|Status:\s*(AVAILABLE|free)\b|.*is available for registration|The queried object does not exist)/i.test(text)) out.notFound = true;
+  return out;
+}
+const WHOIS_OVERRIDE = { tr: "whois.nic.tr", com: "whois.verisign-grs.com", net: "whois.verisign-grs.com", org: "whois.pir.org", io: "whois.nic.io", ai: "whois.nic.ai", co: "whois.nic.co", uk: "whois.nic.uk", info: "whois.afilias.net", biz: "whois.nic.biz", me: "whois.nic.me", app: "whois.nic.google", dev: "whois.nic.google", xyz: "whois.nic.xyz", online: "whois.nic.online" };
+const whoisSrvCache = new Map();
+function whoisQuery(server, query, timeout = 9000, maxBytes = 120000, port = 43) {
+  return new Promise((resolve, reject) => {
+    if (!/^[a-z0-9][a-z0-9.-]{2,252}$/i.test(String(server)) || blockedHost(server)) return reject(new Error("WHOIS sunucusu geçersiz"));
+    let buf = "", done = false; const sock = new net.Socket(); let timer;
+    const fin = (err) => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); if (err && !buf) reject(err); else resolve(buf); };
+    timer = setTimeout(() => fin(buf ? null : new Error("WHOIS zaman aşımı")), timeout);
+    sock.on("data", d => { buf += d.toString("utf8"); if (buf.length > maxBytes) fin(null); });
+    sock.on("error", fin); sock.on("end", () => fin(null)); sock.on("close", () => fin(null));
+    sock.connect({ port, host: server, lookup: safeLookup }, () => sock.write(String(query).replace(/[\r\n]/g, "") + "\r\n"));
+  });
+}
+async function whoisServerFor(tld) {
+  if (WHOIS_OVERRIDE[tld]) return WHOIS_OVERRIDE[tld];
+  const hit = whoisSrvCache.get(tld); if (hit && Date.now() - hit.at < 864e5) return hit.server;
+  let server = null;
+  try { const r = await whoisQuery("whois.iana.org", tld, 7000, 30000); const m = r.match(/^\s*whois:\s*([a-z0-9.-]+)\s*$/im); server = m ? m[1].toLowerCase() : null; } catch { /* IANA yanıt vermedi */ }
+  if (whoisSrvCache.size > 300) whoisSrvCache.clear(); whoisSrvCache.set(tld, { at: Date.now(), server }); return server;
+}
+async function fetchWhois(domain, errors) {
+  const tld = domain.split(".").pop();
+  try {
+    const server = await whoisServerFor(tld);
+    if (!server) { errors.push(`WHOIS sunucusu bulunamadı (.${tld})`); return null; }
+    const p = parseWhois(await whoisQuery(server, domain)); p.server = server;
+    if (!p.expiry && !p.notFound) errors.push(`WHOIS ${server}: bitiş tarihi bulunamadı`);
+    return p;
+  } catch (e) { errors.push("WHOIS hata: " + e.message); return null; }
+}
+// İnce kayıt defterleri (ör. .com) bitişi vermezse kayıt kuruluşunun RDAP'ı (links.related) izlenir
+async function followRelatedRdap(data, errors) {
+  const link = (Array.isArray(data && data.links) ? data.links : []).find(l => String(l && l.rel).toLowerCase() === "related" && /rdap/i.test(String(l.type || l.href || "")) && /^https:\/\//i.test(String(l.href || "")));
+  if (!link) return data;
+  try {
+    const r = await request(link.href, { timeout: 8000, headers: { Accept: "application/rdap+json, application/json" }, maxBytes: 600000 });
+    if (r.status !== 200) { errors.push(`RDAP related status:${r.status}`); return data; }
+    const j = JSON.parse(r.body); if (!j || typeof j !== "object" || !Array.isArray(j.events)) return data;
+    return { ...data, events: [...(data.events || []), ...j.events], status: [...new Set([...(Array.isArray(data.status) ? data.status : []), ...(Array.isArray(j.status) ? j.status : [])])], nameservers: (data.nameservers && data.nameservers.length) ? data.nameservers : j.nameservers, entities: (data.entities && data.entities.length) ? data.entities : j.entities };
+  } catch (e) { errors.push("RDAP related hata: " + e.message); return data; }
+}
+async function fetchRegistration(domain, errors) {
+  let rdap; try { rdap = await fetchRdap(domain, errors); } catch (e) { errors.push("RDAP hata: " + e.message); rdap = { data: null, noRdap: false }; }
+  const hasExp = (d) => !!(d && toDateOrNull(rdapDate(d, EXPIRY_ACTIONS)));
+  if (rdap.data && !hasExp(rdap.data)) rdap = { ...rdap, data: await followRelatedRdap(rdap.data, errors) };
+  if (!hasExp(rdap.data)) { const w = await withTimeout(fetchWhois(domain, errors), 16000, "WHOIS").catch(() => null); if (w) rdap = { ...rdap, whois: w }; }
+  return rdap;
+}
+// Bitiş durumu + yaşam döngüsü (kalan güne ve EPP durum kodlarına göre)
+function expiryProfile(days, statuses) {
+  const st = (statuses || []).map(normStatus); let phase = "ACTIVE";
+  if (st.some(x => /pendingdelete/.test(x))) phase = "PENDING_DELETE"; else if (st.some(x => /redemption/.test(x))) phase = "REDEMPTION";
+  else if (st.some(x => /autorenewperiod|renewperiod/.test(x))) phase = "GRACE"; else if (st.some(x => /serverhold|clienthold/.test(x))) phase = "ON_HOLD";
+  const state = days == null ? "UNKNOWN" : days < 0 ? "EXPIRED" : days <= 7 ? "CRITICAL" : days <= 14 ? "URGENT" : days <= 30 ? "SOON" : days <= 60 ? "WATCH" : "OK";
+  return { state, phase };
+}
+const isoDay = (d) => d.toISOString().slice(0, 10);
+
 // ---------- Subdomain keşfi + dangling CNAME / takeover ----------
 const TAKEOVER_SIGS = [
   { p: "github.io", body: /There isn't a GitHub Pages site here/i }, { p: "herokuapp.com", body: /no such app|herokucdn\.com\/error-pages/i }, { p: "herokudns.com", body: /no such app/i },
@@ -790,7 +890,7 @@ async function checkDnsbl(ips) {
 // 2. DOMAIN SCANNER v12
 // =====================================================================
 async function scanDomain(input, extra = {}) {
-  const startedAt = Date.now(); const V = "domain-analyzer-v12.0"; const errors = [];
+  const startedAt = Date.now(); const V = "domain-analyzer-v13.5"; const errors = [];
   const debug = { input, parsedDomain: null, txtRaw: null, dmarcRaw: null, rdapAttempts: [] };
   const inputHost = parseDomain(input);
   if (!inputHost) return { data: null, findings: ["finding_domain_invalid_critical"], errors: ["domain parse edilemedi"], debug };
@@ -830,7 +930,7 @@ async function scanDomain(input, extra = {}) {
   })();
   const [nsHealth, rdap, ctRes, mailPolicies, dnssecResult, spf, dmarcTxt, dkimFound, takeRows, bl] = await Promise.all([
     dnsRecords.ns.length ? withTimeout(checkNameservers(domain, dnsRecords.ns), 10000, "NS").catch(() => null) : null,
-    withTimeout(fetchRdap(domain, errs2), 20000, "RDAP").catch(() => ({ data: null, noRdap: false, timeout: true })),
+    withTimeout(fetchRegistration(domain, errs2), 40000, "RDAP/WHOIS").catch(() => ({ data: null, noRdap: false, timeout: true })),
     ctPromise,
     hasMx ? checkMailPolicies(domain).catch(() => null) : null,
     checkDnssec(domain, dnsRecords.ds).catch(() => ({ enabled: false, status: STATUS.UNKNOWN, method: "ERROR" })),
@@ -926,31 +1026,42 @@ async function scanDomain(input, extra = {}) {
   else if (dnssecStatus === STATUS.INACTIVE) { c.add(false, 25, "finding_domain_missing_dnssec_warning", "security"); }
   else info.push("finding_domain_dnssec_unknown_warning");
 
-  // ---- RDAP ----
+  // ---- Kayıt ve bitiş: RDAP, olmazsa WHOIS yedeği ----
   let registrar = null, registrarStatus = STATUS.UNKNOWN, createdAt = null, updatedAt = null, expiration = null, daysUntilExpiry = null;
-  let transferLocked = null, transferLockStatus = TRANSFER_LOCK_STATUS.UNKNOWN, statuses = [], domainAgeDays = null;
-  if (rdap.data) {
-    registrar = extractRegistrar(rdap.data); registrarStatus = registrar ? "FOUND" : STATUS.UNKNOWN;
+  let transferLocked = null, transferLockStatus = TRANSFER_LOCK_STATUS.UNKNOWN, statuses = [], domainAgeDays = null, registryNs = [], regSource = null, regProfile = { state: "UNKNOWN", phase: "ACTIVE" };
+  const wh = rdap.whois || null, tldOf = domain.split(".").pop();
+  const whHas = !!(wh && (wh.expiry || wh.created || wh.registrar || (wh.statuses && wh.statuses.length)));
+  if (wh && wh.notFound && !rdap.data) rdap.notFound = true;
+  if (rdap.data || whHas) {
+    const rd = rdap.data;
+    registrar = (rd ? extractRegistrar(rd) : null) || (wh && wh.registrar) || null; registrarStatus = registrar ? "FOUND" : STATUS.UNKNOWN;
     if (!registrar) info.push("finding_domain_registrar_unknown_warning");
-    createdAt = toDateOrNull(rdapDate(rdap.data, ["registration", "registered", "creation", "created"]));
-    updatedAt = toDateOrNull(rdapDate(rdap.data, ["last changed", "last update", "last updated", "updated"]));
-    expiration = toDateOrNull(rdapDate(rdap.data, ["expiration", "expiry", "expiration date", "registrar expiration", "registry expiry date"]));
+    createdAt = toDateOrNull(rd ? rdapDate(rd, ["registration", "registered", "creation", "created"]) : null) || (wh && wh.created) || null;
+    updatedAt = toDateOrNull(rd ? rdapDate(rd, ["last changed", "last update", "last updated", "updated"]) : null) || (wh && wh.updated) || null;
+    expiration = toDateOrNull(rd ? rdapDate(rd, EXPIRY_ACTIONS) : null) || (wh && wh.expiry) || null;
+    regSource = rd ? rdap.source : (whHas ? `whois://${wh.server}` : null);
     if (createdAt) domainAgeDays = daysSince(createdAt);
+    statuses = rd ? rdapStatuses(rd) : []; if (!statuses.length && wh) statuses = wh.statuses || [];
+    registryNs = rd && Array.isArray(rd.nameservers) ? rd.nameservers.map(n => String((n && (n.ldhName || n.unicodeName)) || "").toLowerCase().replace(/\.$/, "")).filter(Boolean) : (wh ? wh.nameservers || [] : []);
     if (expiration) {
       daysUntilExpiry = daysUntil(expiration);
       c.add(daysUntilExpiry >= 0, 50, "finding_domain_expired_critical", "renewal");
       if (daysUntilExpiry >= 0) { c.add(daysUntilExpiry >= 14, 20, "finding_domain_expiring_critical_critical", "renewal"); c.add(daysUntilExpiry >= 30 || daysUntilExpiry < 14, 15, "finding_domain_expiring_soon_warning", "renewal"); c.add(daysUntilExpiry >= 60 || daysUntilExpiry < 30, 15, "finding_domain_expiring_soon_info", "renewal"); }
-    } else info.push("finding_domain_missing_expiry_warning");
-    statuses = rdapStatuses(rdap.data); const ns = statuses.map(normStatus);
-    if (ns.some(s => /serverhold|clienthold/.test(s))) c.add(false, 20, "finding_domain_on_hold_critical", "security");
-    if (ns.some(s => /pendingdelete|redemption/.test(s))) c.add(false, 20, "finding_domain_redemption_critical", "security");
+    } else info.push(NO_PUBLIC_EXPIRY.has(tldOf) ? "finding_domain_expiry_not_published_info" : "finding_domain_missing_expiry_warning");
+    regProfile = expiryProfile(daysUntilExpiry, statuses);
+    const ns = statuses.map(normStatus);
+    if (ns.some(x => /serverhold|clienthold/.test(x))) c.add(false, 20, "finding_domain_on_hold_critical", "security");
+    if (ns.some(x => /pendingdelete|redemption/.test(x))) c.add(false, 20, "finding_domain_redemption_critical", "security");
     if (ns.length) {
-      transferLocked = ns.some(s => s.includes("transferprohibited"));
+      transferLocked = ns.some(x => x.includes("transferprohibited"));
       transferLockStatus = transferLocked ? TRANSFER_LOCK_STATUS.LOCKED : TRANSFER_LOCK_STATUS.UNLOCKED;
       if (transferLocked) { findings.push("DOMAIN_TRANSFER_LOCKED"); c.add(true, 15, null, "security"); }
-      else if (LOCKABLE_TLDS.has(domain.split(".").pop())) c.add(false, 15, "finding_domain_transfer_unlocked_warning", "security");
+      else if (LOCKABLE_TLDS.has(tldOf)) c.add(false, 15, "finding_domain_transfer_unlocked_warning", "security");
       else info.push("finding_domain_transfer_unlocked_info");
     } else info.push("finding_domain_transfer_lock_unknown_warning");
+    // Kayıt defterindeki NS listesi ile canlı DNS'in NS listesi farklıysa delegasyon bozuk olabilir
+    const norm = (a) => [...new Set(a.map(x => String(x).toLowerCase().replace(/\.$/, "")))].sort().join(",");
+    if (registryNs.length && dnsRecords.ns.length && norm(registryNs) !== norm(dnsRecords.ns)) info.push("finding_domain_ns_delegation_mismatch_info");
   } else if (rdap.notFound && !dnsRecords.ns.length) { info.push("finding_domain_not_registered_critical"); }
   else if (rdap.noRdap) { registrarStatus = "NO_RDAP"; info.push("finding_domain_registry_no_rdap_info"); }
   else { errors.push("RDAP tüm endpointler başarısız"); registrarStatus = "LOOKUP_FAILED"; info.push("finding_domain_rdap_failed_warning"); }
@@ -1003,13 +1114,15 @@ async function scanDomain(input, extra = {}) {
       dkimSelector: dkimList[0]?.selector || null, dkimValid: dkimList.length > 0, dkimSelectors: dkimList.map(k => `${k.selector} (${k.keyType}${k.bits ? " " + k.bits + " bit" : ""}${k.revoked ? ", iptal" : ""}${k.testMode ? ", test modu" : ""})`),
       mtaSts: mailPolicies ? mailPolicies.mtaSts : null, tlsRpt: mailPolicies ? mailPolicies.tlsRpt : null, bimi: mailPolicies ? mailPolicies.bimi : null
     },
-    registration: { registrar, registrarStatus, createdAt, updatedAt, expiresAt: expiration, remainingDays: daysUntilExpiry, domainAgeDays, transferLocked, transferLockStatus, statuses, source: rdap.source || null, target: domain },
+    registration: { registrar, registrarStatus, createdAt, updatedAt, expiresAt: expiration, remainingDays: daysUntilExpiry, domainAgeDays, transferLocked, transferLockStatus, statuses, source: regSource, target: domain,
+      expiryState: regProfile.state, lifecyclePhase: regProfile.phase, expiredDaysAgo: daysUntilExpiry != null && daysUntilExpiry < 0 ? -daysUntilExpiry : null, dataSource: rdap.data ? "RDAP" : whHas ? "WHOIS" : null, whoisServer: whHas ? wh.server : null, expiryPublished: !NO_PUBLIC_EXPIRY.has(tldOf),
+      reminderDates: expiration ? Object.fromEntries([60, 30, 14, 7].map(n => [`d${n}`, isoDay(new Date(expiration.getTime() - n * 864e5))])) : null, registryNameservers: registryNs },
     subdomains: { certificateTransparency: ctRes.ok ? "ok" : "failed", discovered: ctRes.names.length, sample: ctRes.names.slice(0, 25), cnameChecked: takeRows.length, takeoverRisks: takeovers.map(t => `${t.host} → ${t.cname} (${t.evidence})`), danglingCnames: dangling.map(t => `${t.host} → ${t.cname}`) },
     scores,
     threatAnalysis: { blacklistStatus: bl.status, blacklistHits: bl.hits.map(h => `${h.ip} → ${h.list}`), blacklistCheckedIps: bl.checkedIps, subdomainTakeoverRisk: takeovers.length > 0, takeoverEvidence: takeovers[0] ? `${takeovers[0].host} → ${takeovers[0].cname}` : null, typosquattingRisk: "BRAND taramasında kontrol edilir", target: domain },
     debug
   };
-  const unknownCount = [!rdap.data, dnssecStatus === STATUS.UNKNOWN, bl.status === "NOT_CHECKED", !nsHealth || nsHealth.inconclusive].filter(Boolean).length;
+  const unknownCount = [!rdap.data && !whHas, dnssecStatus === STATUS.UNKNOWN, bl.status === "NOT_CHECKED", !nsHealth || nsHealth.inconclusive].filter(Boolean).length;
   const commonAnalysis = { analyzerVersion: V, executionTimeMs: Date.now() - startedAt, findings: allF, scannedAt: new Date().toISOString(), score: overall, status, target: domain };
   return {
     data: { assetType: "DOMAIN", commonAnalysis, specificAnalysis, analysisMeta: { scannerVersion: V, analyzer: "domain" }, target: domain, dnsProvider, registrar, remainingDays: daysUntilExpiry, transferLocked },
@@ -1020,7 +1133,7 @@ async function scanDomain(input, extra = {}) {
 // =====================================================================
 // IP / PLATFORM / TLS YARDIMCILARI
 // =====================================================================
-async function ipInfo(ip) {
+async function ipInfoWeb(ip) {
   try {
     const r = await axios.get(`https://ipwho.is/${encodeURIComponent(ip)}`, { timeout: 6000, validateStatus: () => true, proxy: false });
     if (r.data && r.data.success) return { ip, country: r.data.country || null, countryCode: r.data.country_code || null, city: r.data.city || null, region: r.data.region || null, asn: r.data.connection?.asn || null, org: r.data.connection?.org || null, isp: r.data.connection?.isp || null };
@@ -1030,6 +1143,28 @@ async function ipInfo(ip) {
     if (r.data && !r.data.error && r.data.ip) return { ip, country: r.data.country_name || null, countryCode: r.data.country_code || null, city: r.data.city || null, region: r.data.region || null, asn: r.data.asn ? Number(String(r.data.asn).replace(/\D/g, "")) : null, org: r.data.org || null, isp: r.data.org || null };
   } catch {}
   return { ip, country: null, countryCode: null, city: null, region: null, asn: null, org: null, isp: null };
+}
+// Team Cymru IP→ASN (DNS TXT): HTTP API'leri sınırlanınca bile ASN, kuruluş ve ülke verir
+async function cymruAsn(ip) {
+  let q;
+  if (net.isIPv4(ip)) q = ip.split(".").reverse().join(".") + ".origin.asn.cymru.com";
+  else if (net.isIPv6(ip)) { const b = ipv6ToBytes(ip); if (!b) return null; q = b.map(x => x.toString(16).padStart(2, "0")).join("").split("").reverse().join(".") + ".origin6.asn.cymru.com"; }
+  else return null;
+  const r = await dq("resolveTxt", q); const line = r.data.length ? [].concat(r.data[0]).join("") : "";
+  const m = line.match(/^\s*(\d+)(?:\s+\d+)*\s*\|\s*([^|]*)\|\s*([A-Za-z]{2})?\s*\|/); if (!m) return null;
+  const asn = Number(m[1]), cc = (m[3] || "").toUpperCase() || null;
+  const r2 = await dq("resolveTxt", `AS${asn}.asn.cymru.com`); const l2 = r2.data.length ? [].concat(r2.data[0]).join("") : "";
+  const nm = (l2.split("|")[4] || "").trim().replace(/,\s*[A-Z]{2}$/, "") || null;
+  let country = cc; try { if (cc) country = new Intl.DisplayNames(["tr"], { type: "region" }).of(cc) || cc; } catch {}
+  return { asn, org: nm, country, countryCode: cc, prefix: (m[2] || "").trim() || null };
+}
+const IPINFO_CACHE = new Map();
+async function ipInfo(ip) {
+  const hit = IPINFO_CACHE.get(ip); if (hit && Date.now() - hit.at < 6 * 36e5) return hit.v;
+  let v = await ipInfoWeb(ip); v.source = v.org || v.country ? "web" : null;
+  if (!v.org || !v.asn) { const cy = await cymruAsn(ip).catch(() => null); if (cy) v = { ...v, asn: v.asn || cy.asn, org: v.org || cy.org, isp: v.isp || cy.org, country: v.country || cy.country, countryCode: v.countryCode || cy.countryCode, prefix: cy.prefix, source: v.source ? v.source + "+cymru" : "cymru" }; }
+  if (v.org || v.country) { if (IPINFO_CACHE.size > 500) IPINFO_CACHE.clear(); IPINFO_CACHE.set(ip, { at: Date.now(), v }); }
+  return v;
 }
 const DDOS_CAPABLE = ["Cloudflare", "AWS CloudFront", "Akamai", "Fastly", "Sucuri", "Imperva", "DDoS-Guard", "Azure Front Door", "Vercel", "Netlify", "Google Cloud CDN", "Bunny CDN", "KeyCDN", "StackPath"];
 function detectPlatforms(h, geo) {
@@ -1079,11 +1214,12 @@ function derSignatureAlgorithm(der) {
     const o = parts.join("."); return { oid: o, name: SIG_OIDS[o] || o };
   } catch { return null; }
 }
-function getTlsDetails(host, port = 443, timeout = 7000) {
+function getTlsDetails(host, port = 443, timeout = 7000, opts = {}) {
   return new Promise((resolve, reject) => {
-    if (blockedHost(host)) return reject(privateError());
+    const target = opts.ip || host;
+    if (blockedHost(host) || blockedHost(target)) return reject(privateError());
     let ocsp = false, settled = false; const finish = (fn, v) => { if (settled) return; settled = true; fn(v); };
-    const socket = tlsMod.connect({ host, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: false, ALPNProtocols: ["h2", "http/1.1"], requestOCSP: true, lookup: safeLookup, timeout }, () => {
+    const socket = tlsMod.connect({ host: target, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: false, ALPNProtocols: ["h2", "http/1.1"], requestOCSP: true, lookup: safeLookup, timeout }, () => {
       try {
         const cert = socket.getPeerCertificate(true);
         if (!cert || !Object.keys(cert).length) { socket.destroy(); return finish(reject, new Error("Sertifika alınamadı")); }
@@ -1136,7 +1272,7 @@ function parseHostPort(input, defPort) {
 // =====================================================================
 const SSL_PORTS = new Set([443, 465, 636, 853, 993, 995, 8443, 9443]);
 async function scanSslCertificate(input, extra = {}) {
-  const startedAt = Date.now(); const V = "ssl-analyzer-v12.0"; const errors = []; const findings = []; const c = makeChecker();
+  const startedAt = Date.now(); const V = "ssl-analyzer-v13.5"; const errors = []; const findings = []; const c = makeChecker();
   const hp = parseHostPort(input, 443); const host = hp.host && (net.isIP(hp.host) || hp.host.includes(".")) ? hp.host : null;
   if (host && !SSL_PORTS.has(hp.port)) return { data: null, findings: ["finding_ssl_invalid_target_critical"], errors: ["Desteklenmeyen SSL portu (izin verilenler: " + [...SSL_PORTS].join(", ") + ")"], statusHint: "INVALID" };
   if (!host) return { data: null, findings: ["finding_ssl_invalid_target_critical"], errors: ["geçersiz hedef"], statusHint: "INVALID" };
@@ -1149,6 +1285,15 @@ async function scanSslCertificate(input, extra = {}) {
       specific: { domain: host, port: hp.port, cert: { valid: false, error: e.message, errorKind: ni.kind }, note: "TLS bağlantısı kurulamadı; sertifika değerlendirilemedi." } });
   }
   const raw = t.cert; const leafDer = raw.raw; let x509 = null; try { x509 = new crypto.X509Certificate(leafDer); } catch {}
+  // v13.5: aynı alan adının DİĞER IP'leri ve www/apex varyantı (bir arka uçta süresi dolmuş sertifika klasik kesinti nedenidir)
+  const hostIsIp = net.isIP(host) > 0;
+  const ipProbeP = hostIsIp ? Promise.resolve([]) : (async () => {
+    const ipv = await resolveIps(host).catch(() => null); if (!ipv) return [];
+    const others = [...ipv.v4, ...ipv.v6].filter(ip => ip !== t.ip).slice(0, 4);
+    return (await pool(others, 4, async (ip) => { try { const x = await getTlsDetails(host, hp.port, 5000, { ip }); return { ip, ok: true, days: Math.floor((new Date(x.cert.valid_to) - Date.now()) / 864e5), validTo: new Date(x.cert.valid_to).toISOString(), fingerprint: x.cert.fingerprint256 }; } catch (e) { return { ip, ok: false, error: e.code || e.message }; } })).filter(Boolean);
+  })().catch(() => []);
+  const altHost = hostIsIp ? null : (/^www\./.test(host) ? host.slice(4) : "www." + host);
+  const altP = altHost && altHost.includes(".") ? getTlsDetails(altHost, hp.port, 5000).then(x => { let match = null; try { match = !!new crypto.X509Certificate(x.cert.raw).checkHost(altHost); } catch {} return { host: altHost, ok: true, days: Math.floor((new Date(x.cert.valid_to) - Date.now()) / 864e5), validTo: new Date(x.cert.valid_to).toISOString(), issuer: x.cert.issuer?.O || x.cert.issuer?.CN || null, fingerprint: x.cert.fingerprint256, hostnameMatches: match }; }).catch(() => null) : Promise.resolve(null);
   const validFrom = new Date(raw.valid_from), validTo = new Date(raw.valid_to);
   const daysRemaining = Math.floor((validTo - Date.now()) / 864e5); const validityDays = Math.round((validTo - validFrom) / 864e5);
   const sanList = raw.subjectaltname ? raw.subjectaltname.split(/,\s*/).map(s => s.replace(/^(DNS|IP Address):/, "").trim()).filter(Boolean) : [raw.subject?.CN].filter(Boolean);
@@ -1205,18 +1350,35 @@ async function scanSslCertificate(input, extra = {}) {
   if (wwwCovered === false) extraF.push("finding_ssl_www_not_covered_warning");
   if (validityDays > 398 && !selfSigned) extraF.push("finding_ssl_long_validity_info");
   if (t.ocspStapled === false) extraF.push("finding_ssl_no_ocsp_stapling_info");
+  // ---- v13.5: diğer IP'ler, www/apex varyantı, ara sertifika bitişi, otomatik yenileme şüphesi ----
+  const ipRows = await ipProbeP, altRes = await altP;
+  const certsSeen = new Set([raw.fingerprint256, ...ipRows.filter(r => r.ok).map(r => r.fingerprint)]);
+  if (ipRows.some(r => r.ok && r.days < 0)) c.add(false, 25, "finding_ssl_ip_cert_expired_critical", "validity");
+  else if (ipRows.some(r => r.ok && r.days >= 0 && r.days < 21 && r.days < daysRemaining)) extraF.push("finding_ssl_ip_cert_expiring_warning");
+  if (altRes && altRes.days < 0) c.add(false, 15, "finding_ssl_variant_expired_critical", "validity");
+  else if (altRes && altRes.days >= 0 && altRes.days < 21 && altRes.days < daysRemaining) extraF.push("finding_ssl_variant_expiring_warning");
+  const interm = t.chain.slice(1).filter(x => !x.selfIssued).map(x => ({ subject: x.subject, validTo: new Date(x.validTo).toISOString(), days: Math.floor((new Date(x.validTo) - Date.now()) / 864e5) })).sort((a, b) => a.days - b.days);
+  const chainNearest = interm[0] || null;
+  if (chainNearest && chainNearest.days >= 0 && chainNearest.days < 30) extraF.push("finding_ssl_chain_expiring_warning");
+  const acme = /let'?s encrypt|zerossl|google trust services|buypass|ssl\.com|sectigo.*acme/i.test(`${raw.issuer?.O || ""} ${raw.issuer?.CN || ""}`) && validityDays <= 100;
+  if (acme && daysRemaining >= 0 && daysRemaining < 14) extraF.push("finding_ssl_autorenew_stalled_warning");
+  const expiryInfo = { daysRemaining, expiresAt: validTo.toISOString(), state: daysRemaining < 0 ? "EXPIRED" : daysRemaining <= 7 ? "CRITICAL" : daysRemaining <= 14 ? "URGENT" : daysRemaining <= 30 ? "SOON" : "OK",
+    lifetimeUsedPct: validityDays > 0 ? Math.max(0, Math.min(100, Math.round(((Date.now() - validFrom.getTime()) / (validTo.getTime() - validFrom.getTime())) * 100))) : null, issuedDaysAgo: daysSince(validFrom),
+    acmeIssuer: acme, autoRenewal: acme ? (daysRemaining < 14 ? "STALLED_SUSPECTED" : "EXPECTED") : "UNKNOWN", chainNearest, renewBy: daysRemaining >= 0 ? isoDay(new Date(validTo.getTime() - (acme ? 30 : 14) * 864e5)) : null };
   const g = c.groupScores();
   const scores = { validity: g.validity ?? null, renewal: g.renewal ?? null, security: g.security ?? null, chainTrust: g.chainTrust ?? null, hsts: g.hsts ?? null };
   let overall = c.score();
   const all = sortFindings([...c.findings(), ...extraF]);
   if (all.includes("finding_ssl_expired_critical")) overall = Math.min(overall, 10);
-  if (all.some(f => /hostname_mismatch|self_signed|untrusted|chain_expired|not_yet_valid/.test(f))) overall = Math.min(overall, 30);
+  if (all.some(f => /hostname_mismatch|self_signed|untrusted|chain_expired|not_yet_valid|ip_cert_expired/.test(f))) overall = Math.min(overall, 30);
+  if (all.includes("finding_ssl_variant_expired_critical")) overall = Math.min(overall, 50);
   if (all.some(f => /weak_key|weak_signature|weak_cipher/.test(f))) overall = Math.min(overall, 55);
   if (all.includes("finding_ssl_expiring_soon_critical")) overall = Math.min(overall, 50);
   const hint = daysRemaining < 0 ? "EXPIRED" : !certInfo.valid ? "CRITICAL" : daysRemaining < 21 ? "EXPIRING_SOON" : overall >= 80 ? "ACTIVE" : overall >= 50 ? "WARNING" : "CRITICAL";
-  const specificAnalysis = { domain: host, port: hp.port, cert: certInfo, tls: tlsInfo, httpSecurity: { httpOk: httpsProbe.ok, status: httpsProbe.status, serverHeader: httpsProbe.headers?.server || null, hstsEnabled: hsts.enabled, hstsMaxAge: hsts.maxAge, hstsIncludeSubdomains: hsts.includeSubDomains, hstsPreload: hsts.preload }, scores: { ...scores, overall } };
+  const specificAnalysis = { domain: host, port: hp.port, cert: certInfo, tls: tlsInfo, httpSecurity: { httpOk: httpsProbe.ok, status: httpsProbe.status, serverHeader: httpsProbe.headers?.server || null, hstsEnabled: hsts.enabled, hstsMaxAge: hsts.maxAge, hstsIncludeSubdomains: hsts.includeSubDomains, hstsPreload: hsts.preload },
+    expiry: expiryInfo, endpoints: { primary: { ip: t.ip, days: daysRemaining, fingerprint: raw.fingerprint256 }, others: ipRows, distinctCerts: certsSeen.size }, variant: altRes, scores: { ...scores, overall } };
   const commonAnalysis = { analyzerVersion: V, executionTimeMs: Date.now() - startedAt, findings: all, scannedAt: new Date().toISOString(), score: overall, status: statusFromScore(overall), target: host };
-  return { data: { assetType: "SSL_CERTIFICATE", commonAnalysis, specificAnalysis, analysisMeta: { scannerVersion: V, analyzer: "ssl" } }, findings: all, errors, statusHint: hint,
+  return { data: { assetType: "SSL_CERTIFICATE", commonAnalysis, specificAnalysis, analysisMeta: { scannerVersion: V, analyzer: "ssl" }, remainingDays: daysRemaining, expiresAt: validTo.toISOString() }, findings: all, errors, statusHint: hint,
     confidence: clamp(100 - Object.values(protos).filter(v => v === null).length * 4) };
 }
 
@@ -1224,17 +1386,18 @@ async function scanSslCertificate(input, extra = {}) {
 // HOSTING v3
 // =====================================================================
 async function scanHosting(input) {
-  const startedAt = Date.now(); const V = "hosting-analyzer-v3.0"; const host = parseTargetHost(input);
+  const startedAt = Date.now(); const V = "hosting-analyzer-v13.5"; const host = parseTargetHost(input);
   if (!host) return buildResult({ assetType: "HOSTING", version: V, startedAt, target: String(input || ""), findings: ["finding_hosting_invalid_target_critical"], score: 0, status: "ERROR", specific: {} });
   const ips = await resolveIps(host); const c = makeChecker(); const resolves = ips.v4.length + ips.v6.length > 0;
   if (!resolves && ips.code && !dnsMissing(ips.code)) return unavailableResult({ assetType: "HOSTING", version: V, startedAt, target: host, finding: "finding_hosting_dns_unreliable_info", status: "UNKNOWN", note: "DNS sorguları yanıt vermedi; sonuç belirlenemedi.", specific: { host } });
   c.add(resolves, 20, "finding_hosting_not_resolving_critical", "erisim");
-  let main = { ok: false, status: 0, headers: {}, responseTimeMs: null, ttfb: null, redirects: 0 }, geo = null, geo2 = null, rdns = null, tlsi = null, httpPlain = null, samples = [], tcp = null;
+  let main = { ok: false, status: 0, headers: {}, responseTimeMs: null, ttfb: null, redirects: 0 }, geo = null, geo2 = null, rdns = null, tlsi = null, httpPlain = null, samples = [], tcp = null, hcert = null;
   if (resolves) {
     const first = ips.v4[0] || ips.v6[0];
-    [main, geo, tlsi, httpPlain, tcp] = await Promise.all([
+    [main, geo, tlsi, httpPlain, tcp, hcert] = await Promise.all([
       httpProbe(`https://${host}`, { timeout: 10000, maxRedirects: 4 }), ipInfo(first), tlsAlpn(host),
-      net.isIP(host) ? null : httpProbe(`http://${host}`, { timeout: 7000, maxRedirects: 0, noUaFallback: true, readBody: false }), tcpPortCheck(first, 443, 4000)
+      net.isIP(host) ? null : httpProbe(`http://${host}`, { timeout: 7000, maxRedirects: 0, noUaFallback: true, readBody: false }), tcpPortCheck(first, 443, 4000),
+      getTlsDetails(host, 443, 6000).catch(() => null)
     ]);
     rdns = await safeResolve(dns.reverse, first);
     if (ips.v4.length + ips.v6.length > 1) geo2 = await ipInfo(ips.v4[1] || ips.v6[1]);
@@ -1246,6 +1409,8 @@ async function scanHosting(input) {
   c.add(reachable, 20, main.status === 0 ? netErrorFinding("hosting", main) : "finding_hosting_server_error_critical", "erisim");
   c.add(!!tlsi, 15, "finding_hosting_no_https_critical", "guvenlik");
   if (tlsi) c.add(["TLSv1.2", "TLSv1.3"].includes(tlsi.tlsVersion), 5, "finding_hosting_tls_old_warning", "guvenlik");
+  const certDays = hcert && hcert.cert && hcert.cert.valid_to ? Math.floor((new Date(hcert.cert.valid_to) - Date.now()) / 864e5) : null;
+  if (certDays != null) { c.add(certDays >= 0, 15, "finding_hosting_cert_expired_critical", "guvenlik"); if (certDays >= 0) c.add(certDays >= 14, 5, "finding_hosting_cert_expiring_warning", "guvenlik"); }
   if (httpPlain && httpPlain.status > 0) c.add(httpPlain.status >= 300 && httpPlain.status < 400 && /^https:/i.test(String(httpPlain.headers.location || "")), 6, "finding_hosting_no_https_redirect_warning", "guvenlik");
   c.add(ddos, 8, "finding_hosting_no_cdn_waf_warning", "dayaniklilik");
   c.add(ips.v6.length > 0, 3, "finding_hosting_no_ipv6_info", "dayaniklilik");
@@ -1259,7 +1424,8 @@ async function scanHosting(input) {
   const specific = {
     host, network: { ipv4: ips.v4, ipv6: ips.v6, reverseDns: (rdns && rdns[0]) || null },
     provider: geo ? { name: geo.org || geo.isp, family, asn: geo.asn, country: geo.country, countryCode: geo.countryCode, city: geo.city, region: geo.region } : null,
-    secondaryIp: geo2 ? { ip: geo2.ip, org: geo2.org, country: geo2.country } : null,
+    secondaryIp: geo2 ? { ip: geo2.ip, org: geo2.org, country: geo2.country } : null, geoSource: geo ? geo.source || null : null, prefix: geo ? geo.prefix || null : null,
+    certificate: hcert && hcert.cert ? { daysRemaining: certDays, validTo: new Date(hcert.cert.valid_to).toISOString(), issuer: hcert.cert.issuer?.O || hcert.cert.issuer?.CN || null, subject: hcert.cert.subject?.CN || null } : null,
     platform: platforms, ddosProtection: ddos, botProtection: prot ? { provider: prot } : undefined,
     http: { status: main.status, ttfbMs: ttfbAvg, responseTimeMs: main.responseTimeMs, server: (main.headers || {})["server"] || null, poweredBy: (main.headers || {})["x-powered-by"] || null, protocol: tlsi?.alpn || null, tlsVersion: tlsi?.tlsVersion || null, tlsHandshakeMs: tlsi?.handshakeMs ?? null, tcpConnectMs: tcp?.open ? tcp.latencyMs : null, redirects: main.redirects, httpToHttps: httpPlain && httpPlain.status ? (httpPlain.status >= 300 && httpPlain.status < 400 && /^https:/i.test(String(httpPlain.headers.location || ""))) : null },
     scores: c.groupScores(), checks: c.summary()
@@ -1273,7 +1439,9 @@ async function scanHosting(input) {
 const SERVER_PORTS = [[21, "FTP", "warn"], [22, "SSH", null], [23, "Telnet", "crit"], [25, "SMTP", null], [53, "DNS", null], [80, "HTTP", null], [110, "POP3", null], [135, "MS-RPC", "crit"], [139, "NetBIOS", "crit"], [143, "IMAP", null], [443, "HTTPS", null], [445, "SMB", "crit"],
   [465, "SMTPS", null], [587, "Submission", null], [993, "IMAPS", null], [995, "POP3S", null], [1433, "MSSQL", "crit"], [1521, "Oracle", "crit"], [2375, "Docker API", "crit"], [2379, "etcd", "crit"], [3306, "MySQL", "crit"], [3389, "RDP", "crit"],
   [5432, "PostgreSQL", "crit"], [5601, "Kibana", "crit"], [5672, "AMQP", "warn"], [5900, "VNC", "crit"], [5984, "CouchDB", "crit"], [6379, "Redis", "crit"], [6443, "Kubernetes API", "warn"], [8080, "HTTP-Alt", null], [8443, "HTTPS-Alt", null],
-  [9092, "Kafka", "crit"], [9200, "Elasticsearch", "crit"], [10000, "Webmin", "warn"], [11211, "Memcached", "crit"], [15672, "RabbitMQ Mgmt", "warn"], [27017, "MongoDB", "crit"]];
+  [9092, "Kafka", "crit"], [9200, "Elasticsearch", "crit"], [10000, "Webmin", "warn"], [11211, "Memcached", "crit"], [15672, "RabbitMQ Mgmt", "warn"], [27017, "MongoDB", "crit"],
+  [389, "LDAP", "warn"], [636, "LDAPS", null], [873, "rsync", "warn"], [1883, "MQTT", "warn"], [2049, "NFS", "crit"], [2082, "cPanel", "warn"], [2083, "cPanel SSL", null], [2086, "WHM", "warn"], [2087, "WHM SSL", "warn"],
+  [3000, "Geliştirme sunucusu", "warn"], [5985, "WinRM", "crit"], [5986, "WinRM SSL", "warn"], [8000, "HTTP-Dev", "warn"], [8888, "HTTP-Alt2", null], [9000, "Portainer/PHP-FPM", "warn"], [9090, "Cockpit/Prometheus", "warn"]];
 const BANNER_PORTS = new Set([21, 22, 25, 110, 143, 587]);
 function grabBanner(ip, port, timeout = 2500) {
   return new Promise((resolve) => {
@@ -1284,7 +1452,7 @@ function grabBanner(ip, port, timeout = 2500) {
   });
 }
 async function scanServer(input) {
-  const startedAt = Date.now(); const V = "server-analyzer-v3.0"; const host = parseTargetHost(input);
+  const startedAt = Date.now(); const V = "server-analyzer-v13.5"; const host = parseTargetHost(input);
   if (!host) return buildResult({ assetType: "SERVER", version: V, startedAt, target: String(input || ""), findings: ["finding_server_invalid_target_critical"], score: 0, status: "ERROR", specific: {} });
   const ips = await resolveIps(host); const ip = ips.v4[0] || ips.v6[0];
   if (!ip) {
@@ -1297,12 +1465,33 @@ async function scanServer(input) {
   const rows = res.filter(Boolean); const open = rows.filter(r => r.open);
   const banners = {}; await pool(open.filter(r => BANNER_PORTS.has(r.port)), 6, async (r) => { const b = await grabBanner(ip, r.port); if (b) banners[r.port] = b; });
   const findings = []; let score = 100;
+  // v13.5: TLS sunan servis portlarında sertifika bitişi (yalnızca el sıkışma; veri gönderilmez) — süresi dolmuş posta/panel sertifikası sık kaçan kesinti nedenidir
+  const TLS_SVC = new Set([443, 8443, 465, 993, 995, 636, 2083, 2087, 5986]);
+  const tlsServices = (await pool(open.filter(r => TLS_SVC.has(r.port)), 4, async (r) => {
+    try { const x = await getTlsDetails(host, r.port, 5000, { ip }); const days = Math.floor((new Date(x.cert.valid_to) - Date.now()) / 864e5);
+      let hostMatch = null; try { hostMatch = net.isIP(host) ? null : !!new crypto.X509Certificate(x.cert.raw).checkHost(host); } catch {}
+      return { port: r.port, service: r.name, days, validTo: new Date(x.cert.valid_to).toISOString(), subject: x.cert.subject?.CN || null, issuer: x.cert.issuer?.O || x.cert.issuer?.CN || null, protocol: x.protocol, hostnameMatches: hostMatch };
+    } catch { return null; }
+  })).filter(Boolean);
+  // v13.5: aynı adın diğer IP'lerinde de riskli (kritik) port var mı? (CDN arkasında değilse)
+  let secondary = [];
+  if (!behindCdn && ips.v4.length + ips.v6.length > 1) {
+    const critPorts = SERVER_PORTS.filter(x => x[2] === "crit"); const others = [...ips.v4, ...ips.v6].filter(x => x !== ip).slice(0, 2);
+    secondary = (await pool(others, 2, async (oip) => { if (!allowPrivate() && isPrivateIp(oip)) return null; const rs = await pool(critPorts, 16, async ([port, name]) => ({ ...(await tcpPortCheck(oip, port, 2000)), name })); return { ip: oip, openCritical: rs.filter(r => r && r.open).map(r => `${r.port}/${r.name}`) }; })).filter(Boolean);
+  }
+  const reverseDns = ((await safeResolve(dns.reverse, ip)) || [])[0] || null;
   const ignoreCdn = (p) => behindCdn && [80, 443, 8080, 8443, 2052, 2053, 2082, 2083, 2086, 2087, 2095, 2096, 8880].includes(p);
   for (const r of open) {
     if (ignoreCdn(r.port)) continue;
     if (r.risk === "crit") { findings.push(`finding_server_exposed_port_${r.port}_critical`); score -= 22; }
     else if (r.risk === "warn") { findings.push(`finding_server_exposed_port_${r.port}_warning`); score -= 8; }
   }
+  if (!behindCdn) {
+    if (tlsServices.some(x => x.days < 0)) { findings.push("finding_server_cert_expired_critical"); score -= 15; }
+    else if (tlsServices.some(x => x.days < 14)) { findings.push("finding_server_cert_expiring_warning"); score -= 5; }
+    if (tlsServices.some(x => x.hostnameMatches === false)) { findings.push("finding_server_cert_hostname_mismatch_warning"); score -= 4; }
+  }
+  if (secondary.some(x => x.openCritical.length)) { findings.push("finding_server_secondary_ip_exposed_critical"); score -= 15; }
   if (banners[22]) {
     const m = banners[22].match(/SSH-(\d)\.(\d+)-OpenSSH[_-](\d+)\.(\d+)/i);
     if (/SSH-1\./.test(banners[22])) { findings.push("finding_server_ssh_v1_critical"); score -= 20; }
@@ -1320,7 +1509,7 @@ async function scanServer(input) {
   return buildResult({
     assetType: "SERVER", version: V, startedAt, target: host, findings, score, status: !open.length ? "DOWN" : undefined,
     specific: { host, ip, allIps: [...ips.v4, ...ips.v6], provider: geo.org || geo.isp, country: geo.country, city: geo.city, asn: geo.asn, behindCdn, checkedPorts: SERVER_PORTS.length, openCount: open.length, filteredCount: timeouts, avgConnectMs: avg(lat),
-      openPorts: open.map(r => `${r.port}/${r.name} (${r.latencyMs}ms)`), banners: Object.entries(banners).map(([p, b]) => `${p}: ${b}`), webServiceOpen: web,
+      openPorts: open.map(r => `${r.port}/${r.name} (${r.latencyMs}ms)`), banners: Object.entries(banners).map(([p, b]) => `${p}: ${b}`), webServiceOpen: web, reverseDns, tlsServices, secondaryIps: secondary,
       note: behindCdn ? "Hedef bir CDN/WAF arkasında; port sonuçları gerçek sunucuyu değil CDN'i yansıtır." : `Yalnızca ${SERVER_PORTS.length} yaygın porta bağlantı denendi; hiçbir veri gönderilmedi, sadece karşılama (banner) satırı okundu.` }
   });
 }
@@ -1603,7 +1792,7 @@ function perfChecks(c, ctx) {
 // 1. WEB SCANNER v4 (erişim + içerik durumu + güvenlik başlıkları + SEO + performans + teknoloji)
 // =====================================================================
 async function scanWebsite(targetUrl, extra = {}) {
-  const startedAt = Date.now(); const V = "web-analyzer-v4.0"; const errors = [];
+  const startedAt = Date.now(); const V = "web-analyzer-v13.5"; const errors = [];
   if (!targetUrl) return { data: null, findings: ["finding_web_missing_target_critical"], errors: ["targetUrl yok"] };
   const { url, main, variant, httpOnly, prot } = await getPage(targetUrl);
   const host = hostOf(main.finalUrl || url);
@@ -1684,7 +1873,7 @@ async function scanWebsite(targetUrl, extra = {}) {
     securityHeaders, cookies: sec.cookies.map(k => `${k.name} (${k.secure ? "Secure" : "!Secure"}, ${k.httpOnly ? "HttpOnly" : "!HttpOnly"}, SameSite=${k.sameSite || "yok"})`),
     techStack: tech.map(t => t.version ? `${t.name} ${t.version}` : t.name), technologies: tech, server: main.headers["server"] || null,
     robots: { exists: !!files.robots.exists, status: files.robots.status ?? null, blocksAll: !!files.robots.blocksAll }, sitemap: { exists: !!files.sitemap.exists, valid: !!files.sitemap.valid, urlCount: files.sitemap.urlCount ?? null },
-    tls: tlsDet ? { protocol: tlsDet.protocol, cipher: tlsDet.cipher?.name, daysRemaining: Math.floor((new Date(tlsDet.cert.valid_to) - Date.now()) / 864e5), issuer: tlsDet.cert.issuer?.O || tlsDet.cert.issuer?.CN, http2: tlsi?.alpn === "h2" } : null,
+    tls: tlsDet ? (() => { const d = Math.floor((new Date(tlsDet.cert.valid_to) - Date.now()) / 864e5); return { protocol: tlsDet.protocol, cipher: tlsDet.cipher?.name, daysRemaining: d, validTo: new Date(tlsDet.cert.valid_to).toISOString(), expiryState: d < 0 ? "EXPIRED" : d <= 7 ? "CRITICAL" : d <= 14 ? "URGENT" : d <= 30 ? "SOON" : "OK", issuer: tlsDet.cert.issuer?.O || tlsDet.cert.issuer?.CN, http2: tlsi?.alpn === "h2" }; })() : null,
     content: { htmlKB: Math.round(A.htmlBytes / 102.4) / 10, images: A.images.total, scripts: A.scripts.length, stylesheets: A.stylesheets.length, thirdPartyHosts: A.thirdPartyHosts.length, links: A.links },
     performance: { ttfbMs: main.ttfb, compression: main.encoding, measuredWeightKB: Math.round((perf.weight || 0) / 102.4) / 10, renderBlockingScripts: perf.blocking },
     scores: { availability: gs.availability, security: gs.security, seo: gs.seo, performance: gs.performance, overall, composite: composite.score, compositeDetail: { rawScore: composite.rawScore, complete: composite.complete, coverage: composite.coverage, capped: composite.capped, missing: composite.missing } }
@@ -2287,6 +2476,7 @@ function scanSummary(out, assetType) {
   const u = out.assetUpdate || {}, reg = (u.specificAnalysis && u.specificAnalysis.registration) || {};
   const base = { scanStatus: out.scanStatus, score: u.healthScore ?? null, status: u.status || null, latencyMs: u.latencyMs ?? null };
   if (assetType === "DOMAIN" || assetType === "EMAIL") Object.assign(base, { expiresAt: dateIso(reg.expiresAt), remainingDays: Number.isFinite(reg.remainingDays) ? reg.remainingDays : null, expirySource: reg.source || null });
+  if (assetType === "SSL_CERTIFICATE" || assetType === "SSL") { const cert = (u.specificAnalysis && u.specificAnalysis.cert) || {}; Object.assign(base, { expiresAt: dateIso(cert.validTo), remainingDays: Number.isFinite(cert.daysRemaining) ? cert.daysRemaining : null, expirySource: "tls" }); }
   return base;
 }
 
@@ -2574,4 +2764,4 @@ if (require.main === module) {
   process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor"); JOBS.stop().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
 }
 module.exports = app;
-module.exports._internals = { JOBS, METRICS, executeScan, queueScanItem, scanSummary, rdapDate, toDateOrNull, cleanBulkItem, isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle };
+module.exports._internals = { JOBS, METRICS, executeScan, queueScanItem, scanSummary, rdapDate, toDateOrNull, cleanBulkItem, isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle, parseWhois, parseLooseDate, whoisQuery, expiryProfile, cymruAsn, getTlsDetails, followRelatedRdap, fetchRegistration };

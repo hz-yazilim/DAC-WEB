@@ -39,9 +39,10 @@ document.addEventListener('click',async e=>{
  else if(act==='cat-refresh')refreshCat(id);
  else if(act==='del'){if(A&&confirm(`"${A.name}" silinsin mi?`)){S.assets=S.assets.filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();close();render();delRemote(id);toast('Varlık silindi')}}
  else if(act==='sug'){const i=$('[name=t]');if(i)i.value=b.dataset.v}
- else if(act==='goto'){$('#bell').classList.remove('on');location.hash=b.dataset.to}
+ else if(act==='goto'){$('#bell').classList.remove('on');if(b.dataset.tab&&typeof BK!=='undefined'){BK.tab=b.dataset.tab;BK.adm.err=null}if(location.hash==='#'+b.dataset.to){render();if(b.dataset.tab)bdgAdmSeen(b.dataset.tab)}else location.hash=b.dataset.to}
  else if(act==='bell'){const al=alerts(),sp=bdgUserSupport(),an=bdgUserAnn(),ad=SITE&&SITE.announcement,parts=[];
   if(an&&ad)parts.push(`<div class="it">${ic('megaphone')} <b>Duyuru</b><div class="hint">${esc(ad.text)}</div></div>`);
+  if(BK.isAdmin){const AD=BADGE.adm||{};[['support','life-buoy','bekleyen destek talebi'],['users','user-plus','yeni kullanıcı'],['orders','credit-card','yeni ödeme'],['errors','triangle-alert','yeni sistem hatası']].forEach(([k,i,t])=>{if((AD[k]|0)>0)parts.push(`<a data-act="goto" data-to="admin" data-tab="${k}">${ic(i)} <b>Yönetici:</b> ${AD[k]|0} ${t}</a>`)})}
   sp.forEach(t=>parts.push(`<a data-act="goto" data-to="support">${ic('life-buoy')} #${esc(t.no)} ${esc(bdgSupTxt(t))}</a>`));
   al.forEach(a=>parts.push(`<a data-act="detail" data-id="${esc(a.id)}">${ic('triangle-alert')} ${esc(a.name)} <span class="badge ${sc(a)!=null?tone(sc(a)):'bd'}">${sc(a)??'!'}</span></a>`));
   $('#bell').innerHTML=parts.length?parts.join(''):'<div class="it hint">Bildirim yok</div>';$('#bell').classList.toggle('on');icons();
@@ -131,7 +132,7 @@ window.dacStop=()=>{BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;bdgSt
 
 /* ---------- rozetler: yönetici = kırmızı, kullanıcı = koyu mor ---------- */
 /* Yönetici: bekleyen destek + son baktığından beri yeni kullanıcı/sipariş/hata. Kullanıcı: yöneticiden gelen destek yanıtı/kapatma ve yeni duyuru. */
-var BADGE={adm:{support:0,users:0,orders:0,errors:0},sup:[],off:0,timer:null,busy:false};
+var BADGE={adm:{support:0,users:0,orders:0,errors:0},sup:[],off:0,timer:null,busy:false,again:false};
 const BDG_ADM=['users','orders','errors'];
 const bdgKey=n=>'dac_bdg_'+n+'_'+(U&&U.uid||'');
 const bdgGet=(n,d)=>{try{const v=JSON.parse(localStorage.getItem(bdgKey(n)));return v==null?d:v}catch{return d}};
@@ -150,7 +151,7 @@ function bdgPaint(){
  if(!S)return;
  const sp=bdgUserSupport().length,an=bdgUserAnn(),adm=bdgAdmTotal();
  document.querySelectorAll('#side .nav a[data-nb]').forEach(a=>{const [n,c]=nbOf(a.dataset.nb);setNb(a,n,c)});
- setNb($('[data-act=bell]'),sp+an,'nb-p');
+ setNb($('[data-act=bell]'),sp+an+adm,adm?'nb-r':'nb-p');
  setNb($('[data-act=menu]'),adm||sp+an,adm?'nb-r':'nb-p');
  if(typeof admTabs==='function'){const t=$('#adm-tabs');if(t)t.innerHTML=admTabs()}
 }
@@ -163,18 +164,21 @@ async function bdgUserPull(){
 }
 async function bdgAdminPull(){
  if(!BK.isAdmin)return;
- const seen=bdgGet('admseen',{});let ch=false;BDG_ADM.forEach(k=>{if(!seen[k]){seen[k]=bdgNow();ch=true}});if(ch)bdgSet('admseen',seen);
+ const seen=bdgGet('admseen',{});let ch=false;BDG_ADM.forEach(k=>{if(!seen[k]){seen[k]=bdgNow()-864e5;ch=true}});if(ch)bdgSet('admseen',seen);
  const j=await bdgFetch('/api/admin/badges?'+new URLSearchParams({users:seen.users,orders:seen.orders,errors:seen.errors}));
  if(j)BADGE.adm={support:j.support|0,users:j.users|0,orders:j.orders|0,errors:j.errors|0};
 }
 async function bdgPull(){
- if(!S||!U||BADGE.busy)return;BADGE.busy=true;
+ if(!S||!U)return;
+ if(BADGE.busy){BADGE.again=true;return}
+ BADGE.busy=true;
  try{await Promise.all([bdgUserPull(),bdgAdminPull()])}catch{}
  BADGE.busy=false;
  const r=(location.hash.slice(1)||'').split('/')[0];
  if(r==='support')bdgSupSeen(BADGE.sup);
  if(r==='admin')bdgAdmSeen(BK.tab);
  bdgPaint();
+ if(BADGE.again){BADGE.again=false;return bdgPull()}
 }
 function bdgStart(){if(BADGE.timer)return;bdgPull();BADGE.timer=setInterval(()=>{if(!document.hidden)bdgPull()},60000)}
 function bdgStop(){clearInterval(BADGE.timer);BADGE.timer=null;BADGE.adm={support:0,users:0,orders:0,errors:0};BADGE.sup=[]}

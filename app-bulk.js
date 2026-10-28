@@ -11,9 +11,13 @@ async function bkApi(method,path,body,retried){
  if(!r.ok||!j||j.success===false){const e=new Error((j&&j.error)||'İstek başarısız ('+r.status+')');e.status=r.status;e.code=j&&j.code;if(e.code==='2FA_REQUIRED'&&!retried&&await a2faPrompt())return bkApi(method,path,body,true);throw e}
  return j;
 }
-async function bkInit(){try{const j=await bkApi('GET','/api/me/admin');if(j.admin&&!BK.isAdmin){BK.isAdmin=true;render()}}catch{}}
+async function bkInit(n){
+ n=n|0;
+ try{const j=await bkApi('GET','/api/me/admin');if(j.admin&&!BK.isAdmin){BK.isAdmin=true;render()}if(j.admin&&typeof bdgPull==='function')bdgPull()}
+ catch{if(n<3&&S&&U)setTimeout(()=>bkInit(n+1),4000*(n+1))} // geçici hata/429: yönetici rozeti sessizce kaybolmasın, yeniden dene
+}
 const bkDomain=v=>{v=String(v).trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//,'').split(/[\/?#]/)[0].replace(/:\d{1,5}$/,'').replace(/\.$/,'').replace(/^www\./,'');return /^(?=.{4,253}$)([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$/.test(v)&&!/^[\d.]+$/.test(v)?v:null};
-const daysLeft=a=>{const e=a.result?.specificAnalysis?.registration?.expiresAt;if(!e)return null;const t=new Date(e).getTime();return isNaN(t)?null:Math.ceil((t-Date.now())/864e5)};
+const daysLeft=a=>{const e=a.result?.specificAnalysis?.registration?.expiresAt||a.result?.specificAnalysis?.cert?.validTo;if(!e)return null;const t=new Date(e).getTime();return isNaN(t)?null:Math.ceil((t-Date.now())/864e5)};
 const dayTxt=d=>d==null?'Bilinmiyor':d<0?Math.abs(d)+' gün geçti':d+' gün';
 
 /* ortak yenileme: varlıkları ve tarama durumlarını sunucudan çeker; YENİ TARAMA BAŞLATMAZ */

@@ -43,8 +43,9 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     authn,
     (req, res, next) => (userLimit(req.user.uid) ? next() : deny(res, 429, "Çok fazla istek.")),
     async (req, res, next) => { const r = await roleOf(req.user); if (!r.admin) return deny(res, 403, "Bu işlem için yönetici yetkisi gerekir.", { code: "ADMIN_REQUIRED" }); req.admin = r; res.set("Cache-Control", "no-store");
+      // /api/admin/badges yalnızca sayaç döndürür (arka plan yoklaması 2FA penceresi açamaz); yönetici rolü yine zorunludur.
       // ADMIN_REQUIRE_2FA=true: 2FA uçları dışında tüm yönetici uçları doğrulanmış jeton ister (jeton oturum başına kod girilerek alınır)
-      if (process.env.ADMIN_REQUIRE_2FA === "true" && !req.path.startsWith("/api/admin/2fa/") && !tfa.tokens.check(req.user.uid, req.headers["x-admin-2fa"])) { const en = await tfaEnrolled(req.user.uid); return deny(res, 403, en ? "İki adımlı doğrulama kodu gerekli." : "Yönetici hesabı için iki adımlı doğrulamayı kurmalısınız (Yönetici Paneli > Güvenlik).", { code: en ? "2FA_REQUIRED" : "2FA_SETUP" }); }
+      if (process.env.ADMIN_REQUIRE_2FA === "true" && !req.path.startsWith("/api/admin/2fa/") && req.path !== "/api/admin/badges" && !tfa.tokens.check(req.user.uid, req.headers["x-admin-2fa"])) { const en = await tfaEnrolled(req.user.uid); return deny(res, 403, en ? "İki adımlı doğrulama kodu gerekli." : "Yönetici hesabı için iki adımlı doğrulamayı kurmalısınız (Yönetici Paneli > Güvenlik).", { code: en ? "2FA_REQUIRED" : "2FA_SETUP" }); }
       next(); }
   ];
   const writeGuard = (req, res, next) => (writeLimit(req.user.uid) ? next() : deny(res, 429, "Çok fazla yönetici işlemi. Biraz bekleyin."));

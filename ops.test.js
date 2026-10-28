@@ -62,6 +62,12 @@ test("2FA: ADMIN_REQUIRE_2FA açıkken kurulmadan yönetici uçları kapalı; ku
   assert.equal((await jpost(s, "/api/admin/2fa/verify", H, { code })).status, 400, "aynı kod tekrar kullanılamaz");
   for (let i = 0; i < 8; i++) await jpost(s, "/api/admin/2fa/verify", H, { code: "000000" }); assert.equal((await jpost(s, "/api/admin/2fa/verify", H, { code: "000000" })).status, 429, "deneme sınırı"); s.close();
 });
+test("Rozet ucu: 2FA zorunluyken de yönetici sayaçları alır; diğer uçlar kapalı, yönetici olmayan 403", async () => {
+  const { app } = adminHarness({ users: { root: mkU("root") }, env: { ADMIN_REQUIRE_2FA: "true" } }); const s = await listen(app);
+  const r = await fetch(url(s, "/api/admin/badges"), { headers: as("root") }); assert.equal(r.status, 200); assert.equal((await r.json()).success, true);
+  assert.equal((await fetch(url(s, "/api/admin/overview"), { headers: as("root") })).status, 403);
+  assert.equal((await fetch(url(s, "/api/admin/badges"), { headers: as("u9") })).status, 403); s.close();
+});
 test("2FA: ADMIN_REQUIRE_2FA kapalıyken mevcut davranış değişmez", async () => {
   const { app } = adminHarness({ users: { root: mkU("root") } }); const s = await listen(app); assert.equal((await fetch(url(s, "/api/admin/overview"), { headers: as("root") })).status, 200); s.close();
 });

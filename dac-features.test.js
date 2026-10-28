@@ -220,7 +220,7 @@ test("Domain bitiş tarihi yalnızca RDAP kaydından okunur; veri yoksa uydurulm
   assert.equal(ok.expiresAt, "2027-03-01T00:00:00.000Z"); assert.equal(ok.remainingDays, 130);
   const none = I.scanSummary({ scanStatus: "PARTIAL", assetUpdate: { healthScore: 60, specificAnalysis: { registration: {} } } }, "DOMAIN"); assert.equal(none.expiresAt, null); assert.equal(none.remainingDays, null);
   assert.equal(I.scanSummary({ scanStatus: "COMPLETED", assetUpdate: { healthScore: 60 } }, "WEBSITE").expiresAt, undefined, "domain dışı türler tarih alanı taşımaz");
-  const src = SRC("index.js"); assert.ok(/expiration = toDateOrNull\(rdapDate\(rdap\.data/.test(src), "bitiş tarihi RDAP verisinden"); assert.ok(!/expiration\s*=\s*[^;]*(headers|Date\.now)/.test(src.slice(src.indexOf("async function scanDomain"), src.indexOf("async function scanDomain") + 9000)), "HTTP yanıtından tahmin yok");
+  const src = SRC("index.js"); assert.ok(/expiration = toDateOrNull\(rd \? rdapDate\(rd, EXPIRY_ACTIONS\)/.test(src) && /\|\| \(wh && wh\.expiry\)/.test(src), "bitiş tarihi yalnızca RDAP veya WHOIS kaydından"); assert.ok(!/expiration\s*=\s*[^;]*(headers|Date\.now)/.test(src.slice(src.indexOf("async function scanDomain"), src.indexOf("async function scanDomain") + 9000)), "HTTP yanıtından tahmin yok");
 });
 
 // ================= YÖNETİCİ =================
@@ -372,4 +372,20 @@ test("Admin: paket/sipariş uçları yetkisiz 403; paket verme, listeleme, kald�
   assert.equal((await post("/api/admin/users/u1/trial", { days: 999 })).status, 400);
   const aud = Object.values(store.adminAudit).map((x) => x.action); assert.ok(aud.includes("plan.grant") && aud.includes("plan.revoke") && aud.includes("trial.extend"), aud.join());
   s.close();
+});
+
+// ================= v13.5 ANALİZ MOTORU =================
+test("WHOIS/tarih ayrıştırma: nic.tr, Verisign, bulunamadı; bitiş profili", () => {
+  const d = (x) => x && x.toISOString().slice(0, 10);
+  assert.equal(d(I.parseLooseDate("2027-Mar-04.")), "2027-03-04"); assert.equal(d(I.parseLooseDate("04-Mar-2027")), "2027-03-04"); assert.equal(I.parseLooseDate("2027-02-30"), null);
+  const tr = I.parseWhois("** Registrar:\n   Organization Name : Ornek Bilisim\n\n** Domain Servers:\nns1.ornek.com.tr\nns2.ornek.com.tr\n\n** Additional Info:\nCreated on..............: 2005-Mar-04.\nExpires on..............: 2027-Mar-04.\n");
+  assert.equal(d(tr.expiry), "2027-03-04"); assert.equal(tr.registrar, "Ornek Bilisim"); assert.deepEqual(tr.nameservers, ["ns1.ornek.com.tr", "ns2.ornek.com.tr"]);
+  const vs = I.parseWhois("Registry Expiry Date: 2026-08-13T04:00:00Z\nRegistrar Registration Expiration Date: 2027-01-01T00:00:00Z\nDomain Status: clientTransferProhibited https://icann.org/epp#clientTransferProhibited");
+  assert.equal(d(vs.expiry), "2026-08-13"); assert.ok(vs.statuses.includes("clientTransferProhibited"));
+  assert.ok(I.parseWhois('No match for "X.COM".').notFound);
+  assert.deepEqual(I.expiryProfile(-1, ["redemptionPeriod"]), { state: "EXPIRED", phase: "REDEMPTION" }); assert.equal(I.expiryProfile(7, []).state, "CRITICAL"); assert.equal(I.expiryProfile(null, []).state, "UNKNOWN");
+});
+test("scanSummary: SSL sertifikası bitiş günü kuyruğa taşınır", () => {
+  const r = I.scanSummary({ scanStatus: "COMPLETED", assetUpdate: { healthScore: 70, specificAnalysis: { cert: { validTo: "2027-01-01T00:00:00.000Z", daysRemaining: 40 } } } }, "SSL_CERTIFICATE");
+  assert.equal(r.remainingDays, 40); assert.equal(r.expiresAt, "2027-01-01T00:00:00.000Z");
 });
