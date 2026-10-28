@@ -133,7 +133,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   let createdCache = { at: 0, val: [] };
   async function userCreations() {
     if (!authOk()) return [];
-    if (now() - createdCache.at < 120000) return createdCache.val;
+    if (now() - createdCache.at < SEC.int(process.env.ADMIN_BADGE_CACHE_MS, 10000)) return createdCache.val;
     const CAP = SEC.int(process.env.ADMIN_USER_SCAN_CAP, 20000), arr = []; let token;
     do { const page = await admin.auth().listUsers(1000, token); for (const u of page.users) { const t = u.metadata && u.metadata.creationTime ? Date.parse(u.metadata.creationTime) : 0; if (t) arr.push(t); } token = page.pageToken; if (arr.length >= CAP && token) break; } while (token);
     createdCache = { at: now(), val: arr }; return arr;

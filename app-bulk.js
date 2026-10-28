@@ -13,7 +13,7 @@ async function bkApi(method,path,body,retried){
 }
 async function bkInit(n){
  n=n|0;
- try{const j=await bkApi('GET','/api/me/admin');if(j.admin&&!BK.isAdmin){BK.isAdmin=true;render()}if(j.admin&&typeof bdgPull==='function')bdgPull()}
+ try{const j=await bkApi('GET','/api/me/admin');if(j.admin&&!BK.isAdmin){BK.isAdmin=true;render()}if(j.admin&&typeof bdgPull==='function'){if(typeof bdgStop==='function'&&typeof bdgStart==='function'){bdgStop();bdgStart()}else bdgPull()}}
  catch{if(n<3&&S&&U)setTimeout(()=>bkInit(n+1),4000*(n+1))} // geçici hata/429: yönetici rozeti sessizce kaybolmasın, yeniden dene
 }
 const bkDomain=v=>{v=String(v).trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//,'').split(/[\/?#]/)[0].replace(/:\d{1,5}$/,'').replace(/\.$/,'').replace(/^www\./,'');return /^(?=.{4,253}$)([a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$/.test(v)&&!/^[\d.]+$/.test(v)?v:null};

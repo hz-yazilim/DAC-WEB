@@ -180,9 +180,10 @@ async function bdgPull(){
  bdgPaint();
  if(BADGE.again){BADGE.again=false;return bdgPull()}
 }
-function bdgStart(){if(BADGE.timer)return;bdgPull();BADGE.timer=setInterval(()=>{if(!document.hidden)bdgPull()},60000)}
+function bdgStart(){if(BADGE.timer)return;bdgPull();BADGE.timer=setInterval(()=>{if(!document.hidden)bdgPull()},BK.isAdmin?8000:30000)}
 function bdgStop(){clearInterval(BADGE.timer);BADGE.timer=null;BADGE.adm={support:0,users:0,orders:0,errors:0};BADGE.sup=[]}
 addEventListener('focus',()=>{if(S&&U)bdgPull()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S&&U)bdgPull()});
 addEventListener('hashchange',()=>{const r=(location.hash.slice(1)||'').split('/')[0];if(r==='support')bdgSupSeen(BADGE.sup);if(r==='admin')bdgAdmSeen(BK.tab)});
 
 /* ---------- yan menü: seçili öğeyi görünür tut ---------- */
