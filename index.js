@@ -107,7 +107,7 @@ const jsonParser = express.json({ limit: "256kb", verify: (req, res, buf) => { r
 app.use((req, res, next) => (req.path === "/api/state" ? next() : jsonParser(req, res, next)));
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 const PORT = process.env.PORT || 3000;
-const SCANNER_VERSION = "v13.1";
+const SCANNER_VERSION = "v13.5";
 
 const UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const UA_BOT = "Mozilla/5.0 (compatible; DigitalAssetCenterBot/12.0; +https://dac-web-yefr.onrender.com)";

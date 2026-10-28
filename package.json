@@ -1,6 +1,6 @@
 {
   "name": "digital-asset-center-scanner",
-  "version": "13.1.0",
+  "version": "13.5.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
