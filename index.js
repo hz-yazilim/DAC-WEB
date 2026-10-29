@@ -1,3 +1,5 @@
+// Render ücretsiz plan (~512MB): V8 yığın sınırını düşür ki OOM-kill yerine erken GC çalışsın (NODE_OPTIONS ile ezilebilir)
+try { if (!/max-old-space-size/.test(process.env.NODE_OPTIONS || "")) require("v8").setFlagsFromString("--max-old-space-size=" + (process.env.HEAP_MB || 300)); } catch {}
 /**
  * Digital Asset Center - Scanner API v12.0 "DEEP"
  * ---------------------------------------------------------------------------
@@ -2546,8 +2548,9 @@ app.delete("/api/assets/:id", scanGuard, async (req, res) => {
 // ===== Otomatik tarama + tarayıcı bildirimi =====
 // Her varlık türü kendi aralığında (alerts.js > INTERVAL_H) taranır. Yalnızca bildirimi açmış (pushSubs kaydı olan) ve paketi geçerli kullanıcıların varlıkları taranır.
 // Sunucu içi zamanlayıcı yalnızca uyanıkken çalışır; Render ücretsiz planda uyuyorsa dışarıdan POST /api/cron/scan?key=CRON_SECRET çağıran bir cron (ör. cron-job.org, her 15 dk) kurun.
+const MEM_SOFT_LIMIT = SEC.int(process.env.MEM_SOFT_MB, 380) * 1048576, MEM_HARD_LIMIT = SEC.int(process.env.MEM_HARD_MB, 450) * 1048576;
 const AUTO_ENABLED = process.env.AUTO_SCAN !== "false";
-const AUTO_BATCH = SEC.int(process.env.AUTO_SCAN_BATCH, 30);
+const AUTO_BATCH = SEC.int(process.env.AUTO_SCAN_BATCH, 10);
 let autoRunning = false;
 async function autoScanOne(snap, ctx) {
   const d = snap.data(), ref = snap.ref, uid = d.ownerId, type = d.assetType || d.type;
@@ -2588,21 +2591,21 @@ async function autoScanOne(snap, ctx) {
   await send(dec.notes);
 }
 async function runDueScans() {
-  if (!db || autoRunning) return { skipped: true }; autoRunning = true; const ctx = { subs: new Map(), ent: new Map() }; let done = 0;
+  if (!db || autoRunning) return { skipped: true }; if (process.memoryUsage().rss > MEM_SOFT_LIMIT) { console.warn("[mem] bellek yüksek, otomatik tarama turu atlandı"); return { skipped: true, reason: "memory" }; } autoRunning = true; const ctx = { subs: new Map(), ent: new Map() }; let done = 0;
   try {
     const snap = await db.collection("assets").where("nextScanAt", "<=", Date.now()).orderBy("nextScanAt").limit(AUTO_BATCH).get();
-    await pool(snap.docs, 3, async (doc) => { try { await autoScanOne(doc, ctx); done++; } catch (e) { console.error("Otomatik tarama hatası:", e.message); await doc.ref.set({ nextScanAt: Date.now() + 36e5 }, { merge: true }).catch(() => {}); } });
+    await pool(snap.docs, SEC.int(process.env.AUTO_SCAN_POOL, 1), async (doc) => { try { await autoScanOne(doc, ctx); done++; } catch (e) { console.error("Otomatik tarama hatası:", e.message); await doc.ref.set({ nextScanAt: Date.now() + 36e5 }, { merge: true }).catch(() => {}); } });
   } catch (e) { console.error("Otomatik tarama turu hatası:", e.message); }
   finally { autoRunning = false; }
   return { scanned: done };
 }
 // Eski varlıklarda nextScanAt alanı yoksa bir kez ekle (sorgu onları bulabilsin)
 async function backfillNextScan() {
-  try { const snap = await db.collection("assets").limit(2000).get(); const todo = snap.docs.filter((d) => d.data().nextScanAt == null); for (let i = 0; i < todo.length; i += 400) { const b = db.batch(); todo.slice(i, i + 400).forEach((d) => b.set(d.ref, { nextScanAt: Date.now() }, { merge: true })); await b.commit(); } }
+  try { const snap = await db.collection("assets").select("nextScanAt").limit(2000).get(); const todo = snap.docs.filter((d) => d.data().nextScanAt == null); for (let i = 0; i < todo.length; i += 400) { const b = db.batch(); todo.slice(i, i + 400).forEach((d) => b.set(d.ref, { nextScanAt: Date.now() }, { merge: true })); await b.commit(); } }
   catch (e) { console.warn("nextScanAt doldurulamadı:", e.message); }
 }
 if (db && AUTO_ENABLED && !process.env.NODE_TEST) {
-  setTimeout(() => backfillNextScan().then(runDueScans), 20000).unref();
+  setTimeout(() => backfillNextScan().then(runDueScans), 90000).unref();
   setInterval(runDueScans, SEC.int(process.env.AUTO_SCAN_TICK_MIN, 15) * 60000).unref();
 }
 // Dışarıdan tetikleme (uyuyan Render için): CRON_SECRET tanımlı değilse uç nokta kapalıdır
@@ -2716,7 +2719,7 @@ app.get("/api/reports/period", scanGuard, jobWrap(async (req, res) => {
   if (!db) return res.status(503).json({ success: false, error: "Veritabanı yapılandırılmamış" });
   const type = req.query.type === "yearly" ? "yearly" : "monthly", year = parseInt(req.query.year, 10) || new Date().getUTCFullYear(), month = Math.min(12, Math.max(1, parseInt(req.query.month, 10) || new Date().getUTCMonth() + 1));
   if (year < 2020 || year > 2100) return res.status(400).json({ success: false, error: "Geçersiz yıl" });
-  const snap = await db.collection("assetChecks").where("ownerId", "==", req.user.uid).limit(5000).get();
+  const snap = await db.collection("assetChecks").where("ownerId", "==", req.user.uid).limit(2000).get();
   const checks = snap.docs.map((d) => { const x = d.data(); return { assetId: x.assetId, type: x.type, healthScore: x.healthScore, findings: x.findings, checkedAt: x.checkedAt && x.checkedAt.toMillis ? x.checkedAt.toMillis() : null }; });
   res.json({ success: true, report: AI.buildPeriodReport(checks, { periodType: type, year, month }) });
 }));
@@ -2751,6 +2754,16 @@ app.use((err, req, res, next) => {
 process.on("unhandledRejection", (e) => { console.error("unhandledRejection:", e && e.stack || e); METRICS.recordError({ source: "unhandledRejection", message: e && e.message || e }); });
 // Düşman hedeflerden gelen sahipsiz soket hataları süreci düşürmesin; ama kısa sürede tekrarlanıyorsa süreç bozuktur -> çık, Render yeniden başlatsın.
 const crashTimes = [];
+// Bellek bekçisi: Render ücretsiz plan ~512MB. Aşılırsa süreç sessizce OOM ile öldürülür (log kalmaz).
+// Burada kullanım loglanır; sert sınıra yaklaşınca temiz kapanıp yeniden başlar.
+const MB = 1048576;
+function memLog() { const m = process.memoryUsage(); const rss = Math.round(m.rss / MB); console.log(`[mem] rss=${rss}MB heap=${Math.round(m.heapUsed / MB)}/${Math.round(m.heapTotal / MB)}MB ext=${Math.round(m.external / MB)}MB`); return m.rss; }
+if (!process.env.NODE_TEST) {
+  setInterval(() => {
+    const rss = memLog() ;
+    if (rss > MEM_HARD_LIMIT) { console.error(`[mem] rss ${Math.round(rss / MB)}MB sınırı aştı: temiz yeniden başlatma`); JOBS.stop().catch(() => {}); setTimeout(() => process.exit(1), 2000).unref(); }
+  }, 60000).unref();
+}
 process.on("uncaughtException", (e) => {
   console.error("uncaughtException:", e && e.stack || e);
   const now = Date.now(); crashTimes.push(now); while (crashTimes.length && now - crashTimes[0] > 60000) crashTimes.shift();
@@ -2761,8 +2774,9 @@ if (require.main === module) {
   if (SEC.isProd() && !db) console.warn("UYARI: Üretim modunda Firebase yapılandırılmamış; kimlik doğrulama gerektiren uç noktalar 503 döndürür.");
   if (SEC.devBypass()) console.warn("UYARI: DEV_AUTH_BYPASS aktif (yalnızca geliştirme). Üretimde ASLA kullanmayın.");
   if (!process.env.NODE_TEST) JOBS.start();
-  const server = app.listen(PORT, () => console.log(`Scanner ${SCANNER_VERSION} DEEP ${PORT} portunda (${SEC.isProd() ? "üretim" : "geliştirme"})`));
-  process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor"); JOBS.stop().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
+  const server = app.listen(PORT, () => { console.log(`Scanner ${SCANNER_VERSION} DEEP ${PORT} portunda (${SEC.isProd() ? "üretim" : "geliştirme"})`); memLog(); });
+  server.keepAliveTimeout = 65000; server.headersTimeout = 66000; // Render proxy 502 önlemi
+  process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor (Render: boşta uyku veya yeni deploy)"); memLog(); JOBS.stop().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
 }
 module.exports = app;
 module.exports._internals = { JOBS, METRICS, executeScan, queueScanItem, scanSummary, rdapDate, toDateOrNull, cleanBulkItem, isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle, parseWhois, parseLooseDate, whoisQuery, expiryProfile, cymruAsn, getTlsDetails, followRelatedRdap, fetchRegistration };
