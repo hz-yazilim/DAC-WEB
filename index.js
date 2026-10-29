@@ -62,6 +62,8 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 // Yanıt sıkıştırma (gzip/br): "compression" paketi yüklüyse etkinleşir
 try { app.use(require("compression")()); } catch (e) { console.warn("compression paketi yok: npm install compression"); }
+// SEO: API yanıtları arama sonuçlarına girmesin (robots.txt ile birlikte çift koruma)
+app.use(["/api", "/health"], (q, r, n) => { r.set("X-Robots-Tag", "noindex, nofollow"); n(); });
 // Firebase Auth: giriş penceresi/iframe'i authDomain'den yüklenir (özel alan adı veya *.web.app olabilir) ve reCAPTCHA (google.com) gerekebilir
 const AUTH_DOMAIN_SRC = (() => { const d = String(process.env.FIREBASE_WEB_AUTH_DOMAIN || "").trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""); return /^[a-z0-9.-]+$/i.test(d) ? ["https://" + d] : []; })();
 app.use(require("helmet")({
@@ -2363,8 +2365,15 @@ function forFirestore(v, depth = 0) {
 const PUBLIC_DIR = STRUCT ? path.join(__dirname, "public") : __dirname;
 const LEGAL_PAGES = { "/kvkk": "kvkk.html", "/gizlilik": "gizlilik.html", "/kullanim-kosullari": "kullanim-kosullari.html", "/cerez-politikasi": "cerez-politikasi.html", "/mesafeli-satis": "mesafeli-satis.html", "/iade-iptal": "iade-iptal.html", "/iletisim": "iletisim.html", "/kabul-edilebilir-kullanim": "kabul-edilebilir-kullanim.html", "/hakkimizda": "hakkimizda.html" };
 const SITE_URL = String(process.env.SITE_URL || "https://dac-web-tfqf.onrender.com").replace(/\/$/, "");
-app.get("/robots.txt", (q, r) => { r.type("text/plain").set("Cache-Control", "public, max-age=86400").send(`User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${SITE_URL}/sitemap.xml\n`); });
-app.get("/sitemap.xml", (q, r) => { r.type("application/xml").set("Cache-Control", "public, max-age=86400").send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${SITE_URL}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n${Object.keys(LEGAL_PAGES).map(u => `  <url><loc>${SITE_URL}${u}</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>\n`).join("")}</urlset>\n`); });
+app.get("/robots.txt", (q, r) => { r.type("text/plain; charset=utf-8").set("Cache-Control", "public, max-age=3600").send(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /health\n\nSitemap: ${SITE_URL}/sitemap.xml\n`); });
+// Sitemap: sayfa dosyasının son değişiklik tarihi lastmod olarak yazılır (Google için güvenilir sinyal)
+const SITEMAP_PAGES = [["/", 1.0, "weekly"], ["/hakkimizda", 0.8, "monthly"], ["/iletisim", 0.7, "monthly"], ["/kvkk", 0.4, "yearly"], ["/gizlilik", 0.4, "yearly"], ["/cerez-politikasi", 0.3, "yearly"], ["/kullanim-kosullari", 0.4, "yearly"], ["/kabul-edilebilir-kullanim", 0.3, "yearly"], ["/mesafeli-satis", 0.3, "yearly"], ["/iade-iptal", 0.3, "yearly"]];
+const pageFile = (u) => u === "/" ? path.join(PUBLIC_DIR, "index.html") : (STRUCT ? path.join(PUBLIC_DIR, "legal", LEGAL_PAGES[u] || "") : path.join(__dirname, LEGAL_PAGES[u] || ""));
+const lastmodOf = (u) => { try { return fs.statSync(pageFile(u)).mtime.toISOString().slice(0, 10); } catch { return new Date().toISOString().slice(0, 10); } };
+app.get("/sitemap.xml", (q, r) => {
+  const urls = SITEMAP_PAGES.map(([u, p, f]) => `  <url>\n    <loc>${SITE_URL}${u === "/" ? "/" : u}</loc>\n    <lastmod>${lastmodOf(u)}</lastmod>\n    <changefreq>${f}</changefreq>\n    <priority>${p.toFixed(1)}</priority>\n  </url>`).join("\n");
+  r.type("application/xml; charset=utf-8").set("Cache-Control", "public, max-age=3600").send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
+});
 app.get("/llms.txt", (q, r) => { r.type("text/plain; charset=utf-8").set("Cache-Control", "public, max-age=86400").send(`# Digital Asset Center (DAC)\n\n> Domain, SSL, DNS, web güvenliği, SEO ve performans taramalarını tek panelden yapan, yenileme tarihlerini takip eden dijital varlık yönetim uygulaması. HZ Yazılım tarafından geliştirilir; kurucusu Hamza Genç'tir.\n\nUygulamaya Google veya e-posta ile giriş yapılır; bu yüzden aşağıdaki sayfalar herkese açık bilgi kaynağıdır.\n\n## Hakkında\n- [Hakkımızda: HZ Yazılım, kurucu ve ürün](${SITE_URL}/hakkimizda)\n- [İletişim ve şirket bilgileri](${SITE_URL}/iletisim)\n\n## Yasal metinler\n- [KVKK Aydınlatma Metni](${SITE_URL}/kvkk)\n- [Gizlilik Politikası](${SITE_URL}/gizlilik)\n- [Çerez Politikası](${SITE_URL}/cerez-politikasi)\n- [Kullanım Koşulları](${SITE_URL}/kullanim-kosullari)\n- [Kabul Edilebilir Kullanım](${SITE_URL}/kabul-edilebilir-kullanim)\n- [Mesafeli Satış Sözleşmesi](${SITE_URL}/mesafeli-satis)\n- [İptal ve İade](${SITE_URL}/iade-iptal)\n`); });
 if (SEC.isProd() && !process.env.SECURITY_CONTACT) console.warn("UYARI: SECURITY_CONTACT tanımlı değil; /.well-known/security.txt içinde yer tutucu adres görünür. Render > Environment'a SECURITY_CONTACT=mailto:guvenlik@alanadiniz.com ekleyin.");
 const securityTxt = (q, r) => { const exp = new Date(Date.now() + 365 * 864e5).toISOString(); r.type("text/plain").set("Cache-Control", "public, max-age=86400").send(`Contact: ${process.env.SECURITY_CONTACT || "mailto:security@example.com"}\nExpires: ${exp}\nPreferred-Languages: tr, en\nCanonical: ${SITE_URL}/.well-known/security.txt\n`); };
