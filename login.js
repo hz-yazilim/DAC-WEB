@@ -35,7 +35,7 @@
   };
   const msgOf = (e) => ERR[e.code] || ("Giriş hatası: " + (e.code || e.message));
 
-  function fatal(msg) { document.body.classList.remove("init", "authed"); lerr.textContent = msg; }
+  function fatal(msg) { document.body.classList.remove("init", "authed"); document.body.classList.add("showlogin"); lerr.textContent = msg; }
   function say(msg, ok) { lerr.textContent = msg; lerr.style.color = ok ? "var(--ok, #22c55e)" : ""; }
 
   window.dacLogout = () => {

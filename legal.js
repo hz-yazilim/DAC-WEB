@@ -1,5 +1,6 @@
 /* Yasal sayfalar: şirket bilgilerini [data-co] alanlarına, paket tablosunu #plan-table içine yazar. */
 (function () {
+  if (!window.DAC_I18N) { var sc = document.createElement("script"); sc.src = "/js/i18n.js?v=20261030a"; document.head.appendChild(sc); }
   var C = window.DAC_COMPANY || {}, missing = [];
   document.querySelectorAll("[data-co]").forEach(function (el) {
     var k = el.getAttribute("data-co"), v = C[k];

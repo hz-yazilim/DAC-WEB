@@ -154,7 +154,7 @@ function planState(){
 const limitOf=ps=>ps.p.assets==null?Infinity:ps.p.assets;
 const limTxt=ps=>ps.p.assets==null?'∞':ps.p.assets;
 const leftTxt=ms=>{const d=Math.floor(ms/864e5),h=Math.floor(ms%864e5/36e5);return d?`${d} gün ${h} sa`:`${h} sa ${Math.floor(ms%36e5/6e4)} dk`};
-const money=(n,c)=>c==='TRY'?n.toLocaleString('tr-TR',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₺':'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const money=(n,c)=>c==='TRY'?n.toLocaleString((window.DAC_LOC||'tr-TR'),{minimumFractionDigits:2,maximumFractionDigits:2})+' ₺':'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const planName=ps=>ps.expired?'Süre doldu':ps.p.name;
 function gate(){const ps=planState();if(ps.expired){toast('Deneme süreniz bitti. Devam etmek için bir paket seçin.','err');location.hash='plan';return false}return true}
 
@@ -230,7 +230,7 @@ const isBad=s=>['CRITICAL','EXPIRED','DOWN','ERROR'].includes(s);
 const isOk=s=>['ACTIVE','HEALTHY'].includes(s);
 const tone=n=>n>=80?'ok':n>=50?'wn':'bd';
 const col=n=>n>=80?'var(--ok)':n>=50?'var(--wn)':'var(--bad)';
-const fmt=t=>t?new Date(t).toLocaleString('tr-TR',{dateStyle:'short',timeStyle:'short'}):'-';
+const fmt=t=>t?new Date(t).toLocaleString((window.DAC_LOC||'tr-TR'),{dateStyle:'short',timeStyle:'short'}):'-';
 const sc=a=>a.result?.healthScore;
 const alerts=()=>S.assets.filter(a=>a.result&&(isBad(a.result.status)||(a.result.findings||[]).some(f=>sev(f)==='bd')||(sc(a)!=null&&sc(a)<(S.settings.alertBelow??50))));
 const find=id=>S.assets.find(a=>a.id===id);
@@ -370,9 +370,9 @@ function renewItems(){
  return out.filter(x=>!isNaN(x.at)).sort((x,y)=>x.at-y.at);
 }
 const dayTone=d=>d<=7?'bd':d<=30?'wn':'ok';
-const renewRow=x=>{const d=Math.ceil((x.at-Date.now())/864e5);return`<div class="item"><div class="ico" style="color:${CATS[x.a.cat].c}">${ic(CATS[x.a.cat].icon)}</div><div class="g"><b>${esc(x.a.name)}</b><span>${x.kind} • ${new Date(x.at).toLocaleDateString('tr-TR')}${x.cost?' • '+sym(+x.cost,x.cur):''}</span></div><span class="badge ${dayTone(d)}">${d<0?Math.abs(d)+' gün geçti':d+' gün'}</span></div>`};
+const renewRow=x=>{const d=Math.ceil((x.at-Date.now())/864e5);return`<div class="item"><div class="ico" style="color:${CATS[x.a.cat].c}">${ic(CATS[x.a.cat].icon)}</div><div class="g"><b>${esc(x.a.name)}</b><span>${x.kind} • ${new Date(x.at).toLocaleDateString((window.DAC_LOC||'tr-TR'))}${x.cost?' • '+sym(+x.cost,x.cur):''}</span></div><span class="badge ${dayTone(d)}">${d<0?Math.abs(d)+' gün geçti':d+' gün'}</span></div>`};
 const costTotals=()=>{const t={};S.assets.filter(a=>a.cat==='saas'&&a.extra?.cost).forEach(a=>{const c=a.extra.currency||'TRY';t[c]=(t[c]||0)+ +a.extra.cost});return t};
-const sym=(n,c)=>c==='TRY'?n.toLocaleString('tr-TR',{maximumFractionDigits:2})+' ₺':c==='EUR'?'€'+n.toLocaleString('en-US',{maximumFractionDigits:2}):'$'+n.toLocaleString('en-US',{maximumFractionDigits:2});
+const sym=(n,c)=>c==='TRY'?n.toLocaleString((window.DAC_LOC||'tr-TR'),{maximumFractionDigits:2})+' ₺':c==='EUR'?'€'+n.toLocaleString('en-US',{maximumFractionDigits:2}):'$'+n.toLocaleString('en-US',{maximumFractionDigits:2});
 
 /* ---------- sayfalar ---------- */
 function dash(){
@@ -438,7 +438,7 @@ function plan(){
  loadPricing();
  const st=S.settings,ps=planState(),cur=st.currency||'TRY',cyc=st.cycle||'monthly',alt=cur==='TRY'?'USD':'TRY';
  if(!PAYCFG&&!HEALTH_TRIED&&apiUrl()){HEALTH_TRIED=true;fetchHealth().then(()=>{if(location.hash==='#plan')render()})}
- const status=ps.paid?`<span class="badge ok">${ps.p.name} aktif</span>${st.planEnd?` <span class="hint">bitiş: ${new Date(st.planEnd).toLocaleDateString('tr-TR')}</span>`:''}`
+ const status=ps.paid?`<span class="badge ok">${ps.p.name} aktif</span>${st.planEnd?` <span class="hint">bitiş: ${new Date(st.planEnd).toLocaleDateString((window.DAC_LOC||'tr-TR'))}</span>`:''}`
   :ps.trial?`<span class="badge wn">Ücretsiz deneme: ${leftTxt(ps.left)} kaldı</span>`:`<span class="badge bd">Deneme süresi doldu</span>`;
  const provOk=c=>!PAYCFG||(c==='TRY'?PAYCFG.paytr:PAYCFG.usd),free=!!(PAYCFG&&PAYCFG.free),ready=c=>provOk(c)||free;
  const pc=PLANCPN&&PLANCPN.cur===cur&&PLANCPN.cyc===cyc?PLANCPN:null;
@@ -479,6 +479,10 @@ function settings(){
  <div class="card"><b>${ic('user-round')} Hesap</b><div class="item" style="border:0">${U?.photoURL?`<img class="pfp" src="${esc(U.photoURL)}" alt="">`:`<div class="ico">${ic('user-round')}</div>`}<div class="g"><b>${esc(U?.displayName||'Kullanıcı')}</b><span>${esc(U?.email||'')}</span></div></div>
  <div class="hint">Son giriş: ${U?.metadata?.lastSignInTime?fmt(U.metadata.lastSignInTime):'-'} • Paket: ${esc(planName(ps))}</div>
  <div class="acts" style="margin-top:12px"><button class="btn s" data-act="copyuid">${ic('copy')} Kullanıcı ID kopyala</button><button class="btn s" data-act="logout">${ic('log-out')} Çıkış yap</button></div></div>
+ <div class="card"><b>${ic('languages')} Dil / Language</b><div style="height:10px"></div>
+ <label class="hint">Arayüz dili</label>
+ <div class="seg"><button type="button" data-lang="tr" class="${(window.DAC_I18N&&DAC_I18N.lang)==='en'?'':'on'}">Türkçe</button><button type="button" data-lang="en" class="${(window.DAC_I18N&&DAC_I18N.lang)==='en'?'on':''}">English</button></div>
+ <p class="hint">Seçim bu cihazda saklanır; sayfa yenilenerek uygulanır.</p></div>
  <div class="card"><form data-form="settings"><b>${ic('building-2')} Organizasyon ve uyarılar</b><div style="height:10px"></div>
  <label class="hint">Organizasyon adı</label><input class="field" name="org" value="${esc(s.org)}" required>
  <label class="hint">Uyarı eşiği: skoru bunun altında kalan varlıklar "Aktif Uyarılar"a düşer</label><input class="field" name="alertBelow" type="number" min="10" max="95" value="${s.alertBelow??50}">
@@ -560,7 +564,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target&&e.target.i
 /* ---------- abonelik iptali (V13.4): kullanıcı kendi aboneliğini iptal eder / iptali geri alır ---------- */
 function subCard(ps,st){
  if(!ps.paid)return'';
- const prov=st.provider,end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-',canc=!!st.cancelAtPeriodEnd;
+ const prov=st.provider,end=st.planEnd?new Date(st.planEnd).toLocaleDateString((window.DAC_LOC||'tr-TR')):'-',canc=!!st.cancelAtPeriodEnd;
  const provTxt=prov==='paytr'?'PayTR (tek seferlik dönem bedeli)':prov==='stripe'?'Stripe (USD, otomatik yenilenir)':prov==='iyzico'?'iyzico (TL, tek seferlik dönem bedeli)':'Ödemesiz / yönetici tanımlı paket';
  const state=canc?`<span class="badge wn">İptal edildi • ${end} tarihinde sona erer</span>`:prov==='stripe'?`<span class="badge ok">Yenilenir • sonraki dönem ${end}</span>`:`<span class="badge ok">Aktif • ${end} tarihine kadar</span>`;
  return`<div class="card"><b>${ic('package')} Aboneliğim</b>
@@ -569,7 +573,7 @@ function subCard(ps,st){
  <div class="btns">${canc?`<button class="btn" data-act="sub-resume">${ic('rotate-ccw')} İptali geri al</button>`:`<button class="btn s d" data-act="sub-cancel">${ic('circle-x')} Aboneliği iptal et</button>`}<a class="btn s" href="#support">${ic('life-buoy')} İade / iptal için destek</a></div></div>`;
 }
 function subCancelAsk(){
- const st=S.settings,prov=st.provider,paid=prov==='paytr'||prov==='stripe'||prov==='iyzico',end=st.planEnd?new Date(st.planEnd).toLocaleDateString('tr-TR'):'-';
+ const st=S.settings,prov=st.provider,paid=prov==='paytr'||prov==='stripe'||prov==='iyzico',end=st.planEnd?new Date(st.planEnd).toLocaleDateString((window.DAC_LOC||'tr-TR')):'-';
  $('#box').innerHTML=`<div class="mh"><h2 style="margin:0">Aboneliği iptal et</h2><button class="btn s" data-act="close">${ic('x')}</button></div>
  <p class="hint">Paketiniz <b>${end}</b> tarihine kadar kullanılabilir. Bu tarihten sonra yenilenmez${prov==='stripe'?' ve kartınızdan yeni ücret alınmaz':''}.</p>
  ${paid?'<p class="hint">Ödenmiş dönem için iade veya hemen sonlandırma isterseniz <a href="#support" data-act="close">Destek</a> sayfasından talep açın.</p>':''}

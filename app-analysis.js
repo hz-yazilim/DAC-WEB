@@ -12,7 +12,7 @@ const fv=v=>{
  return esc(v)};
 const msF=n=>n==null?NA:esc(Math.round(n))+' ms';
 const kbF=n=>n==null?NA:esc(n)+' KB';
-const dF=t=>{if(!t)return NA;const d=new Date(t);return isNaN(d)?esc(t):d.toLocaleDateString('tr-TR')};
+const dF=t=>{if(!t)return NA;const d=new Date(t);return isNaN(d)?esc(t):d.toLocaleDateString((window.DAC_LOC||'tr-TR'))};
 const tn=b=>b===true?'ok':b===false?'bd':'na';
 const thr=(v,g,w)=>v==null?'na':v<=g?'ok':v<=w?'wn':'bd';
 const thrUp=(v,g,w)=>v==null?'na':v>=g?'ok':v>=w?'wn':'bd';

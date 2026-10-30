@@ -38,12 +38,191 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
+<script src="/js/i18n.js?v=20261030a"></script>
 <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/css/style.css?v=20261028b">
-<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://dacweb.tr/#website","url":"https://dacweb.tr/","name":"Digital Asset Center","alternateName":["DAC","Digital Asset Center DAC"],"inLanguage":"tr","publisher":{"@id":"https://dacweb.tr/#org"}},{"@type":"Organization","@id":"https://dacweb.tr/#org","name":"HZ Yazılım","url":"https://dacweb.tr/hakkimizda","logo":{"@type":"ImageObject","url":"https://dacweb.tr/icon-512.png","width":512,"height":512},"email":"hz.yazilimm@gmail.com","sameAs":["https://hz-yazilim.github.io"]},{"@type":"WebApplication","@id":"https://dacweb.tr/#app","name":"Digital Asset Center","url":"https://dacweb.tr/","applicationCategory":"BusinessApplication","operatingSystem":"Web","inLanguage":"tr","description":"Domain bitiş tarihi, SSL sertifikası, DNS, web güvenliği, SEO ve performans taramalarını tek panelden yapan dijital varlık yönetim aracı.","image":"https://dacweb.tr/icon-512.png","publisher":{"@id":"https://dacweb.tr/#org"},"offers":{"@type":"Offer","price":"0","priceCurrency":"TRY","description":"Ücretsiz plan"},"featureList":["Domain bitiş tarihi takibi","SSL sertifikası süre kontrolü","DNS ve e-posta güvenliği (SPF, DKIM, DMARC) denetimi","Web sitesi güvenlik başlıkları taraması","SEO analizi","Performans ve hız ölçümü","CSV ve JSON rapor dışa aktarma"]}]}</script>
+<link rel="stylesheet" href="/css/style.css?v=20261030a">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://dacweb.tr/#website","url":"https://dacweb.tr/","name":"Digital Asset Center","alternateName":["DAC","Digital Asset Center DAC"],"inLanguage":["tr","en"],"publisher":{"@id":"https://dacweb.tr/#org"}},{"@type":"Organization","@id":"https://dacweb.tr/#org","name":"HZ Yazılım","url":"https://dacweb.tr/hakkimizda","logo":{"@type":"ImageObject","url":"https://dacweb.tr/icon-512.png","width":512,"height":512},"email":"hz.yazilimm@gmail.com","sameAs":["https://hz-yazilim.github.io"]},{"@type":"WebApplication","@id":"https://dacweb.tr/#app","name":"Digital Asset Center","url":"https://dacweb.tr/","applicationCategory":"BusinessApplication","operatingSystem":"Web","inLanguage":"tr","description":"Domain bitiş tarihi, SSL sertifikası, DNS, web güvenliği, SEO ve performans taramalarını tek panelden yapan dijital varlık yönetim aracı.","image":"https://dacweb.tr/icon-512.png","publisher":{"@id":"https://dacweb.tr/#org"},"offers":{"@type":"Offer","price":"0","priceCurrency":"TRY","description":"Ücretsiz plan"},"featureList":["Domain bitiş tarihi takibi","SSL sertifikası süre kontrolü","DNS ve e-posta güvenliği (SPF, DKIM, DMARC) denetimi","Web sitesi güvenlik başlıkları taraması","SEO analizi","Performans ve hız ölçümü","CSV ve JSON rapor dışa aktarma"]}]}</script>
 </head>
 <body class="init">
-<div id="login"><div class="lbox"><div class="lg" aria-hidden="true">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın</p>
+<div id="landing">
+<header class="lp-head" id="lp-top">
+<div class="lp-wrap lp-bar">
+<a class="lp-brand" href="/" aria-label="Digital Asset Center"><span class="logo"><i data-lucide="shield"></i></span><b>Digital Asset Center</b></a>
+<nav class="lp-nav" aria-label="Sayfa bölümleri"><a href="#ozellikler" data-go="ozellikler">Özellikler</a><a href="#nasil" data-go="nasil">Nasıl çalışır?</a><a href="#onizleme" data-go="onizleme">Önizleme</a><a href="#paketler" data-go="paketler">Paketler</a><a href="#sss" data-go="sss">SSS</a></nav>
+<div class="lp-act"><div class="langsw" role="group" aria-label="Dil / Language"><button type="button" data-lang="tr">TR</button><button type="button" data-lang="en">EN</button></div><a class="btn s lp-hide-s" href="#giris" data-login="login">Giriş yap</a><a class="btn p s" href="#kayit" data-login="register">Ücretsiz başla</a></div>
+</div>
+</header>
+
+<main>
+<section class="lp-hero" aria-labelledby="lp-h1">
+<div class="lp-wrap">
+<span class="lp-kicker">Digital Asset Center • DAC-WEB</span>
+<h1 id="lp-h1">Tüm dijital varlıklarınız tek merkezde</h1>
+<p class="lp-lead">DAC-WEB; web sitelerinizi, alan adlarınızı, SSL sertifikalarınızı, sunucularınızı, e-posta güvenliğinizi, mobil uygulamalarınızı ve yazılım aboneliklerinizi tek panelden tarar, puanlar ve süresi dolmadan sizi uyarır.</p>
+<form class="lp-quick" id="lp-quick" novalidate>
+<input class="field" id="lp-target" name="target" aria-label="Analiz edilecek alan adı veya adres" placeholder="örn: ornek.com" autocomplete="off" inputmode="url" maxlength="253">
+<button class="btn p" type="submit">Analizi başlat</button>
+</form>
+<p class="hint lp-note" id="lp-note">Analiz başlatmak için giriş gerekir. 3 gün ücretsiz deneme, kart bilgisi istenmez.</p>
+<div class="lp-cta"><a class="btn p" href="#kayit" data-login="register">Ücretsiz hesap oluştur</a><a class="btn" href="#paketler" data-go="paketler">Paketleri incele</a></div>
+<ul class="lp-trust" aria-label="Öne çıkanlar"><li><i data-lucide="shield-check"></i>Google ile güvenli giriş</li><li><i data-lucide="credit-card"></i>TL ve USD ödeme</li><li><i data-lucide="languages"></i>Türkçe ve İngilizce</li><li><i data-lucide="smartphone"></i>Telefona yüklenebilir (PWA)</li></ul>
+</div>
+</section>
+
+<section class="lp-sec" id="tanitim" aria-labelledby="lp-about-h">
+<div class="lp-wrap lp-split">
+<div>
+<h2 id="lp-about-h">DAC-WEB nedir, ne işe yarar?</h2>
+<p class="lp-p">Digital Asset Center (DAC-WEB), şirketlerin ve bireylerin sahip olduğu dijital varlıkları tek bir yerden izlemesini sağlayan bir tarama ve takip uygulamasıdır. Varlıklarınızı bir kez eklersiniz; DAC bunları düzenli olarak kontrol eder, sorunları önem sırasına göre listeler ve süresi dolmak üzere olan kayıtları önceden haber verir.</p>
+<p class="lp-p">Alan adı süresinin dolması, unutulan bir SSL sertifikası ya da açık kalan bir sunucu portu gibi sorunlar çoğu zaman müşteri şikâyet ettiğinde fark edilir. DAC bunları siz fark etmeden önce yakalamak için vardır.</p>
+</div>
+<ul class="lp-checks">
+<li><i data-lucide="check"></i>Domain ve SSL bitiş tarihlerini takip eder</li>
+<li><i data-lucide="check"></i>Güvenlik, SEO ve performans bulgularını puanlar</li>
+<li><i data-lucide="check"></i>Her bulgu için nasıl düzeltileceğini açıklar</li>
+<li><i data-lucide="check"></i>Sonuçları CSV veya JSON olarak indirmenizi sağlar</li>
+<li><i data-lucide="check"></i>Önceki taramalarla karşılaştırarak iyileşmeyi gösterir</li>
+</ul>
+</div>
+</section>
+
+<section class="lp-sec lp-alt" id="ozellikler" aria-labelledby="lp-feat-h">
+<div class="lp-wrap">
+<h2 id="lp-feat-h">Özellikler</h2>
+<p class="lp-sub">Dijital varlıklarınızın her katmanı için ayrı bir tarama.</p>
+<div class="lp-grid">
+<article class="lp-card"><div class="ico" style="color:#3b82f6"><i data-lucide="globe"></i></div><h3>Web sitesi</h3><p>Erişim, yanıt süresi, temel SEO ve güvenlik başlıklarını kontrol eder.</p></article>
+<article class="lp-card"><div class="ico" style="color:#8b5cf6"><i data-lucide="link-2"></i></div><h3>Domain</h3><p>DNS kayıtlarını, kayıt kuruluşunu ve bitiş tarihini izler; süresi dolmadan haber verir.</p></article>
+<article class="lp-card"><div class="ico" style="color:#10b981"><i data-lucide="lock"></i></div><h3>SSL</h3><p>Sertifika geçerliliği, kalan gün, zincir ve TLS gücü tek bakışta görünür.</p></article>
+<article class="lp-card"><div class="ico" style="color:#f59e0b"><i data-lucide="hard-drive"></i></div><h3>Hosting</h3><p>Sağlayıcı, ülke, CDN/DDoS koruması ve IPv6 durumunu gösterir.</p></article>
+<article class="lp-card"><div class="ico" style="color:#06b6d4"><i data-lucide="server"></i></div><h3>Sunucu</h3><p>Açık port taramasıyla internete açık riskli servisleri bulur.</p></article>
+<article class="lp-card"><div class="ico" style="color:#22c55e"><i data-lucide="activity"></i></div><h3>Uptime</h3><p>Ardışık denemelerle erişilebilirlik ve gecikmeyi ölçer.</p></article>
+<article class="lp-card"><div class="ico" style="color:#eab308"><i data-lucide="gauge"></i></div><h3>Performans</h3><p>Sayfa hızı, sıkıştırma, önbellek ve HTTP/2 desteğini analiz eder.</p></article>
+<article class="lp-card"><div class="ico" style="color:#14b8a6"><i data-lucide="mail"></i></div><h3>E-posta</h3><p>SPF, DKIM ve DMARC kayıtlarıyla sahte e-posta korumanızı denetler.</p></article>
+<article class="lp-card"><div class="ico" style="color:#0ea5e9"><i data-lucide="smartphone"></i></div><h3>Mobil uygulama</h3><p>Google Play ve App Store'da yayın durumunu, puanı ve güncellemeleri izler.</p></article>
+<article class="lp-card"><div class="ico" style="color:#64748b"><i data-lucide="git-branch"></i></div><h3>Kod deposu</h3><p>GitHub deposunun aktiflik, lisans ve topluluk sağlığını kontrol eder.</p></article>
+<article class="lp-card"><div class="ico" style="color:#ec4899"><i data-lucide="layers"></i></div><h3>SaaS abonelik</h3><p>Yenileme tarihi, maliyet ve kullanım takibiyle unutulan abonelikleri yakalar.</p></article>
+<article class="lp-card"><div class="ico" style="color:#d946ef"><i data-lucide="fingerprint"></i></div><h3>Marka koruması</h3><p>Benzer alan adlarını ve farklı uzantı kayıtlarını bulur; kimlik avı riskini azaltır.</p></article>
+</div>
+<p class="hint lp-center">Ayrıca SEO, güvenlik başlıkları, API ve Google Analytics denetimleri de aynı panelde.</p>
+</div>
+</section>
+
+<section class="lp-sec" id="nasil" aria-labelledby="lp-how-h">
+<div class="lp-wrap">
+<h2 id="lp-how-h">Nasıl çalışır?</h2>
+<p class="lp-sub">Dört adımda tüm varlıklarınız kontrol altında.</p>
+<ol class="lp-steps">
+<li><span class="lp-n">1</span><h3>Üye ol</h3><p>Google hesabınızla ya da e-posta adresinizle saniyeler içinde hesap oluşturun.</p></li>
+<li><span class="lp-n">2</span><h3>Varlığını ekle</h3><p>Alan adı, web sitesi, sunucu, uygulama ya da aboneliğinizi ekleyin.</p></li>
+<li><span class="lp-n">3</span><h3>Analiz başlat</h3><p>İstediğiniz tarama türünü seçin; sonuçlar puan ve bulgu listesi olarak gelir.</p></li>
+<li><span class="lp-n">4</span><h3>Sonuçları takip et</h3><p>Bildirimleri açın, yenileme takvimini izleyin ve iyileşmeyi karşılaştırın.</p></li>
+</ol>
+</div>
+</section>
+
+<section class="lp-sec lp-alt" id="onizleme" aria-labelledby="lp-prev-h">
+<div class="lp-wrap">
+<h2 id="lp-prev-h">Canlı platform ön izlemesi</h2>
+<p class="lp-sub">Panelin gerçek bileşenleriyle hazırlanmış örnek görünüm. Gösterilen veriler örnektir.</p>
+<div class="lp-shot" role="img" aria-label="Digital Asset Center panelinden örnek görünüm">
+<div class="lp-shot-bar"><i></i><i></i><i></i><span>dacweb.tr</span></div>
+<div class="lp-shot-body">
+<div class="grid">
+<div class="card stat"><div class="top"><div class="ico" style="color:#8b9bb8"><i data-lucide="database"></i></div><span class="tag">12/25 kullanımda</span></div><div class="num">12</div><div class="lbl">Toplam Varlık</div></div>
+<div class="card stat"><div class="top"><div class="ico" style="color:#8b9bb8"><i data-lucide="activity"></i></div><span class="tag">Son 30 gün</span></div><div class="num">48</div><div class="lbl">Tarama Sayısı</div></div>
+<div class="card stat"><div class="top"><div class="ico" style="color:#f59e0b"><i data-lucide="shield-alert"></i></div><span class="tag">2 kritik</span></div><div class="num">5</div><div class="lbl">Sorun Tespit</div></div>
+</div>
+<div class="lp-shot-cols">
+<div class="card"><b>Yaklaşan Yenilemeler</b>
+<div class="item"><div class="ico" style="color:#10b981"><i data-lucide="lock"></i></div><div class="g"><b>ornek.com</b><span>SSL bitişi</span></div><span class="badge bd">6 gün kaldı</span></div>
+<div class="item"><div class="ico" style="color:#8b5cf6"><i data-lucide="link-2"></i></div><div class="g"><b>ornek.net</b><span>Domain bitişi</span></div><span class="badge wn">24 gün kaldı</span></div>
+<div class="item"><div class="ico" style="color:#ec4899"><i data-lucide="layers"></i></div><div class="g"><b>Örnek Bulut Aboneliği</b><span>Abonelik yenileme</span></div><span class="badge ok">51 gün kaldı</span></div>
+</div>
+<div class="card lp-score"><b>Güvenlik puanı</b>
+<div class="ring" style="--p:86;--rc:var(--ok)"><span>86</span></div>
+<div class="find"><span class="badge wn">Uyarı</span><span>Content-Security-Policy başlığı yok</span></div>
+<div class="find"><span class="badge ok">Başarılı kontrol</span><span>HSTS etkin</span></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<section class="lp-sec" id="neden" aria-labelledby="lp-why-h">
+<div class="lp-wrap">
+<h2 id="lp-why-h">Neden DAC-WEB?</h2>
+<p class="lp-sub">Birden fazla dijital varlığı tek merkezden yönetmenin avantajları.</p>
+<div class="lp-grid lp-grid-3">
+<article class="lp-card"><div class="ico"><i data-lucide="layout-grid"></i></div><h3>Her şey tek yerde</h3><p>Siteler, alan adları, sertifikalar, sunucular ve abonelikler için ayrı araçlar ve tablolar arasında gezmeyin.</p></article>
+<article class="lp-card"><div class="ico"><i data-lucide="bell-ring"></i></div><h3>Süresi dolmadan haber alın</h3><p>Yenileme takvimi ve tarayıcı bildirimleriyle bitiş tarihlerini kaçırmayın.</p></article>
+<article class="lp-card"><div class="ico"><i data-lucide="list-checks"></i></div><h3>Önce en önemlisi</h3><p>Bulgular önem sırasına göre puanlanır; her biri için nasıl düzeltileceği açıklanır.</p></article>
+<article class="lp-card"><div class="ico"><i data-lucide="users"></i></div><h3>Ajanslar ve ekipler için</h3><p>Müşteri projeleri, ekip kayıtları ve toplu tarama ile çok sayıda varlığı düzenli yönetin.</p></article>
+<article class="lp-card"><div class="ico"><i data-lucide="smartphone"></i></div><h3>Her cihazda</h3><p>Telefona yüklenebilen web uygulaması olarak çalışır; karanlık temasıyla gece kullanımına uygundur.</p></article>
+<article class="lp-card"><div class="ico"><i data-lucide="shield-check"></i></div><h3>Verileriniz sizin</h3><p>Verilerinizi dilediğiniz zaman indirebilir, hesabınızı ve tüm verilerinizi kalıcı olarak silebilirsiniz.</p></article>
+</div>
+</div>
+</section>
+
+<section class="lp-sec lp-alt" id="paketler" aria-labelledby="lp-plans-h">
+<div class="lp-wrap">
+<h2 id="lp-plans-h">Paketler</h2>
+<p class="lp-sub">İhtiyacınıza göre büyüyen, güncel paketler ve fiyatlar.</p>
+<div class="lp-ctrl">
+<div class="seg" id="lp-cur" role="group" aria-label="Para birimi"><button type="button" data-cur="TRY" class="on">TL</button><button type="button" data-cur="USD">USD</button></div>
+<div class="seg" id="lp-cyc" role="group" aria-label="Faturalama dönemi"><button type="button" data-cyc="monthly" class="on">Aylık</button><button type="button" data-cyc="yearly">Yıllık</button></div>
+</div>
+<p class="hint lp-center" id="lp-yearnote"></p>
+<div class="plans lp-plans" id="lp-plans"></div>
+<p class="hint lp-center">Ödemeler PayTR güvenli ödeme sayfasında alınır; kart bilgisi bu sitede saklanmaz. Ayrıntılar için <a href="/mesafeli-satis">Mesafeli Satış Sözleşmesi</a> ve <a href="/iade-iptal">İptal ve İade</a> sayfalarına bakın.</p>
+</div>
+</section>
+
+<section class="lp-sec" id="sss" aria-labelledby="lp-faq-h">
+<div class="lp-wrap lp-narrow">
+<h2 id="lp-faq-h">Sık sorulan sorular</h2>
+<div class="lp-faq">
+<details><summary>Verilerim güvende mi?</summary><p>Verileriniz hesabınıza bağlı olarak saklanır ve yalnızca kimliği doğrulanmış isteklerle erişilir. Tarayıcıdan veritabanına doğrudan erişim kapalıdır; tüm işlemler sunucu tarafında yetki kontrolünden geçer.</p></details>
+<details><summary>Her siteyi tarayabilir miyim?</summary><p>Yalnızca sahibi olduğunuz ya da yazılı izniniz bulunan hedefleri tarayın. Devlet/kamu kurumları ve büyük platformlara ait alan adları güvenlik nedeniyle taranamaz; yetkisiz tarama yasal sorumluluk doğurabilir.</p></details>
+<details><summary>Analiz nasıl çalışır?</summary><p>Eklediğiniz varlık için seçtiğiniz tür (domain, SSL, güvenlik, SEO, performans vb.) çalıştırılır. Sonuç bir puan ve önem sırasına göre sıralı bulgu listesi olarak gelir; her bulgunun yanında düzeltme önerisi bulunur. Tarama süresi hedefin yanıt hızına ve tarama türüne göre değişir.</p></details>
+<details><summary>Nasıl üye olurum?</summary><p>Google hesabınızla tek tıkla ya da e-posta ve şifrenizle üye olabilirsiniz. E-posta ile açılan hesaplar, size gönderilen doğrulama bağlantısına tıklandıktan sonra kullanılabilir. Üyelik için Kullanım Koşulları ve KVKK Aydınlatma Metni onayı gerekir.</p></details>
+<details><summary>Üye olmadan neler yapabilirim?</summary><p>Bu tanıtım sayfasını ve yasal sayfaları üye olmadan gezebilirsiniz. Analiz başlatmak, varlık eklemek ve kişisel özellikleri kullanmak için giriş yapmanız gerekir.</p></details>
+<details><summary>Ücretsiz deneme var mı?</summary><p>Evet. Yeni hesaplar <span data-trial-days>3</span> gün boyunca sınırlı sayıda varlıkla tüm tarama türlerini ücretsiz deneyebilir. Kart bilgisi istenmez. Deneme bitince devam etmek için bir paket seçmeniz gerekir.</p></details>
+<details><summary>Ödeme ve paketler nasıl işliyor?</summary><p>Ödemeler PayTR güvenli ödeme sayfasında TL veya USD olarak alınır. Ödeme tek seferlik dönem bedelidir ve otomatik yenilenmez; süre dolmadan yeniden satın alarak uzatabilirsiniz. Yıllık ödemede indirimli fiyat uygulanır.</p></details>
+<details><summary>Verilerimi indirebilir veya silebilir miyim?</summary><p>Evet. Ayarlar sayfasından tüm verilerinizi indirebilir, hesabınızı ve bulutta saklanan tüm verilerinizi kalıcı olarak silebilirsiniz. Ayrıntılar için <a href="/gizlilik">Gizlilik Politikası</a> ve <a href="/kvkk">KVKK Aydınlatma Metni</a> sayfalarına bakın.</p></details>
+<details><summary>Telefondan kullanabilir miyim?</summary><p>Evet. DAC-WEB tarayıcıda çalışır ve telefonunuza uygulama gibi yüklenebilir; bildirimleri tarayıcınız üzerinden alabilirsiniz.</p></details>
+</div>
+</div>
+</section>
+
+<section class="lp-sec lp-final" aria-labelledby="lp-end-h">
+<div class="lp-wrap lp-center">
+<h2 id="lp-end-h">Varlıklarınızı bugün kontrol altına alın</h2>
+<p class="lp-sub">Ücretsiz hesap oluşturun, ilk analizinizi birkaç dakikada başlatın.</p>
+<div class="lp-cta"><a class="btn p" href="#kayit" data-login="register">Ücretsiz başla</a><a class="btn" href="#giris" data-login="login">Giriş yap</a></div>
+</div>
+</section>
+</main>
+
+<footer class="lp-foot">
+<div class="lp-wrap">
+<div class="lp-foot-top">
+<div><a class="lp-brand" href="/" aria-label="Digital Asset Center"><span class="logo"><i data-lucide="shield"></i></span><b>Digital Asset Center</b></a><p class="hint">Domain, SSL ve web sitesi takibi tek merkezde. Türkiye merkezli bağımsız yazılım stüdyosu HZ Yazılım tarafından geliştirilir.</p></div>
+<nav class="lp-foot-links" aria-label="Alt bağlantılar">
+<a href="/hakkimizda">Hakkımızda</a><a href="/iletisim">İletişim</a><a href="/gizlilik">Gizlilik Politikası</a><a href="/kullanim-kosullari">Kullanım Koşulları</a><a href="/kvkk">KVKK Aydınlatma</a><a href="/cerez-politikasi">Çerezler</a><a href="/kabul-edilebilir-kullanim">Kabul Edilebilir Kullanım</a><a href="/mesafeli-satis">Mesafeli Satış</a><a href="/iade-iptal">İptal ve İade</a><a href="#" data-cookie-settings>Çerez tercihleri</a>
+</nav>
+</div>
+<p class="hint lp-copy">© <span id="lp-year">2026</span> HZ Yazılım • <a href="mailto:hz.yazilimm@gmail.com">hz.yazilimm@gmail.com</a></p>
+</div>
+</footer>
+</div>
+
+<div id="login">
+<div class="lbox">
+<button class="lnk lp-back" id="lp-back" type="button">← Tanıtım sayfasına dön</button>
+<div class="lg" aria-hidden="true">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın</p>
+<div id="lmsg" class="lp-lmsg" role="status"></div>
 <label class="consent"><input type="checkbox" id="lterms"><span><a href="/kullanim-kosullari" target="_blank" rel="noopener">Kullanım Koşulları</a>'nı ve <a href="/kvkk" target="_blank" rel="noopener">KVKK Aydınlatma Metni</a>'ni okudum, kabul ediyorum. <small>(Google ile giriş ve hesap oluşturma için gereklidir.)</small></span></label>
 <button class="btn p w" id="gbtn" type="button">Google ile giriş yap</button>
 <div class="or"><span>veya e-posta ile</span></div>
@@ -55,35 +234,10 @@
 <button class="lnk" id="fbtn" type="button">Şifremi unuttum</button>
 </form>
 <div id="lerr" class="hint" role="status"></div>
-<section id="about" class="about" aria-labelledby="about-h">
-<h2 id="about-h">Domain, SSL ve web sitesi takibi tek merkezde</h2>
-<p>Digital Asset Center (DAC), şirketlerin ve bireylerin sahip olduğu alan adlarını, web sitelerini, SSL sertifikalarını ve sunucularını tek bir panelden izlemesini sağlayan bir tarama ve takip uygulamasıdır. Varlıklarınızı bir kez ekleyin; DAC bunları düzenli olarak kontrol eder, sorunları önem sırasına göre listeler ve süresi dolmak üzere olan kayıtları önceden haber verir.</p>
-<h3>Domain bitiş tarihi ve SSL sertifika takibi</h3>
-<p>Alan adı bitiş tarihleri, DNS kayıtları, e-posta güvenliği kayıtları (SPF, DKIM, DMARC) ve SSL sertifikası geçerlilik süreleri tek ekranda görünür. Yaklaşan yenilemeler bildirim olarak gelir; böylece sertifikanızın süresi dolduğu için sitenizin erişilemez olması gibi sorunlar yaşanmaz. Yenileme maliyetlerini de kaydederek yıllık dijital harcamanızı görebilirsiniz.</p>
-<h3>Web sitesi güvenlik taraması</h3>
-<p>Güvenlik taramasında CSP, HSTS, X-Content-Type-Options, Referrer-Policy ve Permissions-Policy başlıkları, çerez bayrakları, karma içerik ve açık dizin listelemesi denetlenir. Bulgular önem sırasına göre puanlanır ve nasıl düzeltileceği açıklanır.</p>
-<h3>SEO analizi ve performans ölçümü</h3>
-<p>SEO analizinde başlık ve açıklama uzunluğu, H1 yapısı, içerik yoğunluğu, görsel alt metinleri, canonical bağlantısı, robots.txt, site haritası (sitemap.xml), Open Graph ve yapısal veri kontrol edilir. Performans bölümünde sunucu yanıt süresi, sıkıştırma, HTTP/2 desteği, sayfa ağırlığı, görsel boyutları ve oluşturmayı engelleyen script'ler ölçülür.</p>
-<h3>Nasıl çalışır?</h3>
-<ul>
-<li>Google hesabınızla veya doğrulanmış e-posta adresinizle giriş yapın.</li>
-<li>Domain, web sitesi veya sunucu varlıklarınızı ekleyin.</li>
-<li>İstediğiniz kategoriyi seçip taramayı başlatın; sonuçları puan ve bulgu listesi olarak inceleyin.</li>
-<li>Sonuçları CSV veya JSON olarak indirin, raporlarınızı yazdırın.</li>
-<li>Önceki taramalarla karşılaştırarak iyileşmeyi takip edin.</li>
-</ul>
-<h3>Kimler için uygun?</h3>
-<p>Birden fazla müşteri sitesini yöneten ajanslar, kendi markalarının alan adlarını takip eden girişimciler, BT ekipleri ve bağımsız geliştiriciler DAC ile aynı düzeni kullanabilir. Uygulama telefona yüklenebilen bir web uygulaması olarak çalışır, çevrimdışıyken bile son görüntülenen ekranları açar ve karanlık temasıyla gece kullanımına uygundur.</p>
-<h3>Sık sorulan sorular</h3>
-<p><b>Domain süresi dolmak üzereyken nasıl haberdar olurum?</b> Alan adınızı eklediğinizde bitiş tarihi otomatik okunur ve süre yaklaşınca bildirim gönderilir.</p>
-<p><b>SSL sertifikası süresini takip edebilir miyim?</b> Evet. Sertifikanın geçerlilik bitişi, vericisi ve zincir durumu her taramada kontrol edilir.</p>
-<p><b>Kullanmak ücretsiz mi?</b> Kredi kartı gerekmez; ücretsiz planla başlayıp ihtiyacınız arttıkça daha fazla varlık ve tarama hakkına geçebilirsiniz.</p>
-<p><b>Verilerim güvende mi?</b> Verileriniz hesabınıza bağlı olarak saklanır ve yalnızca kimliği doğrulanmış isteklerle erişilir. Tarayıcıdan veritabanına doğrudan erişim kapalıdır; tüm işlemler sunucu tarafında yetki kontrolünden geçer.</p>
-<h3>Kim geliştiriyor?</h3>
-<p>DAC, Türkiye merkezli bağımsız yazılım stüdyosu HZ Yazılım bünyesinde geliştirilir. Ayrıntılar için <a href="/hakkimizda">Hakkımızda</a> ve <a href="/iletisim">İletişim</a> sayfalarına, kişisel verilerin işlenmesi için <a href="/kvkk">KVKK Aydınlatma Metni</a>'ne giriş yapmadan ulaşabilirsiniz.</p>
-</section>
-<nav class="flinks" aria-label="Yasal bağlantılar"><a href="/hakkimizda">Hakkımızda</a> • <a href="/kvkk">KVKK Aydınlatma</a> • <a href="/gizlilik">Gizlilik</a> • <a href="/cerez-politikasi">Çerezler</a> • <a href="/kullanim-kosullari">Kullanım Koşulları</a> • <a href="/kabul-edilebilir-kullanim">Kabul Edilebilir Kullanım</a> • <a href="/mesafeli-satis">Mesafeli Satış</a> • <a href="/iade-iptal">İptal ve İade</a> • <a href="/iletisim">İletişim</a> • <a href="#" data-cookie-settings>Çerez tercihleri</a></nav>
-</div></div>
+<div class="langsw lp-login-lang" role="group" aria-label="Dil / Language"><button type="button" data-lang="tr">TR</button><button type="button" data-lang="en">EN</button></div>
+<nav class="flinks" aria-label="Yasal bağlantılar"><a href="/hakkimizda">Hakkımızda</a> • <a href="/kvkk">KVKK Aydınlatma</a> • <a href="/gizlilik">Gizlilik</a> • <a href="/cerez-politikasi">Çerezler</a> • <a href="/kullanim-kosullari">Kullanım Koşulları</a> • <a href="/iletisim">İletişim</a> • <a href="#" data-cookie-settings>Çerez tercihleri</a></nav>
+</div>
+</div>
 <div id="busy"></div>
 <div id="shade"></div>
 <aside id="side"></aside>
@@ -103,14 +257,15 @@
 <script src="/js/company.js?v=20261025c" defer></script>
 <script src="/js/plans.js?v=20261025b" defer></script>
 <script src="/js/cookie-consent.js?v=20261025b" defer></script>
-<script src="/js/app.js?v=20261030c" defer></script>
-<script src="/js/app-analysis.js?v=20261030c" defer></script>
+<script src="/js/app.js?v=20261030d" defer></script>
+<script src="/js/app-analysis.js?v=20261030d" defer></script>
 <script src="/js/app-main.js?v=20261031a" defer></script>
 <script src="/js/app-bulk.js?v=20261030c" defer></script>
 <script src="/js/app-admin.js?v=20261030c" defer></script>
 <script src="/js/app-admin-ops.js?v=20261030c" defer></script>
 <script src="/js/app-support.js?v=20261029b" defer></script>
-<script type="module" src="/js/login.js?v=20261026a"></script>
+<script src="/js/landing.js?v=20261030a" defer></script>
+<script type="module" src="/js/login.js?v=20261030a"></script>
 <script src="/js/sw-register.js?v=20261025b" defer></script>
 <noscript><p>Digital Asset Center, HZ Yazılım tarafından geliştirilen dijital varlık takip uygulamasıdır. Uygulama JavaScript ve giriş gerektirir. Herkese açık bilgi: <a href="/hakkimizda">Hakkımızda</a>, <a href="/kvkk">KVKK</a>, <a href="/gizlilik">Gizlilik</a>, <a href="/iletisim">İletişim</a>.</p></noscript>
 </body>
