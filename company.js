@@ -6,7 +6,7 @@
 window.DAC_COMPANY = {
   marka: "Digital Asset Center",
   kisaMarka: "DAC",
-  web: "https://dac-web-tfqf.onrender.com",
+  web: "https://dacweb.tr",
   unvan: "HZ Yazılım",
   portfoy: "https://hz-yazilim.github.io",
   eposta: "hz.yazilimm@gmail.com",

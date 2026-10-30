@@ -115,7 +115,7 @@ const PORT = process.env.PORT || 3000;
 const SCANNER_VERSION = "v13.6";
 
 const UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-const UA_BOT = "Mozilla/5.0 (compatible; DigitalAssetCenterBot/12.0; +https://dac-web-yefr.onrender.com)";
+const UA_BOT = "Mozilla/5.0 (compatible; DigitalAssetCenterBot/12.0; +https://dacweb.tr)";
 const BROWSER_HEADERS = {
   "User-Agent": UA_BROWSER,
   "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
@@ -2368,7 +2368,9 @@ function forFirestore(v, depth = 0) {
 // ===== Site dosyalarını aynı sunucudan yayınla (yalnızca public/ klasörü; sunucu kodu asla yayınlanmaz) =====
 const PUBLIC_DIR = STRUCT ? path.join(__dirname, "public") : __dirname;
 const LEGAL_PAGES = { "/kvkk": "kvkk.html", "/gizlilik": "gizlilik.html", "/kullanim-kosullari": "kullanim-kosullari.html", "/cerez-politikasi": "cerez-politikasi.html", "/mesafeli-satis": "mesafeli-satis.html", "/iade-iptal": "iade-iptal.html", "/iletisim": "iletisim.html", "/kabul-edilebilir-kullanim": "kabul-edilebilir-kullanim.html", "/hakkimizda": "hakkimizda.html" };
-const SITE_URL = String(process.env.SITE_URL || "https://dac-web-tfqf.onrender.com").replace(/\/$/, "");
+// Herkese açık site adresi (sitemap, robots, llms.txt, security.txt). Varsayılan: https://dacweb.tr.
+// Render'da SITE_URL hâlâ *.onrender.com ise YOK SAYILIR (arama motorlarına yanlış adres verilmesin); gerçekten başka bir alan adı kullanacaksanız onrender dışı bir adres girin.
+const SITE_URL = (() => { const d = "https://dacweb.tr"; const v = String(process.env.SITE_URL || "").trim().replace(/\/+$/, ""); if (!/^https:\/\/[a-z0-9.-]+$/i.test(v)) return d; if (/\.onrender\.com$/i.test(v)) { console.warn("SITE_URL bir onrender.com adresi: yok sayıldı, " + d + " kullanılıyor. Render > Environment'tan SITE_URL'yi güncelleyin veya silin."); return d; } return v; })();
 app.get("/robots.txt", (q, r) => { r.type("text/plain; charset=utf-8").set("Cache-Control", "public, max-age=3600").send(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /health\n\nSitemap: ${SITE_URL}/sitemap.xml\n`); });
 // Sitemap: sayfa dosyasının son değişiklik tarihi lastmod olarak yazılır (Google için güvenilir sinyal)
 const SITEMAP_PAGES = [["/", 1.0, "weekly"], ["/hakkimizda", 0.8, "monthly"], ["/iletisim", 0.7, "monthly"], ["/kvkk", 0.4, "yearly"], ["/gizlilik", 0.4, "yearly"], ["/cerez-politikasi", 0.3, "yearly"], ["/kullanim-kosullari", 0.4, "yearly"], ["/kabul-edilebilir-kullanim", 0.3, "yearly"], ["/mesafeli-satis", 0.3, "yearly"], ["/iade-iptal", 0.3, "yearly"]];

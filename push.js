@@ -22,7 +22,7 @@ module.exports = function initPush({ app, db, verifyUser }) {
       else { const k = webpush.generateVAPIDKeys(); pub = k.publicKey; priv = k.privateKey; await ref.set({ publicKey: pub, privateKey: priv, createdAt: Date.now() }); }
     }
     const contact = String(process.env.SECURITY_CONTACT || "").replace(/^mailto:/, "");
-    const subject = process.env.VAPID_SUBJECT || (contact.includes("@") ? "mailto:" + contact : String(process.env.SITE_URL || "https://dac-web-tfqf.onrender.com"));
+    const subject = process.env.VAPID_SUBJECT || (contact.includes("@") ? "mailto:" + contact : String(process.env.SITE_URL || "https://dacweb.tr"));
     webpush.setVapidDetails(subject, pub, priv);
     keys = { pub };
     return true;

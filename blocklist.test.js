@@ -181,3 +181,17 @@ test("Yönetici: yasaklı deneme listesi yalnızca yöneticiye açık ve en yeni
   const j = await (await fetch(url(s, "/api/admin/blocked-attempts"), { headers: as("root") })).json(); assert.deepEqual(j.entries.map((e) => e.host), ["google.com", "a.gov.tr"]);
   assert.equal((await fetch(url(s, "/api/admin/blocked-attempts"), { headers: as("u1") })).status, 403); s.close();
 });
+
+/* ---------------- Site adresi (sitemap / robots / canonical) ---------------- */
+test("sitemap.xml, robots.txt ve llms.txt dacweb.tr adresini kullanır; SITE_URL eski onrender adresindeyse yok sayılır", async () => {
+  process.env.SITE_URL = "https://dac-web-tfqf.onrender.com"; delete require.cache[require.resolve(INDEX)];
+  const s = await listen(require(INDEX));
+  const sm = await (await fetch(url(s, "/sitemap.xml"))).text(), rb = await (await fetch(url(s, "/robots.txt"))).text(), ll = await (await fetch(url(s, "/llms.txt"))).text();
+  for (const [n, t] of [["sitemap", sm], ["robots", rb], ["llms", ll]]) { assert.ok(t.includes("https://dacweb.tr"), n); assert.ok(!/onrender\.com/.test(t), n + " onrender içeriyor"); }
+  assert.ok(/<loc>https:\/\/dacweb\.tr\/<\/loc>/.test(sm)); s.close(); delete process.env.SITE_URL; delete require.cache[require.resolve(INDEX)];
+});
+test("statik sayfalarda canonical/og/JSON-LD adresleri dacweb.tr (Render adresi kalmadı)", () => {
+  for (const f of ["index.html", "kvkk.html", "gizlilik.html", "cerez-politikasi.html", "kullanim-kosullari.html", "kabul-edilebilir-kullanim.html", "mesafeli-satis.html", "iade-iptal.html", "hakkimizda.html", "iletisim.html", "sitemap.xml"]) {
+    const p = _p.join(ROOT, f); if (!_fs.existsSync(p)) continue; const t = _fs.readFileSync(p, "utf8"); assert.ok(!/dac-web-[a-z]+\.onrender\.com/.test(t), f);
+  }
+});
