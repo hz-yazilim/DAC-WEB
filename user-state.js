@@ -114,13 +114,15 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
 
   app.get("/api/account/export", accGuard, wrap(async (req, res) => {
     const uid = req.user.uid;
-    const [st, sub, usr, assets, checks, orders, consents] = await Promise.all([
+    const [st, sub, usr, assets, checks, orders, consents, blockedRaw] = await Promise.all([
       ref(uid).get(), db.collection("subscriptions").doc(uid).get(), db.collection("users").doc(uid).get(),
-      rows("assets", "ownerId", uid), rows("assetChecks", "ownerId", uid), rows("orders", "uid", uid), rows("consents", "uid", uid)
+      rows("assets", "ownerId", uid), rows("assetChecks", "ownerId", uid), rows("orders", "uid", uid), rows("consents", "uid", uid),
+      rows("blockedAttempts", "uid", uid).catch(() => [])
     ]);
+    const blockedAttempts = (blockedRaw || []).map(({ host, category, assetType, where, at }) => ({ host, category, assetType, where, at })); // güvenlik kaydı (yasaklı hedef denemeleri); iç kural/IP alanları dışarıda
     let state = null; try { state = st.exists ? JSON.parse(st.data().data) : null; } catch { /* bozuk kayıt */ }
     res.set({ "Content-Disposition": 'attachment; filename="dac-verilerim.json"', "Cache-Control": "no-store" });
-    res.json({ success: true, exportedAt: new Date().toISOString(), profile: { uid, email: req.user.email, name: req.user.name }, account: usr.exists ? usr.data() : null, subscription: sub.exists ? sub.data() : null, state, assets, assetChecks: checks, orders, consents });
+    res.json({ success: true, exportedAt: new Date().toISOString(), profile: { uid, email: req.user.email, name: req.user.name }, account: usr.exists ? usr.data() : null, subscription: sub.exists ? sub.data() : null, state, assets, assetChecks: checks, orders, consents, blockedAttempts });
   }));
 
   // Hesap verisini siler (kullanıcı kendi isteğiyle veya yönetici KVKK talebiyle). Aktif Stripe aboneliği varsa silmez (force ile geçilebilir).
@@ -131,6 +133,7 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     counts.assets = await deleteWhere("assets", "ownerId", uid);
     counts.assetChecks = await deleteWhere("assetChecks", "ownerId", uid);
     counts.pushSubs = await deleteWhere("pushSubs", "uid", uid);
+    try { counts.blockedAttempts = await deleteWhere("blockedAttempts", "uid", uid); } catch { /* kayıt yok */ } // güvenlik kaydı: hesap silinince kişisel veri (uid/IP) kalmaz
     await ref(uid).delete();
     await db.collection("users").doc(uid).delete();
     try { await db.collection("adminNotes").doc(uid).delete(); } catch { /* not yok */ }

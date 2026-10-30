@@ -54,6 +54,7 @@ let OPS = null; // ops.js sonradan oluşturulur (db/admin hazır olduktan sonra)
 const METRICS = SRV("metrics").createMetrics({ onError: (e) => { if (OPS) OPS.persistError(e); } });       // API gecikme (P50/P95/P99), hata oranı, kuyruk/tarama süreleri
 const SCORING = SRV("scoring");                       // merkezi skor ağırlıkları ve kritik bulgu sınırı
 const VALID = SRV("validators");                      // domain / URL / telefon doğrulama
+const BLOCK = SRV("blocklist");                       // korumalı hedefler: devlet/kamu, büyük platformlar, dacweb.tr (hiçbir türde taranamaz)
 const AI = SRV("ai-provider");                        // AI mimarisi (şimdilik devre dışı) + dönemsel rapor modeli
 const BILLING = SRV("billing-catalog");               // para birimi / kur adaptörü / affiliate hazırlığı (etkin değil)
 const JOBLIB = SRV("jobs");                           // kalıcı toplu tarama kuyruğu
@@ -111,7 +112,7 @@ const jsonParser = express.json({ limit: "256kb", verify: (req, res, buf) => { r
 app.use((req, res, next) => (req.path === "/api/state" ? next() : jsonParser(req, res, next)));
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 const PORT = process.env.PORT || 3000;
-const SCANNER_VERSION = "v13.5";
+const SCANNER_VERSION = "v13.6";
 
 const UA_BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const UA_BOT = "Mozilla/5.0 (compatible; DigitalAssetCenterBot/12.0; +https://dac-web-yefr.onrender.com)";
@@ -374,6 +375,9 @@ async function httpProbe(url, o = {}) {
     if (res.status >= 300 && res.status < 400 && loc && i < max) {
       let nxt; try { nxt = new URL(loc, cur).toString(); } catch { break; }
       if (seen.has(nxt)) { loop = true; break; }
+      // Korumalı hedef politikası: kullanıcının sitesi → devlet/büyük platform/dacweb.tr yönlendirmesi TAKİP EDİLMEZ (başkasının sitesi dolaylı yoldan analiz edilmesin).
+      // Zaten korumalı bir platforma yapılan sabit çağrılarda (ör. Play Store) uygulanmaz: yalnızca "korumasız → korumalı" geçişi durdurulur.
+      try { const nh = new URL(nxt).hostname, ch = new URL(cur).hostname; if (!BLOCK.classifyHost(ch).blocked && BLOCK.classifyHost(nh).blocked) { res.redirectBlocked = true; break; } } catch { break; }
       seen.add(cur); cur = nxt; continue;
     }
     break;
@@ -2444,9 +2448,33 @@ const scanGuard = [
   (req, res, next) => (userLimit(req.user.uid) ? next() : tooMany(res))
 ];
 
+// ===== Korumalı hedef politikası (blocklist.js) =====
+// Yasaklı deneme sayısı sınırlanır (keşif/suistimal): 10 dakikada 6'dan fazla yasaklı deneme yapan kullanıcı geçici olarak engellenir. Denemeler `blockedAttempts` koleksiyonuna yazılır (yönetici görür).
+const blockedLimit = SEC.makeLimiter(SEC.int(process.env.BLOCKED_ATTEMPT_LIMIT, 6), 10 * 60 * 1000);
+function recordBlocked({ uid, ip, assetType, pol, where }) {
+  try { METRICS.observe("scan.BLOCKED", 1); } catch {}
+  console.warn(`[blocked] uid=${uid} type=${assetType} category=${pol.category} where=${where || "api"}`);
+  if (db) db.collection("blockedAttempts").doc().set({ uid: uid || null, ip: ip || null, assetType: assetType || null, host: String(pol.matched || "").slice(0, 253), category: pol.category, rule: String(pol.rule || "").slice(0, 120), via: pol.viaCname || null, where: where || "api", at: Date.now(), expireAt: new Date(Date.now() + 180 * 864e5) }).catch(() => {}); // expireAt: Firestore TTL ilkesi tanımlanırsa 180 gün sonra silinir (KVKK saklama süresi)
+}
+// Sözdizimsel denetim + CNAME zinciri (takma ad olarak devlet/DAC alan adına işaret eden hedefler)
+async function policyCheck({ assetType, targetUrl, extra }) {
+  const r = BLOCK.checkScan({ assetType, targetUrl, extra }); if (r.blocked) return r;
+  if (!NO_HOST_TYPES.includes(assetType)) {
+    const host = hostOf(targetUrl || (extra && (extra.domain || extra.target)));
+    if (host && !net.isIP(host)) { try { const chain = await withTimeout(BLOCK.resolveCnameChain((h) => dns.resolveCname(h), host), 3000, "CNAME"); const c = BLOCK.checkChain(chain); if (c.blocked) return { ...c, matched: host }; } catch { /* çözülemedi: engelleme kararı verilemez, sözdizimsel kontrol geçerli */ } }
+  }
+  return { blocked: false };
+}
+function blockedReply(res, req, pol, assetType) {
+  recordBlocked({ uid: req.user && req.user.uid, ip: req.ip, assetType, pol });
+  if (req.user && !blockedLimit(req.user.uid)) return res.status(429).json({ success: false, code: "TOO_MANY_BLOCKED", error: "Çok fazla yasaklı hedef denemesi yaptınız. Bir süre sonra tekrar deneyin." });
+  return res.status(403).json({ success: false, code: "TARGET_BLOCKED", error: pol.message || BLOCK.MESSAGE_GENERIC });
+}
+
 // Tek bir taramayı çalıştırır ve sonucu kaydeder. Hem POST /api/scan hem toplu tarama kuyruğu AYNI çekirdeği kullanır
 // (doğrulama, sahiplik ve kota denetimleri çağıran tarafta yapılır).
 async function executeScan({ uid, assetId, assetType, handler, targetUrl, extra, name, ip }) {
+  { const pol = BLOCK.checkScan({ assetType, targetUrl, extra }); if (pol.blocked) { recordBlocked({ uid, ip, assetType, pol, where: "execute" }); return { scanStatus: "BLOCKED", assetId, checkId: null, saved: false, saveError: null, scanErrors: [pol.message], assetUpdate: {}, blocked: pol }; } } // son kapı: önceki katmanlar atlansa bile yasaklı hedef taranmaz, hiçbir kayıt yazılmaz
   const scanStartedAt = Date.now(); let findings = [], scanErrors = [], typeData = {}, statusHint = null, failed = false, scanConfidence = null;
   try {
     const result = await withTimeout(Promise.resolve(handler({ targetUrl, extra })), SCAN_TIMEOUT_MS, "Tarama");
@@ -2502,6 +2530,8 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   if (!handler) return res.status(400).json({ success: false, error: `Desteklenmeyen tür: ${assetType}` });
   for (const k of ["domain", "target"]) if (extra[k] != null && typeof extra[k] !== "string") return res.status(400).json({ success: false, error: `extra.${k} metin olmalı` });
   if (!NO_HOST_TYPES.includes(assetType) && !(targetUrl || extra.domain || extra.target)) return res.status(400).json({ success: false, error: "Hedef adres gerekli" });
+  // Korumalı hedefler (devlet/kamu, büyük platformlar, dacweb.tr): HİÇBİR türde taranamaz. Yetki beyanından, SSRF denetiminden ve kota/sahiplik kaydından ÖNCE.
+  { const pol = await policyCheck({ assetType, targetUrl, extra }); if (pol.blocked) return blockedReply(res, req, pol, assetType); }
   // Aktif sondalama (port taraması, açık dosya yoklama) yalnızca kullanıcı yetkisini açıkça beyan ederse yapılır; beyan kayda alınır.
   if (ACTIVE_PROBE_TYPES.includes(assetType) && body.consent !== true) return res.status(400).json({ success: false, code: "CONSENT_REQUIRED", error: "Bu tarama türü için hedefi taramaya yetkili olduğunuzu onaylamalısınız." });
   if (!NO_HOST_TYPES.includes(assetType)) {
@@ -2534,6 +2564,7 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   }
   const out = await executeScan({ uid, assetId, assetType, handler, targetUrl, extra, name, ip: req.ip });
   const { scanStatus, checkId, saved, saveError, scanErrors, assetUpdate } = out;
+  if (scanStatus === "BLOCKED") return res.status(403).json({ success: false, code: "TARGET_BLOCKED", error: (out.blocked && out.blocked.message) || BLOCK.MESSAGE_GENERIC });
   if (scanStatus === "FAILED" || scanStatus === "TIMEOUT") {
     return res.status(scanStatus === "TIMEOUT" ? 504 : 502).json({ success: false, scanStatus, assetId, checkId, saved, error: scanStatus === "TIMEOUT" ? "Tarama zaman aşımına uğradı. Hedef yanıt vermiyor olabilir." : "Tarama tamamlanamadı. Hedefe ulaşılamadı veya analiz sırasında hata oluştu.", errors: scanErrors });
   }
@@ -2578,6 +2609,7 @@ async function autoScanOne(snap, ctx) {
     const r = ALERTS.decide({ type, name: d.name || d.provider, prev, next: { status: d.status, findings: d.findings, data: d }, now: Date.now() });
     await send(r.notes.filter((n) => n.kind === "expiry")); return ref.set({ expiryLevel: r.expiryLevel, nextScanAt: Date.now() + ALERTS.intervalMs(type) }, { merge: true });
   }
+  { const targetUrl0 = String(d.targetUrl || "").slice(0, 2048), extra0 = d.scanExtra && typeof d.scanExtra === "object" ? d.scanExtra : {}; const pol = await policyCheck({ assetType: type, targetUrl: targetUrl0, extra: extra0 }); if (pol.blocked) { recordBlocked({ uid, ip: null, assetType: type, pol, where: "auto" }); return ref.set({ nextScanAt: Date.now() + 30 * 864e5, blocked: true, blockedCategory: pol.category }, { merge: true }); } } // eski kayıtlar da yasaklı hedefe karşı otomatik taranmaz
   if (ACTIVE_PROBE_TYPES.includes(type) && d.authorizationConfirmed !== true) return later(7 * 864e5); // yetki beyanı yoksa otomatik aktif sondalama yapılmaz
   const targetUrl = String(d.targetUrl || "").slice(0, 2048); const extra = d.scanExtra && typeof d.scanExtra === "object" ? { ...d.scanExtra } : {};
   if (type === "ANALYTICS" && !extra.measurementId && d.specificAnalysis?.property?.measurementId) extra.measurementId = d.specificAnalysis.property.measurementId;
@@ -2657,6 +2689,7 @@ async function queueScanItem(item) {
   if (ACTIVE_PROBE_TYPES.includes(assetType) && item.consent !== true) throw nonRetriable("CONSENT_REQUIRED", "Bu tarama türü için yetki beyanı gerekir.");
   const host = hostOf(item.targetUrl); if (!host) throw nonRetriable("INVALID_TARGET", "Geçerli bir hedef adres yok");
   try { await assertPublicHost(host); } catch (e) { throw nonRetriable("BLOCKED_TARGET", e.message); } // SSRF: özel/yerel/metadata adresleri
+  { const pol = await policyCheck({ assetType, targetUrl: item.targetUrl, extra: item.extra || {} }); if (pol.blocked) { recordBlocked({ uid, ip: null, assetType, pol, where: "queue" }); throw nonRetriable("TARGET_BLOCKED", pol.message); } } // korumalı hedef (devlet/büyük platform/dacweb.tr)
   if (SEC.enforcePlans() && uid !== "dev-user" && !db && process.env.ALLOW_SCAN_WITHOUT_DB !== "true") throw nonRetriable("NO_DATABASE", "Sunucu yapılandırması eksik (veritabanı).");
   let ent = null;
   if (SEC.enforcePlans() && uid !== "dev-user" && db) {
@@ -2669,6 +2702,7 @@ async function queueScanItem(item) {
     if (ent) { const q = await SEC.checkAssetQuota(db, uid, ent.plan, claim.isNew); if (!q.ok) { if (claim.isNew) await db.collection("assets").doc(assetId).delete().catch(() => {}); throw nonRetriable("QUOTA_EXCEEDED", `Paket varlık limiti doldu (${q.limit}).`); } }
   }
   const out = await executeScan({ uid, assetId, assetType, handler, targetUrl: item.targetUrl, extra: item.extra || {}, name: item.name, ip: null });
+  if (out.scanStatus === "BLOCKED") throw nonRetriable("TARGET_BLOCKED", (out.blocked && out.blocked.message) || BLOCK.MESSAGE_GENERIC);
   if (out.scanStatus === "FAILED" || out.scanStatus === "TIMEOUT") throw Object.assign(new Error(out.scanStatus === "TIMEOUT" ? "Tarama zaman aşımına uğradı" : "Tarama tamamlanamadı"), { code: out.scanStatus === "TIMEOUT" ? "TIMEOUT" : "SCAN_FAILED", retriable: true });
   return { scanStatus: out.scanStatus, summary: scanSummary(out, assetType) };
 }
@@ -2689,6 +2723,7 @@ function cleanBulkItem(x, authorized) {
   if (URL_TYPES.includes(type)) { const r = VALID.normalizeUrl(x.target); if (!r.ok) return { error: r.error }; targetUrl = r.url; }
   else if (type === "SERVER" && net.isIP(x.target.trim())) targetUrl = x.target.trim();
   else { const r = VALID.normalizeDomain(x.target); if (!r.ok) return { error: r.error }; targetUrl = r.domain; }
+  { const pol = BLOCK.checkScan({ assetType: type, targetUrl, extra: {} }); if (pol.blocked) return { error: pol.message, blocked: pol }; } // korumalı hedef
   const extra = {}; if (type === "ANALYTICS" && typeof x.extra?.measurementId === "string" && /^G-[A-Z0-9]{4,20}$/i.test(x.extra.measurementId)) extra.measurementId = x.extra.measurementId;
   const port = x.extra && Number.isInteger(x.extra.port) ? x.extra.port : null; if (port && port > 0 && port < 65536 && ["SSL_CERTIFICATE", "SERVER"].includes(type)) extra.port = port;
   return { item: { assetId, type, targetUrl, name: typeof x.name === "string" && x.name.trim() ? x.name.trim().slice(0, 200) : (URL_TYPES.includes(type) ? hostOf(targetUrl) : targetUrl), extra, consent: authorized === true } };
@@ -2704,12 +2739,13 @@ const jobId = (req) => { const id = String(req.params.id || ""); if (!/^job_[A-Z
 
 app.post("/api/jobs", jobWrite, jobWrap(async (req, res) => {
   const body = req.body || {}; if (!Array.isArray(body.items)) return res.status(400).json({ success: false, error: "items dizisi gerekli" });
-  const authorized = body.consent === true, seen = new Set(), items = [], rejected = [];
-  body.items.forEach((x, i) => { const r = cleanBulkItem(x, authorized); if (r.error) return rejected.push({ index: i, error: r.error }); if (seen.has(r.item.assetId)) return rejected.push({ index: i, error: "Aynı assetId iki kez gönderildi" }); seen.add(r.item.assetId); items.push(r.item); });
-  if (!items.length) return res.status(400).json({ success: false, error: "Geçerli hedef yok", rejected: rejected.slice(0, 50) });
+  const authorized = body.consent === true, seen = new Set(), items = [], rejected = [], blockedHits = [], blockedIdx = [];
+  body.items.forEach((x, i) => { const r = cleanBulkItem(x, authorized); if (r.error) { if (r.blocked) { rejected.push({ index: i, code: "TARGET_BLOCKED", error: r.error }); blockedHits.push(r.blocked); blockedIdx.push(i); return; } return rejected.push({ index: i, error: r.error }); } if (seen.has(r.item.assetId)) return rejected.push({ index: i, error: "Aynı assetId iki kez gönderildi" }); seen.add(r.item.assetId); items.push(r.item); });
+  if (blockedHits.length) { for (const pol of blockedHits.slice(0, 5)) recordBlocked({ uid: req.user.uid, ip: req.ip, assetType: "BULK", pol, where: "jobs" }); if (!blockedLimit(req.user.uid)) return res.status(429).json({ success: false, code: "TOO_MANY_BLOCKED", blockedIndexes: blockedIdx, error: "Çok fazla yasaklı hedef denemesi yaptınız. Bir süre sonra tekrar deneyin." }); }
+  if (!items.length) return res.status(blockedHits.length ? 403 : 400).json({ success: false, ...(blockedHits.length ? { code: "TARGET_BLOCKED", blockedIndexes: blockedIdx } : {}), error: blockedHits.length ? "Gönderilen hedeflerin tümü korumalı (devlet/kamu, büyük platform veya DAC) alan adı olduğundan taranamaz." : "Geçerli hedef yok", rejected: rejected.slice(0, 50) });
   if (SEC.enforcePlans() && req.user.uid !== "dev-user" && db) { const e = await payments.getEntitlement(req.user.uid).catch(() => null); if (e && e.plan === "expired") return res.status(402).json({ success: false, code: "PLAN_REQUIRED", error: "Deneme süreniz bitti. Devam etmek için bir paket seçin." }); }
   const job = await JOBS.createJob({ ownerId: req.user.uid, items, label: typeof body.label === "string" ? body.label : "Toplu tarama", source: body.source === "domains-overview" ? "domains-overview" : "bulk" });
-  res.status(201).json({ success: true, job: pubJob(job), accepted: items.length, rejected: rejected.slice(0, 100), rejectedCount: rejected.length });
+  res.status(201).json({ success: true, job: pubJob(job), accepted: items.length, rejected: rejected.slice(0, 100), rejectedCount: rejected.length, blockedIndexes: blockedIdx });
 }));
 app.get("/api/jobs", jobRead, jobWrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, persistent: JOBS._store.persistent, jobs: (await JOBS.listJobs(req.user.uid, Math.min(100, +req.query.limit || 30))).map(pubJob) }); }));
 app.get("/api/jobs/:id", jobRead, jobWrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, job: pubJob(await JOBS.getJob(jobId(req), req.user.uid)) }); }));
@@ -2788,4 +2824,4 @@ if (require.main === module) {
   process.on("SIGTERM", () => { console.log("SIGTERM: kapanıyor (Render: boşta uyku veya yeni deploy)"); memLog(); JOBS.stop().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 10000).unref(); });
 }
 module.exports = app;
-module.exports._internals = { JOBS, METRICS, executeScan, queueScanItem, scanSummary, rdapDate, toDateOrNull, cleanBulkItem, isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle, parseWhois, parseLooseDate, whoisQuery, expiryProfile, cymruAsn, getTlsDetails, followRelatedRdap, fetchRegistration };
+module.exports._internals = { BLOCK, policyCheck, JOBS, METRICS, executeScan, queueScanItem, scanSummary, rdapDate, toDateOrNull, cleanBulkItem, isPrivateIp, assertPublicHost, scanDomain, scanSslCertificate, scanWebsite, scanSeo, scanSecurity, scanPerformance, scanUptime, scanApi, scanAnalytics, scanHosting, scanServer, scanBrand, scanSaasSubscription, scanMobileApp, scanRepository, analyzeSpf, analyzeHtml, detectTech, detectPageState, derSignatureAlgorithm, parseDomain, registrableDomain, httpProbe, forFirestore , blockedHost, request, decodeEntities, tokenizeHtml, extractTitle, parseWhois, parseLooseDate, whoisQuery, expiryProfile, cymruAsn, getTlsDetails, followRelatedRdap, fetchRegistration };

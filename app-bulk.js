@@ -8,7 +8,7 @@ async function bkApi(method,path,body,retried){
  const api=apiUrl();if(!api)throw new Error('Sunucu adresi yok');
  const r=await fetch(api+path,{method,headers:{'Content-Type':'application/json',...await authH(),...(path.startsWith('/api/admin/')?a2faH():{})},body:body?JSON.stringify(body):undefined});
  let j=null;try{j=await r.json()}catch{}
- if(!r.ok||!j||j.success===false){const e=new Error((j&&j.error)||'İstek başarısız ('+r.status+')');e.status=r.status;e.code=j&&j.code;if(e.code==='2FA_REQUIRED'&&!retried&&await a2faPrompt())return bkApi(method,path,body,true);throw e}
+ if(!r.ok||!j||j.success===false){const e=new Error((j&&j.error)||'İstek başarısız ('+r.status+')');e.status=r.status;e.code=j&&j.code;e.data=j;if(e.code==='2FA_REQUIRED'&&!retried&&await a2faPrompt())return bkApi(method,path,body,true);throw e}
  return j;
 }
 async function bkInit(n){
@@ -109,9 +109,11 @@ async function bkImport(f){
   items.push({assetId:a.id,type:api,target:URLCATS.includes(cat)?target:host,name:a.name})}
  if(!items.length){return toast(bad?'Geçerli hedef bulunamadı ('+bad+' hatalı veya limit dışı)':'Hedef yok','err')}
  save();busy(true);BK.busy=true;
- try{let last=null;for(let i=0;i<items.length;i+=1000){const j=await bkApi('POST','/api/jobs',{items:items.slice(i,i+1000),label:'Toplu '+CATS[cat].label,source:'bulk'});last=j.job.id}
-  BK.job=last;BK.page=1;BK.sel=new Set();BK.wasActive=true;toast(`${items.length} hedef kuyruğa alındı (${added} yeni, ${existing} mevcut, ${bad} atlandı)`);f.reset();await bkLoadView()}
- catch(e){toast(e.message,'err');if(e.status===402)location.hash='plan'}
+ try{let last=null,blockedN=0;const dropIdx=(chunk,j)=>{((j&&j.blockedIndexes)||[]).forEach(k=>{if(chunk[k]){dropBlocked(chunk[k].assetId);blockedN++}})};
+  for(let i=0;i<items.length;i+=1000){const chunk=items.slice(i,i+1000);try{const j=await bkApi('POST','/api/jobs',{items:chunk,label:'Toplu '+CATS[cat].label,source:'bulk'});last=j.job.id;dropIdx(chunk,j)}catch(e){dropIdx(chunk,e.data);if(e.code==='TARGET_BLOCKED')continue;throw e}}
+  if(blockedN)toast(blockedN+' hedef korumalı (devlet/kamu, büyük platform veya DAC) alan adı olduğundan taranmadı ve listenizden çıkarıldı','warn');
+  if(last){BK.job=last;BK.page=1;BK.sel=new Set();BK.wasActive=true;if(!blockedN)toast(`${items.length} hedef kuyruğa alındı (${added} yeni, ${existing} mevcut, ${bad} atlandı)`);f.reset();await bkLoadView()}else save()}
+  catch(e){toast(e.message,'err');if(e.status===402)location.hash='plan'}
  BK.busy=false;busy(false);render();
 }
 document.addEventListener('submit',e=>{const f=e.target.closest('[data-bkform]');if(!f)return;e.preventDefault();if(f.dataset.bkform==='import')bkImport(f)});

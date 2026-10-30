@@ -153,23 +153,33 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   app.get("/api/admin/health", guard, wrap(async (req, res) => res.json({ success: true, health: await getHealth(), jobs: await jobs.stats().catch(() => null) })));
   app.get("/api/admin/errors", guard, wrap(async (req, res) => res.json({ success: true, volatile: true, errors: metrics.recentErrors(Math.min(200, +req.query.limit || 100)) })));
 
+  /* Kullanıcı listesi: EN YENİ KAYIT EN ÜSTTE. Firebase listUsers kayıt tarihine göre değil UID sırasına göre döner; bu yüzden tüm liste (üst sınır: ADMIN_USER_SCAN_CAP)
+   * çekilip kayıt zamanına göre azalan sıralanır, 30 sn önbelleğe alınır ve sayfalama konum (offset) ile yapılır. */
+  let sortedCache = { at: 0, val: null };
+  const createdMs = (u) => (u.createdAt ? Date.parse(u.createdAt) || 0 : 0);
+  async function usersNewestFirst() {
+    if (sortedCache.val && now() - sortedCache.at < 30000) return sortedCache.val;
+    const CAP = SEC.int(process.env.ADMIN_USER_SCAN_CAP, 20000), arr = []; let token, truncated = false;
+    do { const page = await admin.auth().listUsers(1000, token); for (const u of page.users) arr.push(pubUser(u)); token = page.pageToken; if (arr.length >= CAP && token) { truncated = true; break; } } while (token);
+    arr.sort((a, b) => createdMs(b) - createdMs(a) || (a.uid < b.uid ? -1 : 1));
+    sortedCache = { at: now(), val: { users: arr, truncated } }; return sortedCache.val;
+  }
   app.get("/api/admin/users", guard, wrap(async (req, res) => {
     if (!authOk()) return deny(res, 503, "Firebase Admin yapılandırılmamış");
     const q = String(req.query.q || "").trim().toLowerCase().slice(0, 100), status = ["active", "disabled"].includes(req.query.status) ? req.query.status : "all";
-    const limit = Math.min(100, Math.max(1, +req.query.limit || 50)); let out = [], token = req.query.pageToken ? String(req.query.pageToken).slice(0, 4000) : undefined, next = null, scanned = 0;
-    const CAP = SEC.int(process.env.ADMIN_USER_SCAN_CAP, 20000);
-    if (q && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(q)) { try { out = [pubUser(await admin.auth().getUserByEmail(q))]; } catch { out = []; } }
-    else do {
-      const page = await admin.auth().listUsers(1000, token); scanned += page.users.length;
-      for (const u of page.users) { const p = pubUser(u); if (status === "active" && p.disabled) continue; if (status === "disabled" && !p.disabled) continue; if (q && !(`${p.email || ""} ${p.displayName || ""} ${p.uid}`.toLowerCase().includes(q))) continue; out.push(p); }
-      token = page.pageToken;
-      if (out.length >= limit) { next = token || null; break; }
-    } while (token && scanned < CAP);
-    out = out.slice(0, limit);
+    const limit = Math.min(100, Math.max(1, +req.query.limit || 50)), offset = Math.min(1e6, Math.max(0, parseInt(req.query.pageToken, 10) || 0));
+    let out = [], next = null, scanned = 0, truncated = false;
+    if (q && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(q)) { try { out = [pubUser(await admin.auth().getUserByEmail(q))]; } catch { out = []; } scanned = out.length; }
+    else {
+      const all = await usersNewestFirst(); scanned = all.users.length; truncated = all.truncated;
+      const filtered = all.users.filter((p) => !(status === "active" && p.disabled) && !(status === "disabled" && !p.disabled) && (!q || `${p.email || ""} ${p.displayName || ""} ${p.uid}`.toLowerCase().includes(q)));
+      out = filtered.slice(offset, offset + limit).map((u) => ({ ...u })); if (offset + limit < filtered.length) next = String(offset + limit);
+    }
     const counts = await Promise.all(out.map((u) => (db ? countOf(db.collection("assets").where("ownerId", "==", u.uid)) : null)));
     out.forEach((u, i) => (u.assetCount = counts[i]));
     const subs = await Promise.all(out.map((u) => subOf(u.uid))); out.forEach((u, i) => { u.plan = planInfo(subs[i]); });
-    res.json({ success: true, users: out, nextPageToken: next, scanned, filtered: !!q || status !== "all" });
+    res.set("Cache-Control", "no-store");
+    res.json({ success: true, users: out, nextPageToken: next, scanned, truncated, order: "createdAt:desc", filtered: !!q || status !== "all" });
   }));
 
   app.get("/api/admin/users/:uid", guard, wrap(async (req, res) => {
@@ -191,6 +201,61 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     res.json({ success: true, user: { ...pubUser(u), isAdmin: r.admin }, assets: { available: assetCount != null, count: assetCount, byType }, plan, subscription, orders, jobs: userJobs, note });
   }));
 
+  /* Kullanıcının eklediği varlıklar (yönetici görünümü). KVKK/veri minimizasyonu: yalnızca yönetim için gerekli alanlar döner
+   * (ad, tür, hedef, skor/durum, tarihler, bulgu kodları). Ham tarama çıktısı, scanExtra (kullanıcının girdiği ek alanlar), maliyet/abonelik tutarı DÖNMEZ.
+   * Her görüntüleme `adminAudit` kaydına yazılır (kim, hangi kullanıcının varlıklarına, ne zaman baktı). */
+  const toMs = (v) => (v && typeof v.toMillis === "function" ? v.toMillis() : typeof v === "number" ? v : typeof v === "string" ? (Date.parse(v) || null) : null);
+  const clipS = (v, n) => (typeof v === "string" ? v.slice(0, n) : null);
+  const ASSET_TYPES = /^[A-Z_]{1,30}$/;
+  // İstemci kategori anahtarı → API türü (app.js > CATS ile aynı; "email" da DOMAIN taraması kullanır)
+  const CAT_API = { web: "WEBSITE", domain: "DOMAIN", ssl: "SSL_CERTIFICATE", hosting: "HOSTING", server: "SERVER", uptime: "UPTIME", performance: "PERFORMANCE", seo: "SEO", security: "SECURITY", api: "API", analytics: "ANALYTICS", brand: "BRAND", email: "DOMAIN", mobile: "MOBILE_APP", repo: "REPOSITORY", saas: "SAAS_SUBSCRIPTION" };
+  app.get("/api/admin/users/:uid/assets", guard, wrap(async (req, res) => {
+    const uid = String(req.params.uid || ""); if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
+    if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", assets: [], total: null });
+    const type = ASSET_TYPES.test(String(req.query.type || "").toUpperCase()) ? String(req.query.type).toUpperCase() : "";
+    const CAP = Math.min(1000, SEC.int(process.env.ADMIN_USER_ASSET_CAP, 500)), limit = Math.min(CAP, Math.max(1, +req.query.limit || 200));
+    // 1) Taranmış varlıklar (assets koleksiyonu)  2) Kullanıcının bulut durumundaki varlıklar (eklenmiş ama henüz taranmamış olanlar yalnız burada bulunur)
+    const [snap, st] = await Promise.all([db.collection("assets").where("ownerId", "==", uid).limit(CAP + 1).get(), db.collection("users").doc(uid).collection("state").doc("app").get().catch(() => null)]);
+    const truncated = snap.docs.length > CAP;
+    const byId = new Map();
+    snap.docs.slice(0, CAP).forEach((d) => { const a = d.data() || {};
+      byId.set(d.id, { id: d.id, name: clipS(a.name, 200) || clipS(a.target, 200) || d.id, type: clipS(a.assetType || a.type, 40) || null, cat: null, target: clipS(a.targetUrl, 500) || clipS(a.target, 500),
+        healthScore: Number.isFinite(a.healthScore) ? a.healthScore : null, healthLevel: clipS(a.healthLevel, 20), status: clipS(a.status, 30), scanStatus: clipS(a.scanStatus, 20),
+        findings: Array.isArray(a.findings) ? a.findings.filter((f) => typeof f === "string").slice(0, 25).map((f) => f.slice(0, 120)) : [], findingCount: Array.isArray(a.findings) ? a.findings.length : 0,
+        lastCheck: toMs(a.lastCheck) || toMs(a.scannedAt) || toMs(a.updatedAt), createdAt: toMs(a.createdAt) || toMs(a.claimedAt), nextScanAt: toMs(a.nextScanAt), auto: a.auto === true, blocked: a.blocked === true, blockedCategory: clipS(a.blockedCategory, 20), scanned: true }); });
+    let stateCount = 0;
+    try {
+      const j = st && st.exists ? JSON.parse(st.data().data) : null;
+      for (const a of (j && Array.isArray(j.assets) ? j.assets : []).slice(0, CAP)) {
+        if (!a || typeof a.id !== "string") continue; stateCount++;
+        const id = a.id.slice(0, 200), cat = clipS(a.cat, 30), r = byId.get(id);
+        if (r) { r.cat = cat; r.createdAt = r.createdAt || toMs(a.createdAt); if (!r.target) r.target = clipS(a.target, 500); continue; }
+        const res0 = a.result && typeof a.result === "object" ? a.result : null; // SaaS maliyet/ek alanlar (extra) bilinçli olarak alınmaz
+        byId.set(id, { id, name: clipS(a.name, 200) || clipS(a.target, 200) || id, type: cat && CAT_API[cat] ? CAT_API[cat] : null, cat, target: cat === "saas" ? null : clipS(a.target, 500),
+          healthScore: res0 && Number.isFinite(res0.healthScore) ? res0.healthScore : null, healthLevel: res0 ? clipS(res0.healthLevel, 20) : null, status: res0 ? clipS(res0.status, 30) : null, scanStatus: null,
+          findings: [], findingCount: 0, lastCheck: toMs(a.lastScan), createdAt: toMs(a.createdAt), nextScanAt: null, auto: false, blocked: false, blockedCategory: null, scanned: false });
+      }
+    } catch { /* bozuk/boş durum kaydı: yalnız taranmış varlıklar gösterilir */ }
+    let rows = [...byId.values()].map((r) => ({ ...r, kind: r.type || r.cat || "?" }));
+    const byType = {}; rows.forEach((r) => { byType[r.kind] = (byType[r.kind] || 0) + 1; });
+    if (type) rows = rows.filter((r) => r.kind === type);
+    rows.sort((a, b) => (b.createdAt || b.lastCheck || 0) - (a.createdAt || a.lastCheck || 0)); // en son eklenen en üstte
+    let blocked = { count: 0, recent: [] };
+    try { const bs = await db.collection("blockedAttempts").where("uid", "==", uid).limit(100).get(); const arr = bs.docs.map((d) => d.data()).sort((a, b) => (b.at || 0) - (a.at || 0)); blocked = { count: arr.length, recent: arr.slice(0, 10).map((x) => ({ at: x.at || null, host: clipS(x.host, 253), category: clipS(x.category, 20), assetType: clipS(x.assetType, 30), where: clipS(x.where, 20) })) }; } catch { /* kayıt okunamadı */ }
+    await auditSafe(req, "user.assets.view", uid, { count: rows.length, type: type || null });
+    res.set("Cache-Control", "no-store");
+    res.json({ success: true, available: true, total: byId.size, scannedCount: snap.docs.length > CAP ? CAP : snap.docs.length, stateCount, truncated, byType, assets: rows.slice(0, limit), shown: Math.min(rows.length, limit), blocked });
+  }));
+
+  /* Tüm kullanıcıların yasaklı hedef (devlet/büyük platform/DAC) tarama denemeleri: en yeni üstte */
+  app.get("/api/admin/blocked-attempts", guard, wrap(async (req, res) => {
+    if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", entries: [] });
+    const snap = await db.collection("blockedAttempts").orderBy("at", "desc").limit(Math.min(200, +req.query.limit || 100)).get();
+    const rows = snap.docs.map((d) => { const x = d.data() || {}; return { id: d.id, uid: clipS(x.uid, 128), host: clipS(x.host, 253), category: clipS(x.category, 20), assetType: clipS(x.assetType, 30), where: clipS(x.where, 20), at: x.at || null, ip: clipS(x.ip, 64) }; });
+    const emails = await emailsOf(rows.map((r) => r.uid).filter(Boolean)); rows.forEach((r) => { r.email = emails[r.uid] || null; });
+    res.json({ success: true, available: true, entries: rows });
+  }));
+
   app.post("/api/admin/users/:uid/disable", guard, writeGuard, wrap(async (req, res) => {
     const uid = String(req.params.uid || ""); if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
     if (typeof (req.body || {}).disabled !== "boolean") return deny(res, 400, "disabled (true/false) gerekli");
@@ -200,7 +265,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     if ((await roleOf({ uid, email: u.email, emailVerified: u.emailVerified })).admin && req.body.disabled) return deny(res, 400, "Yönetici hesabı devre dışı bırakılamaz; önce yönetici yetkisini kaldırın.");
     await admin.auth().updateUser(uid, { disabled: req.body.disabled });
     if (req.body.disabled) await admin.auth().revokeRefreshTokens(uid).catch(() => {});
-    userStatsCache = { at: 0, val: null };
+    userStatsCache = { at: 0, val: null }; sortedCache = { at: 0, val: null };
     await auditSafe(req, req.body.disabled ? "user.disable" : "user.enable", uid, { email: u.email });
     res.json({ success: true, uid, disabled: req.body.disabled });
   }));
@@ -372,7 +437,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     const link = await admin.auth().generatePasswordResetLink(g.u.email); await auditSafe(req, "user.password-reset-link", g.uid, { email: g.u.email }); // bağlantı kayda yazılmaz
     res.json({ success: true, uid: g.uid, email: g.u.email, link, note: "Bağlantı tek kullanımlıktır; yalnızca kullanıcıya güvenli bir kanaldan iletin." });
   }));
-  app.post("/api/admin/users/:uid/verify-email", guard, writeGuard, wrap(async (req, res) => { const g = await userGuard(req, res); if (!g) return; if (g.u.emailVerified) return deny(res, 400, "E-posta zaten doğrulanmış"); await admin.auth().updateUser(g.uid, { emailVerified: true }); userStatsCache = { at: 0, val: null }; await auditSafe(req, "user.verify-email", g.uid, { email: g.u.email }); res.json({ success: true, uid: g.uid }); }));
+  app.post("/api/admin/users/:uid/verify-email", guard, writeGuard, wrap(async (req, res) => { const g = await userGuard(req, res); if (!g) return; if (g.u.emailVerified) return deny(res, 400, "E-posta zaten doğrulanmış"); await admin.auth().updateUser(g.uid, { emailVerified: true }); userStatsCache = { at: 0, val: null }; sortedCache = { at: 0, val: null }; await auditSafe(req, "user.verify-email", g.uid, { email: g.u.email }); res.json({ success: true, uid: g.uid }); }));
   app.post("/api/admin/users/:uid/note", guard, writeGuard, wrap(async (req, res) => {
     const g = await userGuard(req, res); if (!g) return; if (!db) return deny(res, 503, "Firestore bağlı değil");
     const text = String((req.body || {}).text || "").trim(); if (text.length > 1000) return deny(res, 400, "Not en çok 1000 karakter olabilir");

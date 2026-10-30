@@ -250,6 +250,7 @@ async function runScan(a){
   let j;try{j=await r.json()}catch{throw new Error('Sunucu geçersiz yanıt verdi ('+r.status+'). Render uyanıyor olabilir, 30 sn sonra tekrar deneyin.')}
   if(r.status===402){location.hash='plan';throw new Error(j.error||'Paket gerekli')}
   if(j&&j.code==='FEATURE_DISABLED')throw new Error(FEATURE_MSG);
+  if(j&&(j.code==='TARGET_BLOCKED'||j.code==='TOO_MANY_BLOCKED')){const e=new Error(j.error||'Bu hedef taranamaz');e.blocked=j.code==='TARGET_BLOCKED';throw e} // devlet/büyük platform/DAC alan adı: sunucu tarafından yasaklı
   if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
  }else throw new Error('Tarama sunucusu adresi bulunamadı. Ayarlar > Scanner API adresini girin.');
  a.result=res;a.lastScan=Date.now();
@@ -309,9 +310,11 @@ async function pullLatest(force){
  }catch{}
 }
 async function delRemote(id){const api=apiUrl();if(!api||!U)return;try{const h=await authH();if(h.Authorization)await fetch(api+'/api/assets/'+encodeURIComponent(id),{method:'DELETE',headers:h})}catch{}}
+/* Yasaklı hedef (devlet/büyük platform/DAC) varlık listesinde ve bulutta tutulmaz */
+function dropBlocked(id){S.assets=S.assets.filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();try{delRemote(id)}catch{}}
 async function rescan(id,open){
  const a=find(id);if(!a||!gate())return;busy(true);
- try{await runScan(a)}catch(e){toast('Tarama hatası: '+e.message,'err')}
+ try{await runScan(a)}catch(e){if(e.blocked){dropBlocked(id);toast(e.message,'err')}else toast('Tarama hatası: '+e.message,'err')}
  busy(false);render();if(open&&a.result)showDetail(id);
 }
 /* Tür sayfası Yenile: yalnızca o türdeki varlıkları yeniden tarar (diğer türlere dokunmaz) */
@@ -324,7 +327,7 @@ async function refreshCat(k){
  let ok=0,fail=0,i=0,stop=false,lastErr='';
  const worker=async()=>{while(!stop&&i<list.length){const a=list[i++];
   try{await runScan(a);ok++}
-  catch(e){fail++;lastErr=e.message||'';if(/Paket gerekli|yetki onay|Deneme süreniz/i.test(lastErr))stop=true}}};
+  catch(e){fail++;lastErr=e.message||'';if(e.blocked)dropBlocked(a.id);if(/Paket gerekli|yetki onay|Deneme süreniz/i.test(lastErr))stop=true}}};
  try{await Promise.all(Array.from({length:Math.min(3,list.length)},worker))}catch(e){lastErr=e.message}
  CATBUSY=false;busy(false);render();
  toast(`${CATS[k].label}: ${ok} tarandı`+(fail?`, ${fail} hatalı`+(lastErr?' ('+lastErr+')':''):''),fail?'warn':'');
