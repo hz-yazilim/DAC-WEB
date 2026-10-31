@@ -8,6 +8,12 @@
   // false: giriş pasif (test modu). true: giriş AKTİF (Google + e-posta/şifre)
   const LOGIN_ENABLED = true;
 
+  // ====== OTURUM KALICILIĞI ======
+  // false: oturum SADECE o sayfa açıkken yaşar. Sayfa yenilenir, kapanır veya başka siteye gidip geri dönülürse giriş YENİDEN istenir.
+  // true : (eski davranış) oturum tarayıcıda kalıcıdır, site tekrar açıldığında girişli gelir.
+  const KEEP_SESSION = false;
+  const REDIR_KEY = "dac_redirect_pending"; // yalnızca Google yönlendirmeli girişte (popup engelliyse) o sekmede geçici kullanılır
+
   const $ = (id) => document.getElementById(id);
   const lerr = $("lerr"), gbtn = $("gbtn");
   let auth = null, provider = null, A = null; // A: firebase-auth modülü
@@ -47,16 +53,78 @@
   // E-posta/şifre hesabı doğrulanmadan uygulamaya alınmaz (sunucu da aynı kuralı uygular)
   const unverified = (u) => u.providerData.some(p => p.providerId === "password") && !u.emailVerified;
 
-  // Üyelik/Google girişi için Kullanım Koşulları + KVKK aydınlatma onayı (sunucuya giriş sonrası kaydedilir)
+  // Üyelik/giriş onayı: Giriş butonuna basılınca açılan pencerede TÜM yasal metinler gösterilir; en altta tek onay kutusu vardır.
+  // Onay zorunludur (isteğe bağlı onay yoktur). Onaylanmazsa giriş yapılamaz. Onay, giriş sonrası sunucuya kaydedilir (app-main.js > sendConsents).
   const LEGAL_V = (window.DAC_COMPANY && window.DAC_COMPANY.surum) || "2026-10";
-  const termsOk = () => { const c = $("lterms"); if (c && c.checked) { try { localStorage.setItem("dac_terms_pending", LEGAL_V); } catch (e) {} const an = $("lanalytics"); if (window.DAC_COOKIE) window.DAC_COOKIE.set(an && an.checked ? "all" : "essential"); return true; } say("Devam etmek için Kullanım Koşulları'nı ve KVKK Aydınlatma Metni'ni okuduğunuzu onaylayın."); return false; };
+  const LEGAL_DOCS = [
+    ["/kullanim-kosullari", "Kullanım Koşulları"],
+    ["/kvkk", "KVKK Aydınlatma Metni"],
+    ["/gizlilik", "Gizlilik Politikası"],
+    ["/cerez-politikasi", "Çerez Politikası"],
+    ["/kabul-edilebilir-kullanim", "Kabul Edilebilir Kullanım ve Tarama Yetkisi"]
+  ];
+  let legalLoaded = false, legalLoading = null, cmCb = null;
+
+  function loadLegal() {
+    if (legalLoaded) return Promise.resolve();
+    if (legalLoading) return legalLoading;
+    const C = window.DAC_COMPANY || {}, box = $("cm-docs");
+    legalLoading = Promise.all(LEGAL_DOCS.map(async ([url, title], i) => {
+      const sec = document.createElement("section"); sec.className = "cm-doc";
+      const h = document.createElement("h2"); h.className = "cm-doct"; h.textContent = (i + 1) + ". " + title; sec.appendChild(h);
+      try {
+        const r = await fetch(url, { cache: "no-cache" }); if (!r.ok) throw new Error("http");
+        const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+        const m = doc.querySelector("main.legal"); if (!m) throw new Error("main");
+        m.querySelectorAll("script,style,iframe,object,embed,link,h1,#plan-table").forEach((n) => n.remove());
+        m.querySelectorAll("[data-co]").forEach((el) => { const v = C[el.getAttribute("data-co")]; el.textContent = v == null ? "—" : v; el.removeAttribute("data-co"); });
+        m.querySelectorAll("a[data-cookie-settings]").forEach((a) => a.replaceWith(...a.childNodes));
+        m.querySelectorAll("*").forEach((el) => { for (const a of Array.from(el.attributes)) if (/^on/i.test(a.name)) el.removeAttribute(a.name); });
+        m.querySelectorAll("a[href]").forEach((a) => { if (/^(\/|https?:)/i.test(a.getAttribute("href"))) { a.target = "_blank"; a.rel = "noopener"; } });
+        while (m.firstChild) sec.appendChild(m.firstChild);
+      } catch (e) {
+        const p = document.createElement("p"); p.className = "hint";
+        p.appendChild(document.createTextNode("Bu metin şu an yüklenemedi. Lütfen yeni sekmede okuyun: "));
+        const a = document.createElement("a"); a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = title; p.appendChild(a); sec.appendChild(p);
+      }
+      return sec;
+    })).then((secs) => { box.textContent = ""; secs.forEach((x) => box.appendChild(x)); legalLoaded = true; }).catch(() => { legalLoading = null; });
+    return legalLoading;
+  }
+
+  function closeConsent() { $("cmodal").classList.remove("on"); document.body.classList.remove("cm-open"); cmCb = null; }
+  // cb: onay verilince, kullanıcı tıklamasıyla AYNI olay içinde çağrılır (açılır pencere engelleyicileri bozulmasın diye)
+  function askConsent(cb) {
+    cmCb = cb;
+    const chk = $("cm-chk"), yes = $("cm-yes");
+    chk.checked = false; yes.disabled = true; $("cm-hint").textContent = "";
+    $("cmodal").classList.add("on"); document.body.classList.add("cm-open");
+    $("cm-body").scrollTop = 0;
+    loadLegal();
+  }
+  function approveConsent() {
+    if (!$("cm-chk").checked) { $("cm-hint").textContent = "Devam etmek için onay kutusunu işaretlemeniz gerekir."; return; }
+    try { localStorage.setItem("dac_terms_pending", LEGAL_V); } catch (e) {}
+    if (window.DAC_COOKIE) window.DAC_COOKIE.set("all"); // tek onayın parçası: zorunlu çerezler + analitik ölçüm
+    const cb = cmCb; closeConsent();
+    if (cb) cb();
+  }
+  $("cm-chk").onchange = () => { $("cm-yes").disabled = !$("cm-chk").checked; if ($("cm-chk").checked) $("cm-hint").textContent = ""; };
+  $("cm-yes").onclick = approveConsent;
+  $("cm-no").onclick = closeConsent;
+  $("cm-x").onclick = closeConsent;
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("cmodal").classList.contains("on")) closeConsent(); });
   const busyForm = (b) => { for (const id of ["ebtn", "rbtn", "fbtn", "gbtn"]) $(id).disabled = b; };
 
-  async function emailLogin(ev) {
+  // Alanlar doğruysa onay penceresini açar; onaylanınca asıl işlem çalışır
+  function emailLogin(ev) {
     ev && ev.preventDefault(); say("");
     if (!auth) return say("Giriş servisi henüz yüklenmedi. Sayfayı yenileyin.");
     const email = $("lemail").value.trim(), pass = $("lpass").value;
     if (!email || !pass) return say("E-posta ve şifre girin.");
+    askConsent(() => doEmailLogin(email, pass));
+  }
+  async function doEmailLogin(email, pass) {
     busyForm(true);
     try {
       const cred = await A.signInWithEmailAndPassword(auth, email, pass);
@@ -68,13 +136,15 @@
     } catch (e) { say(msgOf(e)); }
     busyForm(false);
   }
-  async function emailRegister() {
+  function emailRegister() {
     say("");
     if (!auth) return say("Giriş servisi henüz yüklenmedi. Sayfayı yenileyin.");
     const email = $("lemail").value.trim(), pass = $("lpass").value;
     if (!email) return say("E-posta adresi girin.");
     if (pass.length < 8) return say("Şifre en az 8 karakter olmalı.");
-    if (!termsOk()) return;
+    askConsent(() => doRegister(email, pass));
+  }
+  async function doRegister(email, pass) {
     busyForm(true);
     try {
       const cred = await A.createUserWithEmailAndPassword(auth, email, pass);
@@ -99,17 +169,19 @@
   $("rbtn").onclick = emailRegister;
   $("fbtn").onclick = resetPass;
 
-  gbtn.onclick = async () => {
+  gbtn.onclick = () => {
     say("");
     if (!auth) { say("Giriş servisi henüz yüklenmedi. Sayfayı yenileyin."); return; }
-    if (!termsOk()) return;
+    askConsent(doGoogle);
+  };
+  async function doGoogle() {
     const t0 = Date.now();
     busyForm(true);
     try { await A.signInWithPopup(auth, provider); }
     catch (e) {
       // Açılır pencere engellendi / desteklenmiyor (mobil, uygulama içi tarayıcı, PWA): sayfa yönlendirmesiyle dene
       if (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment") {
-        try { await A.signInWithRedirect(auth, provider); return; } catch (e2) { say(msgOf(e2)); }
+        try { try { sessionStorage.setItem(REDIR_KEY, "1"); } catch (x) {} await A.signInWithRedirect(auth, provider); return; } catch (e2) { try { sessionStorage.removeItem(REDIR_KEY); } catch (x) {} say(msgOf(e2)); }
       } else if (e.code === "auth/cancelled-popup-request") {
         // başka bir pencere isteği: sessiz geç
       } else if (e.code === "auth/popup-closed-by-user") {
@@ -118,7 +190,18 @@
       } else { console.error("Google giriş hatası:", e); say(msgOf(e)); }
     }
     busyForm(false);
-  };
+  }
+
+  // Firebase'in tarayıcıda sakladığı oturum kayıtlarını siler (IndexedDB + localStorage + sessionStorage)
+  function wipeStoredAuth() {
+    try { for (const st of [localStorage, sessionStorage]) for (let i = st.length - 1; i >= 0; i--) { const k = st.key(i); if (k && k.indexOf("firebase:authUser:") === 0) st.removeItem(k); } } catch (e) {}
+    try { indexedDB.deleteDatabase("firebaseLocalStorageDb"); } catch (e) {}
+  }
+  if (!KEEP_SESSION) {
+    try { localStorage.removeItem("dac_last_uid"); } catch (e) {}
+    // Geri/ileri düğmesiyle önbellekten (bfcache) dönülen sayfa girişli kalmasın: sayfayı baştan yükle
+    addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
+  }
 
   async function loadConfig() {
     const base = ((window.DAC_CONFIG || {}).API_URL || "").replace(/\/$/, "");
@@ -143,10 +226,17 @@
       const [appMod, authMod] = await Promise.all([import(FB + "firebase-app.js"), import(FB + "firebase-auth.js")]);
       A = authMod;
       const app = appMod.initializeApp(firebaseConfig);
-      auth = A.getAuth(app);
+      if (KEEP_SESSION) {
+        auth = A.getAuth(app);
+      } else {
+        // Oturum yalnızca bellekte tutulur: sayfa kapanınca / yenilenince / başka siteden geri dönülünce çıkış yapılmış sayılır.
+        const redirecting = (() => { try { return sessionStorage.getItem(REDIR_KEY) === "1"; } catch (e) { return false; } })();
+        if (!redirecting) wipeStoredAuth(); // eski sürümden kalan kalıcı oturumları sil
+        auth = A.initializeAuth(app, { persistence: redirecting ? [A.browserSessionPersistence] : [A.inMemoryPersistence], popupRedirectResolver: A.browserPopupRedirectResolver });
+      }
       provider = new A.GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
-      A.getRedirectResult(auth).catch((e) => { if (e && e.code && e.code !== "auth/no-auth-event") say(msgOf(e)); });
+      A.getRedirectResult(auth).catch((e) => { if (e && e.code && e.code !== "auth/no-auth-event") say(msgOf(e)); }).finally(() => { try { sessionStorage.removeItem(REDIR_KEY); } catch (e) {} });
       // Analytics isteğe bağlı: yalnızca measurementId tanımlıysa; yüklenemezse girişi etkilemez
       // Analytics: yalnızca ölçüm kimliği tanımlıysa VE kullanıcı giriş kutusundaki isteğe bağlı analitik kutusunu işaretlediyse (KVKK açık rıza)
       let analyticsOn = false;
@@ -154,7 +244,7 @@
       startAnalytics(); window.addEventListener("dac-cookie-consent", startAnalytics);
       A.onAuthStateChanged(auth, (u) => {
         const ok = !!u && !unverified(u);
-        if (ok) { try { localStorage.setItem("dac_last_uid", u.uid); } catch (e) {} }
+        if (ok && KEEP_SESSION) { try { localStorage.setItem("dac_last_uid", u.uid); } catch (e) {} }
         document.body.classList.remove("init");
         document.body.classList.toggle("authed", ok);
         if (ok) window.dacStart(u); else window.dacStop();

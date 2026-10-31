@@ -40,7 +40,7 @@
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <script src="/js/i18n.js?v=20261101a"></script>
 <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/css/style.css?v=20261101d">
+<link rel="stylesheet" href="/css/style.css?v=20261101e">
 <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://dacweb.tr/#website","url":"https://dacweb.tr/","name":"Digital Asset Center","alternateName":["DAC","Digital Asset Center DAC"],"inLanguage":["tr","en"],"publisher":{"@id":"https://dacweb.tr/#org"}},{"@type":"Organization","@id":"https://dacweb.tr/#org","name":"HZ Yazılım","url":"https://dacweb.tr/hakkimizda","logo":{"@type":"ImageObject","url":"https://dacweb.tr/icon-512.png","width":512,"height":512},"email":"hz.yazilimm@gmail.com","sameAs":["https://hz-yazilim.github.io"]},{"@type":"WebApplication","@id":"https://dacweb.tr/#app","name":"Digital Asset Center","url":"https://dacweb.tr/","applicationCategory":"BusinessApplication","operatingSystem":"Web","inLanguage":"tr","description":"Domain bitiş tarihi, SSL sertifikası, DNS, web güvenliği, SEO ve performans taramalarını tek panelden yapan dijital varlık yönetim aracı.","image":"https://dacweb.tr/icon-512.png","publisher":{"@id":"https://dacweb.tr/#org"},"offers":{"@type":"Offer","price":"0","priceCurrency":"TRY","description":"Ücretsiz plan"},"featureList":["Domain bitiş tarihi takibi","SSL sertifikası süre kontrolü","DNS ve e-posta güvenliği (SPF, DKIM, DMARC) denetimi","Web sitesi güvenlik başlıkları taraması","SEO analizi","Performans ve hız ölçümü","CSV ve JSON rapor dışa aktarma"]}]}</script>
 </head>
 <body class="init">
@@ -231,10 +231,8 @@
 <div id="login">
 <div class="lbox">
 <button class="lnk lp-back" id="lp-back" type="button">← Tanıtım sayfasına dön</button>
-<div class="lg" aria-hidden="true">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın</p>
+<div class="lg" aria-hidden="true">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın<br><small class="hint">Giriş yaptığınızda yasal metinleri onaylamanız istenir.</small></p>
 <div id="lmsg" class="lp-lmsg" role="status"></div>
-<label class="consent"><input type="checkbox" id="lterms"><span><a href="/kullanim-kosullari" target="_blank" rel="noopener">Kullanım Koşulları</a>'nı ve <a href="/kvkk" target="_blank" rel="noopener">KVKK Aydınlatma Metni</a>'ni okudum, kabul ediyorum. <small>(Google ile giriş ve hesap oluşturma için gereklidir.)</small></span></label>
-<label class="consent"><input type="checkbox" id="lanalytics"><span>İsteğe bağlı: anonim kullanım ölçümüne (analitik çerez) izin veriyorum. <small>(Zorunlu çerezler giriş için her durumda kullanılır; ayrıntı: <a href="/cerez-politikasi" target="_blank" rel="noopener">Çerez Politikası</a>.)</small></span></label>
 <button class="btn p w" id="gbtn" type="button">Google ile giriş yap</button>
 <div class="or"><span>veya e-posta ile</span></div>
 <form id="eform" novalidate>
@@ -247,6 +245,18 @@
 <div id="lerr" class="hint" role="status"></div>
 <div class="langsw lp-login-lang" role="group" aria-label="Dil / Language"><button type="button" data-lang="tr">TR</button><button type="button" data-lang="en">EN</button></div>
 <nav class="flinks" aria-label="Yasal bağlantılar"><a href="/hakkimizda">Hakkımızda</a> • <a href="/kvkk">KVKK Aydınlatma</a> • <a href="/gizlilik">Gizlilik</a> • <a href="/cerez-politikasi">Çerezler</a> • <a href="/kullanim-kosullari">Kullanım Koşulları</a> • <a href="/iletisim">İletişim</a> • <a href="#" data-cookie-settings>Çerez tercihleri</a></nav>
+</div>
+</div>
+<div id="cmodal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
+<div class="cm-box">
+<div class="cm-head"><h2 id="cm-title">Devam etmeden önce</h2><button type="button" class="cm-x" id="cm-x" aria-label="Kapat">&times;</button></div>
+<div class="cm-body" id="cm-body">
+<div class="cm-intro"><b>Endişelenecek bir şey yok.</b> dacweb.tr'yi kullanabilmeniz için yasal olarak göstermemiz gereken bilgilendirmeler aşağıdadır. Bunlar standart metinlerdir; verileriniz yalnızca hizmeti sunmak ve hesabınızı güvende tutmak için işlenir. Lütfen sayfayı aşağı kaydırarak okuyun; en altta onay kutusunu işaretleyip devam edebilirsiniz.</div>
+<div id="cm-docs" class="legal cm-docs">Metinler yükleniyor…</div>
+<label class="consent cm-ok"><input type="checkbox" id="cm-chk"><span>Yukarıdaki <b>Kullanım Koşulları</b>, <b>KVKK Aydınlatma Metni</b>, <b>Gizlilik Politikası</b>, <b>Çerez Politikası</b> (analitik ölçüm dahil) ve <b>Kabul Edilebilir Kullanım ve Tarama Yetkisi</b> metinlerini okudum, anladım ve tümünü kabul ediyorum.</span></label>
+<div class="cm-act"><button class="btn" id="cm-no" type="button">Vazgeç</button><button class="btn p" id="cm-yes" type="button" disabled>Onayla ve devam et</button></div>
+<div id="cm-hint" class="hint" role="status"></div>
+</div>
 </div>
 </div>
 <div id="busy"></div>
@@ -276,7 +286,7 @@
 <script src="/js/app-admin-ops.js?v=20261101a" defer></script>
 <script src="/js/app-support.js?v=20261029b" defer></script>
 <script src="/js/landing.js?v=20261101a" defer></script>
-<script type="module" src="/js/login.js?v=20261101a"></script>
+<script type="module" src="/js/login.js?v=20261101b"></script>
 <script src="/js/sw-register.js?v=20261025b" defer></script>
 <noscript><p>Digital Asset Center, HZ Yazılım tarafından geliştirilen dijital varlık takip uygulamasıdır. Uygulama JavaScript ve giriş gerektirir. Herkese açık bilgi: <a href="/hakkimizda">Hakkımızda</a>, <a href="/kvkk">KVKK</a>, <a href="/gizlilik">Gizlilik</a>, <a href="/iletisim">İletişim</a>.</p></noscript>
 </body>
