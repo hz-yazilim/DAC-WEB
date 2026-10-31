@@ -8,10 +8,16 @@
   // false: giriş pasif (test modu). true: giriş AKTİF (Google + e-posta/şifre)
   const LOGIN_ENABLED = true;
 
-  // ====== OTURUM KALICILIĞI ======
-  // false: oturum SADECE o sayfa açıkken yaşar. Sayfa yenilenir, kapanır veya başka siteye gidip geri dönülürse giriş YENİDEN istenir.
-  // true : (eski davranış) oturum tarayıcıda kalıcıdır, site tekrar açıldığında girişli gelir.
-  const KEEP_SESSION = false;
+  // ====== OTURUM / SAYFA GİRİŞİ ======
+  // Oturum tarayıcıda kalıcıdır (yüklü uygulamada hep girili kalır). Hesap ASLA otomatik çıkış yaptırılmaz.
+  // Ancak tarayıcıda (uygulama dışında) YENİ açılan her sayfa/sekme önce tanıtım sayfasını gösterir; kullanıcı "Giriş yap"a
+  // basınca kayıtlı hesabıyla (yeniden şifre/Google istenmeden) kaldığı yerden devam eder.
+  const KEEP_SESSION = true;
+  const ENTRY_KEY = "dac_entered"; // bu sekmede kullanıcı uygulamaya girdi mi (sekmeye özel)
+  const standalone = (() => { try { return matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: fullscreen)").matches || matchMedia("(display-mode: minimal-ui)").matches || navigator.standalone === true || String(document.referrer).indexOf("android-app://") === 0; } catch (e) { return false; } })();
+  const isEntered = () => { try { return standalone || sessionStorage.getItem(ENTRY_KEY) === "1"; } catch (e) { return standalone; } };
+  const markEntered = () => { try { sessionStorage.setItem(ENTRY_KEY, "1"); } catch (e) {} };
+  let heldUser = null; // kayıtlı oturum var ama bu sekmede henüz "Giriş yap"a basılmadı
   const REDIR_KEY = "dac_redirect_pending"; // yalnızca Google yönlendirmeli girişte (popup engelliyse) o sekmede geçici kullanılır
 
   const $ = (id) => document.getElementById(id);
@@ -106,6 +112,7 @@
     if (!$("cm-chk").checked) { $("cm-hint").textContent = "Devam etmek için onay kutusunu işaretlemeniz gerekir."; return; }
     try { localStorage.setItem("dac_terms_pending", LEGAL_V); } catch (e) {}
     if (window.DAC_COOKIE) window.DAC_COOKIE.set("all"); // tek onayın parçası: zorunlu çerezler + analitik ölçüm
+    markEntered();
     const cb = cmCb; closeConsent();
     if (cb) cb();
   }
@@ -192,17 +199,6 @@
     busyForm(false);
   }
 
-  // Firebase'in tarayıcıda sakladığı oturum kayıtlarını siler (IndexedDB + localStorage + sessionStorage)
-  function wipeStoredAuth() {
-    try { for (const st of [localStorage, sessionStorage]) for (let i = st.length - 1; i >= 0; i--) { const k = st.key(i); if (k && k.indexOf("firebase:authUser:") === 0) st.removeItem(k); } } catch (e) {}
-    try { indexedDB.deleteDatabase("firebaseLocalStorageDb"); } catch (e) {}
-  }
-  if (!KEEP_SESSION) {
-    try { localStorage.removeItem("dac_last_uid"); } catch (e) {}
-    // Geri/ileri düğmesiyle önbellekten (bfcache) dönülen sayfa girişli kalmasın: sayfayı baştan yükle
-    addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
-  }
-
   async function loadConfig() {
     const base = ((window.DAC_CONFIG || {}).API_URL || "").replace(/\/$/, "");
     let r, j;
@@ -226,14 +222,7 @@
       const [appMod, authMod] = await Promise.all([import(FB + "firebase-app.js"), import(FB + "firebase-auth.js")]);
       A = authMod;
       const app = appMod.initializeApp(firebaseConfig);
-      if (KEEP_SESSION) {
-        auth = A.getAuth(app);
-      } else {
-        // Oturum yalnızca bellekte tutulur: sayfa kapanınca / yenilenince / başka siteden geri dönülünce çıkış yapılmış sayılır.
-        const redirecting = (() => { try { return sessionStorage.getItem(REDIR_KEY) === "1"; } catch (e) { return false; } })();
-        if (!redirecting) wipeStoredAuth(); // eski sürümden kalan kalıcı oturumları sil
-        auth = A.initializeAuth(app, { persistence: redirecting ? [A.browserSessionPersistence] : [A.inMemoryPersistence], popupRedirectResolver: A.browserPopupRedirectResolver });
-      }
+      auth = A.getAuth(app);
       provider = new A.GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
       A.getRedirectResult(auth).catch((e) => { if (e && e.code && e.code !== "auth/no-auth-event") say(msgOf(e)); }).finally(() => { try { sessionStorage.removeItem(REDIR_KEY); } catch (e) {} });
@@ -242,10 +231,22 @@
       let analyticsOn = false;
       const startAnalytics = () => { if (analyticsOn || !firebaseConfig.measurementId) return; if (!window.DAC_COOKIE || window.DAC_COOKIE.get() !== "all") return; analyticsOn = true; import(FB + "firebase-analytics.js").then((m) => { try { m.getAnalytics(app); } catch (e) {} }).catch(() => {}); };
       startAnalytics(); window.addEventListener("dac-cookie-consent", startAnalytics);
+      const enter = (u) => { markEntered(); heldUser = null; document.body.classList.remove("init"); document.body.classList.add("authed"); window.dacStart(u); };
+      // Landing'deki "Giriş yap / Ücretsiz başla / paket seç" tıklaması: kayıtlı oturum varsa hesaptan atmadan doğrudan devam
+      document.addEventListener("click", (ev) => {
+        if (!heldUser || !ev.target.closest) return;
+        const lg = ev.target.closest("[data-login]"), pl = ev.target.closest("[data-plan]");
+        if (!lg && !pl) return;
+        ev.preventDefault(); ev.stopImmediatePropagation();
+        if (pl) { try { localStorage.setItem("dac_after_login", pl.getAttribute("data-plan") === "trial" ? "#dash" : "#plan"); } catch (e) {} }
+        enter(heldUser);
+      }, true);
       A.onAuthStateChanged(auth, (u) => {
         const ok = !!u && !unverified(u);
-        if (ok && KEEP_SESSION) { try { localStorage.setItem("dac_last_uid", u.uid); } catch (e) {} }
+        if (ok) { try { localStorage.setItem("dac_last_uid", u.uid); } catch (e) {} }
         document.body.classList.remove("init");
+        if (ok && !isEntered()) { heldUser = u; document.body.classList.remove("authed"); return; } // tanıtım sayfası açık kalır
+        heldUser = null;
         document.body.classList.toggle("authed", ok);
         if (ok) window.dacStart(u); else window.dacStop();
       });
