@@ -40,7 +40,7 @@
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <script src="/js/i18n.js?v=20261101a"></script>
 <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/css/style.css?v=20261101e">
+<link rel="stylesheet" href="/css/style.css?v=20261101f">
 <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://dacweb.tr/#website","url":"https://dacweb.tr/","name":"Digital Asset Center","alternateName":["DAC","Digital Asset Center DAC"],"inLanguage":["tr","en"],"publisher":{"@id":"https://dacweb.tr/#org"}},{"@type":"Organization","@id":"https://dacweb.tr/#org","name":"HZ Yazılım","url":"https://dacweb.tr/hakkimizda","logo":{"@type":"ImageObject","url":"https://dacweb.tr/icon-512.png","width":512,"height":512},"email":"hz.yazilimm@gmail.com","sameAs":["https://hz-yazilim.github.io"]},{"@type":"WebApplication","@id":"https://dacweb.tr/#app","name":"Digital Asset Center","url":"https://dacweb.tr/","applicationCategory":"BusinessApplication","operatingSystem":"Web","inLanguage":"tr","description":"Domain bitiş tarihi, SSL sertifikası, DNS, web güvenliği, SEO ve performans taramalarını tek panelden yapan dijital varlık yönetim aracı.","image":"https://dacweb.tr/icon-512.png","publisher":{"@id":"https://dacweb.tr/#org"},"offers":{"@type":"Offer","price":"0","priceCurrency":"TRY","description":"Ücretsiz plan"},"featureList":["Domain bitiş tarihi takibi","SSL sertifikası süre kontrolü","DNS ve e-posta güvenliği (SPF, DKIM, DMARC) denetimi","Web sitesi güvenlik başlıkları taraması","SEO analizi","Performans ve hız ölçümü","CSV ve JSON rapor dışa aktarma"]}]}</script>
 </head>
 <body class="init">
@@ -231,7 +231,23 @@
 <div id="login">
 <div class="lbox">
 <button class="lnk lp-back" id="lp-back" type="button">← Tanıtım sayfasına dön</button>
-<div class="lg" aria-hidden="true">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın<br><small class="hint">Giriş yaptığınızda yasal metinleri onaylamanız istenir.</small></p>
+<h1 class="cm-sr">Digital Asset Center</h1>
+<div class="dac-kare-wrap pixel-border" aria-hidden="true">
+<i class="pc tl"></i><i class="pc tr"></i><i class="pc bl"></i><i class="pc br"></i>
+<div class="dac-kare">
+<div class="dk-top"><span class="dk-chips"><b class="a"></b>DOMAIN <b class="b"></b>SSL <b></b>SRV</span><span class="dk-rec"><i></i>REC</span></div>
+<div class="dk-mid">
+<div id="welcomeText"></div>
+<div id="brandText"><span id="brandTyped"></span><span id="cursor"></span></div>
+<div class="dk-sub">DIGITAL ASSET CENTER</div>
+</div>
+<div class="dk-bot">
+<div class="dk-row"><span>SYSTEM SCAN: RUNNING</span><span id="dkPct">0%</span></div>
+<div class="dk-bar"><i id="dkFill"></i></div>
+<div class="dk-st"><span>[DOMAIN &#10003;]</span><span>[SSL &#10003;]</span><span>[DNS &#10003;]</span><span>[READY]</span></div>
+</div>
+</div>
+</div><p>Devam etmek için giriş yapın<br><small class="hint">Giriş yaptığınızda yasal metinleri onaylamanız istenir.</small></p>
 <div id="lmsg" class="lp-lmsg" role="status"></div>
 <button class="btn p w" id="gbtn" type="button">Google ile giriş yap</button>
 <div class="or"><span>veya e-posta ile</span></div>
@@ -286,7 +302,7 @@
 <script src="/js/app-admin-ops.js?v=20261101a" defer></script>
 <script src="/js/app-support.js?v=20261029b" defer></script>
 <script src="/js/landing.js?v=20261101a" defer></script>
-<script type="module" src="/js/login.js?v=20261101d"></script>
+<script type="module" src="/js/login.js?v=20261101e"></script>
 <script src="/js/sw-register.js?v=20261025b" defer></script>
 <noscript><p>Digital Asset Center, HZ Yazılım tarafından geliştirilen dijital varlık takip uygulamasıdır. Uygulama JavaScript ve giriş gerektirir. Herkese açık bilgi: <a href="/hakkimizda">Hakkımızda</a>, <a href="/kvkk">KVKK</a>, <a href="/gizlilik">Gizlilik</a>, <a href="/iletisim">İletişim</a>.</p></noscript>
 </body>

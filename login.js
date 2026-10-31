@@ -267,3 +267,28 @@
       fatal(e && e.message && !/import|fetch/i.test(e.message) ? e.message : "Giriş servisi yüklenemedi (Firebase SDK). İnternet bağlantınızı, reklam engelleyiciyi ve sayfayı yenilemeyi deneyin.");
     }
   })();
+
+/* Giriş karşılama karesi: "HOŞ GELDİNİZ" + dacweb.tr daktilo animasyonu, tarama çubuğu */
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let tok = 0;
+  async function run() {
+    const w = $("welcomeText"), b = $("brandTyped"), f = $("dkFill"), pc = $("dkPct");
+    if (!w || !b || !f || !pc) return;
+    const my = ++tok, alive = () => my === tok;
+    const EN = !!(window.DAC_I18N && window.DAC_I18N.isEN);
+    const hello = EN ? "WELCOME" : "HOŞ GELDİNİZ", brand = ((window.DAC_COMPANY && window.DAC_COMPANY.web) || "https://dacweb.tr").replace(/^https?:\/\//, "");
+    const st = Array.prototype.slice.call(document.querySelectorAll(".dk-st span"));
+    const setPct = (n) => { f.style.width = n + "%"; pc.textContent = n + "%"; st.forEach((s, i) => s.classList.toggle("on", n >= [25, 45, 65, 83][i])); };
+    let reduce = false; try { reduce = matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
+    if (reduce) { w.textContent = hello; b.textContent = brand; setPct(83); return; }
+    w.textContent = ""; b.textContent = ""; setPct(0);
+    (async () => { for (let n = 1; n <= 83 && alive(); n++) { setPct(n); await sleep(n < 60 ? 22 : 45); } })();
+    for (const ch of hello) { if (!alive()) return; w.textContent += ch; await sleep(70); }
+    await sleep(250);
+    for (const ch of brand) { if (!alive()) return; b.textContent += ch; await sleep(95); }
+  }
+  run();
+  addEventListener("hashchange", () => { if (location.hash === "#giris" || location.hash === "#kayit") run(); });
+})();
