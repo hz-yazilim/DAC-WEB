@@ -283,7 +283,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
 
   let timer = null;
   const registrationOpen = async () => (await getSite()).flags.registrationOpen !== false;
-  const start = () => { loadPricing().catch((e) => log("Fiyat ayarı yüklenemedi: " + e.message)); getSite(true).catch(() => {}); timer = setInterval(() => loadPricing().catch(() => {}), 60000); if (timer.unref) timer.unref(); };
+  const start = () => { loadPricing().catch((e) => log("Fiyat ayarı yüklenemedi: " + e.message)); getSite(true).catch(() => {}); timer = setInterval(() => loadPricing().catch(() => {}), Math.max(60000, Number(process.env.PRICING_REFRESH_MS) || 300000)); /* Firestore kotası: 5 dk; kaydedilen değer bu örnekte anında uygulanır */ if (timer.unref) timer.unref(); };
   const stop = () => { if (timer) clearInterval(timer); timer = null; };
 
   return { start, stop, loadPricing, ensureFresh, savePricing, resetPricing, pricingHistory, adminPricingView, publicView, currentState, defaultState, normalize,
