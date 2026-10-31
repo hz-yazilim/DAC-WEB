@@ -2447,6 +2447,8 @@ app.get("/api/firebase-config", (req, res) => {
 const ipLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_RATE_LIMIT, 60), 5 * 60 * 1000);
 const userLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_USER_RATE_LIMIT, 30), 5 * 60 * 1000);
 const concurrency = SEC.makeConcurrency(SEC.int(process.env.SCAN_CONCURRENCY_PER_USER, 2), SEC.int(process.env.SCAN_CONCURRENCY_GLOBAL, 8));
+const { createScanQuota, denyMessage } = SRV("quota");
+const scanQuota = createScanQuota(process.env.NODE_TEST && process.env.SCAN_QUOTA_CAPACITY === undefined ? { capacity: 0, cooldownMs: 0 } : { capacity: SEC.int(process.env.SCAN_QUOTA_CAPACITY, 100), refillPerHour: SEC.int(process.env.SCAN_QUOTA_REFILL_PER_HOUR, 4), cooldownMs: SEC.int(process.env.SCAN_TARGET_COOLDOWN_SEC, 300) * 1000 });
 const tooMany = (res, msg) => res.status(429).json({ success: false, error: msg || "Çok fazla istek. Biraz sonra tekrar deneyin." });
 const scanGuard = [
   (req, res, next) => (ipLimit(req.ip) ? next() : tooMany(res)),
@@ -2553,6 +2555,14 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   }
   // Fail-closed: üretimde Firestore yoksa paket/sahiplik/kota denetlenemez; ücretli ürünü denetimsiz çalıştırmayız.
   if (SEC.enforcePlans() && !req.user.dev && !db && process.env.ALLOW_SCAN_WITHOUT_DB !== "true") return res.status(503).json({ success: false, error: "Sunucu yapılandırması eksik (veritabanı). Lütfen daha sonra tekrar deneyin." });
+  // Yenilenen tarama hakkı + aynı hedefe bekleme (Firestore'a dokunmaz). Yöneticiler muaf. Kapatmak: SCAN_QUOTA_CAPACITY=0 ve SCAN_TARGET_COOLDOWN_SEC=0.
+  { const qKey = assetType + "|" + (NO_HOST_TYPES.includes(assetType) ? assetId : hostOf(targetUrl || extra.domain || extra.target));
+    const tk = scanQuota.take(uid, qKey);
+    if (tk.ok) res.on("finish", () => { if (res.statusCode >= 400) scanQuota.refund(uid, qKey); }); // tarama hata verdiyse (paket sınırı, sunucu hatası, eşzamanlılık) hak boşa gitmez
+    if (!tk.ok) {
+      let isAdm = false; try { isAdm = !!(await ADMIN.roleOf(req.user)).admin; } catch {}
+      if (!isAdm) { res.set("Retry-After", String(tk.retryAfterSec)); return res.status(429).json({ success: false, code: tk.code, error: denyMessage(tk), retryAfterSec: tk.retryAfterSec, remaining: tk.remaining, limit: tk.limit }); }
+    } }
   // Eşzamanlılık yuvası, veritabanına yazmadan ÖNCE alınır (yuva yoksa kota tüketen boş varlık kaydı oluşmaz).
   const release = concurrency.acquire(uid);
   if (!release) return tooMany(res, "Aynı anda çok fazla tarama var. Birinin bitmesini bekleyin.");
