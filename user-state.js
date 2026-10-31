@@ -50,7 +50,7 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     (req, res, next) => (limiter(req.user.uid) ? next() : res.status(429).json({ success: false, error: "Çok fazla istek. Biraz sonra tekrar deneyin." }))
   ];
   const ref = (uid) => db.collection("users").doc(uid).collection("state").doc("app");
-  const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { const code = e.status || 500; if (code >= 500) console.error("state:", e.message); res.status(code).json({ success: false, code: e.code, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
+  const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { res.locals.errDetail = (e && e.code ? e.code + ": " : "") + String(e && e.message || "").slice(0, 300); const code = e.status || 500; if (code >= 500) console.error("state:", e.message); res.status(code).json({ success: false, code: e.code, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
 
   app.get("/api/state", guard, wrap(async (req, res) => {
     const d = await ref(req.user.uid).get();

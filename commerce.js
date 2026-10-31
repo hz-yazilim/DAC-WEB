@@ -251,7 +251,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
   // getVerifyUser / getIsAdmin: payments ve admin modülleri sonradan oluştuğu için tembel (lazy) alınır
   function mountPublic(app, { SEC, getVerifyUser, getIsAdmin }) {
     const couponLimit = SEC.makeLimiter(SEC.int(process.env.COUPON_RATE_LIMIT, 30), 10 * 60 * 1000);
-    const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { const code = e.status || 500; if (code >= 500) log("commerce: " + e.message); res.status(code).json({ success: false, error: code >= 500 ? "Sunucu hatası" : e.message }); } };
+    const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { res.locals.errDetail = (e && e.code ? e.code + ": " : "") + String(e && e.message || "").slice(0, 300); const code = e.status || 500; if (code >= 500) log("commerce: " + e.message); res.status(code).json({ success: false, error: code >= 500 ? "Sunucu hatası" : e.message }); } };
     app.get("/api/pricing", wrap(async (req, res) => { await ensureFresh(15000); res.set("Cache-Control", "no-store"); res.json({ success: true, ...publicView() }); }));
     app.get("/api/site-status", wrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, ...(await publicSite()) }); }));
     app.post("/api/coupon/validate", wrap(async (req, res) => {

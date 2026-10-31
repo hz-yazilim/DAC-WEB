@@ -80,7 +80,7 @@ module.exports = function createSupport({ db, http, mailer, SEC, verifyUser = nu
   }
   function mount(app) {
     const lim = SEC.makeLimiter(SEC.int(process.env.SUPPORT_RATE_LIMIT, 5), 60 * 60 * 1000);
-    const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { const c = e.status || 500; if (c >= 500) log("support: " + e.message); res.status(c).json({ success: false, error: c >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
+    const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { res.locals.errDetail = (e && e.code ? e.code + ": " : "") + String(e && e.message || "").slice(0, 300); const c = e.status || 500; if (c >= 500) log("support: " + e.message); res.status(c).json({ success: false, error: c >= 500 && !e.status ? "Sunucu hatası" : e.message }); } };
     app.get("/api/support/config", (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, captcha: captchaOn() ? { provider: "turnstile", siteKey: process.env.TURNSTILE_SITE_KEY } : null }); });
     app.post("/api/support", wrap(async (req, res) => {
       if (!lim(req.ip)) throw bad(429, "Çok fazla talep gönderdiniz. Bir saat sonra tekrar deneyin.");

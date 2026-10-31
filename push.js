@@ -47,7 +47,7 @@ module.exports = function initPush({ app, db, verifyUser }) {
   if (app) {
     const lim = SEC.makeLimiter(SEC.int(process.env.PUSH_RATE_LIMIT, 30), 10 * 60 * 1000);
     const guard = [SEC.authenticate(verifyUser), (req, res, next) => (lim(req.user.uid) ? next() : res.status(429).json({ success: false, error: "Çok fazla istek. Biraz sonra tekrar deneyin." }))];
-    const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("push:", e.message); res.status(e.status || 500).json({ success: false, error: e.status ? e.message : "Sunucu hatası" }); } };
+    const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { res.locals.errDetail = (e && e.code ? e.code + ": " : "") + String(e && e.message || "").slice(0, 300); console.error("push:", e.message); res.status(e.status || 500).json({ success: false, error: e.status ? e.message : "Sunucu hatası" }); } };
 
     app.get("/api/push/key", guard, wrap(async (req, res) => {
       if (!(await whenReady())) return res.status(503).json({ success: false, error: "Bildirim servisi hazır değil." });

@@ -30,7 +30,7 @@ module.exports = function initPayments({ app, db, admin, http, commerce = null, 
   // PayTR anahtarlarını Render > Environment'a ekleyince bu mod OTOMATİK kapanır; tamamen kapatmak için ALLOW_FREE_ACTIVATION=false yazın.
   const freeMode = () => process.env.ALLOW_FREE_ACTIVATION !== "false" && !paytrReady();
   const status = () => ({ paytr: paytrReady(), usd: usdReady(), auth: !!(admin && admin.apps && admin.apps.length && db), enforced: process.env.ENFORCE_PLANS === "true", free: freeMode() });
-  const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message, ...(e.pcode ? { code: e.pcode } : {}), ...(e.extra || {}) }); } };
+  const handler = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { res.locals.errDetail = (e && e.code ? e.code + ": " : "") + String(e && e.message || "").slice(0, 300); console.error("payments:", e.message); const code = e.status || 500; res.status(code).json({ success: false, error: code >= 500 && !e.status ? "Sunucu hatası" : e.message, ...(e.pcode ? { code: e.pcode } : {}), ...(e.extra || {}) }); } };
 
   // ---------- Kullanıcı doğrulama ----------
   async function verifyUser(req) {
