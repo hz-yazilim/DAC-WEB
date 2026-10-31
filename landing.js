@@ -18,7 +18,7 @@
     var on = loginHash(), was = B.classList.contains("showlogin");
     if (on === was) return;
     B.classList.toggle("showlogin", on);
-    if (on) { setTimeout(function () { var e = $("#lemail"); if (e && !B.classList.contains("authed")) { try { e.focus({ preventScroll: true }); } catch (x) {} } }, 60); w.scrollTo(0, 0); }
+    if (on) { try { var ae = document.activeElement; if (ae && ae.blur) ae.blur(); } catch (x) {} w.scrollTo(0, 0); }
     else { w.scrollTo(0, savedY); }
   }
   function openLogin(mode, msg) {
