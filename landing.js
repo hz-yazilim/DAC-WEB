@@ -52,16 +52,6 @@
   d.addEventListener("keydown", function (e) { if (e.key === "Escape" && B.classList.contains("showlogin") && !B.classList.contains("authed")) closeLogin(); });
   function mark(sel, attr, val) { $$(sel + " button").forEach(function (b) { b.classList.toggle("on", b.getAttribute(attr) === val); }); }
 
-  /* ---------- hızlı analiz: giriş ister, hedefi hatırlar ---------- */
-  var q = $("#lp-quick");
-  if (q) q.addEventListener("submit", function (e) {
-    e.preventDefault();
-    var v = ($("#lp-target").value || "").trim().slice(0, 253);
-    if (!v) { $("#lp-target").focus(); return; }
-    try { localStorage.setItem("dac_pending_target", JSON.stringify({ v: v, at: Date.now() })); localStorage.setItem("dac_after_login", "#dash"); } catch (x) {}
-    openLogin("register", T("Analiz başlatmak için giriş yapın. Hesabınız yoksa birkaç saniyede oluşturabilirsiniz."));
-  });
-
   /* ---------- paketler ---------- */
   var P = w.DAC_PLANS, cur = "TRY", cyc = "monthly", live = null;
   function money(n, c) {
@@ -83,6 +73,7 @@
     box.innerHTML = ["trial"].concat(P.PAID).map(function (id) {
       var p = P.PLANS[id]; if (!p) return "";
       var feats = (live && live.plans && live.plans[id] && live.plans[id].features) || p.features;
+      if (id === "trial") feats = feats.map(function (f) { return /^\d+ gün ücretsiz$/.test(f) ? T("{n} gün ücretsiz", { n: td }) : f; });
       var pr = id === "trial" ? T("Ücretsiz") : money(price(id), cur);
       var per = id === "trial" ? "" : " <small>" + (cyc === "yearly" ? "/ yıl" : "/ ay") + "</small>";
       return '<div class="card plan' + (p.popular ? " on" : "") + '">' + (p.popular ? '<span class="badge ok pop">Popüler</span>' : "") +
@@ -92,7 +83,7 @@
         '<button class="btn p w" type="button" data-plan="' + esc(id) + '">' + (id === "trial" ? "Ücretsiz dene" : "Bu paketi seç") + "</button></div>";
     }).join("");
     $$("[data-trial-days]").forEach(function (e) { e.textContent = td; });
-    var n = $("#lp-note"); if (n) n.textContent = T("Analiz başlatmak için giriş gerekir. {n} gün ücretsiz deneme, kart bilgisi istenmez.", { n: td });
+    var n = $("#lp-note"); if (n) n.textContent = T("{n} gün ücretsiz deneme, kart bilgisi istenmez.", { n: td });
   }
   function loadLive() {
     var base = ((w.DAC_CONFIG || {}).API_URL || "").replace(/\/$/, "");

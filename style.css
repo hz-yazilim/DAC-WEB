@@ -293,3 +293,13 @@ body.authed #landing,body.showlogin:not(.init) #landing{display:none}
 @media(min-width:900px){.lp-nav{display:flex}.lp-grid{grid-template-columns:repeat(3,1fr)}.lp-grid-3{grid-template-columns:repeat(3,1fr)}}
 @media(min-width:1000px){.plans.lp-plans{grid-template-columns:repeat(4,1fr)}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+
+/* Açılış: örnek rapor kartı (ücretsiz tarama formunun yerine) */
+.lp-sample{max-width:640px;margin:0 auto 6px;text-align:left;background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:16px;box-shadow:0 16px 50px #0009}
+.lp-sample-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}.lp-sample-head .hint{margin-left:auto}
+.lp-sample-body{display:flex;gap:16px;align-items:center}.lp-sample-list{flex:1;min-width:0}.lp-sample-list .find{margin:5px 0}
+.lp-sample>.hint{margin:10px 0 12px}.lp-sample-cta{width:100%;justify-content:center;height:46px;border-radius:23px}
+@media(max-width:520px){.lp-sample-body{flex-direction:column;align-items:stretch}.lp-sample .ring{align-self:center}.lp-sample-head .hint{margin-left:0;flex-basis:100%}}
+/* Bildirim paneli: dar ekranda ekrana sığar (sola taşmaz) */
+@media(max-width:700px){.rel:has(>#bell){position:static}#bell.drop{left:8px;right:8px;top:100%;width:auto;margin-top:6px;max-width:none;max-height:70vh}}
+#bell.drop{max-width:calc(100vw - 16px)}

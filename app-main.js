@@ -102,6 +102,13 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 addEventListener('hashchange',()=>{render();scrollTo(0,0);if((location.hash.slice(1)||'').startsWith('cat/'))loadSite(true)});
 addEventListener('focus',()=>{if(S&&U&&apiUrl()&&!document.hidden){pullLatest();syncPlan();SYNC.pulled?schedulePush():pullState()}});
 
+/* ---------- çevrimiçi durum: sekme AÇIK ve görünürken 45 sn'de bir "sitedeyim" bildirimi (yalnızca uid + zaman; yönetici panelinde "Sitede" olarak görünür) ---------- */
+const PRES={t:null};
+async function presencePing(){const api=apiUrl();if(!api||!U||document.hidden)return;try{const h=await authH();if(!h.Authorization)return;await fetch(api+'/api/presence',{method:'POST',headers:{'Content-Type':'application/json',...h},body:'{}',keepalive:true})}catch{}}
+function presenceStop(){clearInterval(PRES.t);PRES.t=null}
+function presenceStart(){presenceStop();presencePing();PRES.t=setInterval(presencePing,45000)}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&U&&PRES.t)presencePing()});
+
 /* ---------- giriş (Firebase Auth index.html içinden çağırır) ---------- */
 window.dacStart=u=>{
  U=u;KEY='dac_v1_'+u.uid;
@@ -117,7 +124,7 @@ window.dacStart=u=>{
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.assets=Array.isArray(S.assets)?S.assets.filter(a=>a&&typeof a==='object'&&CATS[a.cat]&&typeof a.id==='string'):[];S.scans=Array.isArray(S.scans)?S.scans.filter(x=>x&&!x.mock):[];S.team=Array.isArray(S.team)?S.team:[];S.projects=Array.isArray(S.projects)?S.projects:[];
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
- syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();loadPricing(true);loadSite(true);startSiteTimer();bdgStart();
+ syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();loadPricing(true);loadSite(true);startSiteTimer();bdgStart();presenceStart();
 };
 async function exportAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');busy(true);try{const r=await fetch(api+'/api/account/export',{headers:await authH()});const j=await r.json();if(!r.ok||!j.success)throw new Error(j.error||'Dışa aktarılamadı');dl('dac-verilerim-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(j,null,2));toast('Verileriniz indirildi')}catch(e){toast(e.message,'err')}busy(false)}
 async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');
@@ -146,7 +153,7 @@ function showConsentGate(api){if(document.getElementById('cgate'))return;const d
  btn.onclick=async()=>{btn.disabled=true;err.textContent='';const h=await authH();const a=await postConsent(api,h,'terms',LEGAL_V,true),b=await postConsent(api,h,'privacy',LEGAL_V,true);if(a&&b)d.remove();else{err.textContent='Onay kaydedilemedi. Bağlantınızı kontrol edip tekrar deneyin.';btn.disabled=!ok.checked}};
  d.querySelector('#cg-out').onclick=()=>{d.remove();try{window.dacLogout&&window.dacLogout()}catch{}}}
 window.addEventListener('dac-cookie-consent',()=>{if(U)sendConsents()});
-window.dacStop=()=>{const cg=document.getElementById('cgate');if(cg)cg.remove();BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;bdgStop();syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
+window.dacStop=()=>{presenceStop();const cg=document.getElementById('cgate');if(cg)cg.remove();BK.isAdmin=false;clearInterval(BK.timer);BK.timer=null;bdgStop();syncReset();S=null;U=null;close();$('#view').innerHTML='';location.hash=''};
 
 /* ---------- rozetler: yönetici = kırmızı, kullanıcı = koyu mor ---------- */
 /* Yönetici: bekleyen destek + son baktığından beri yeni kullanıcı/sipariş/hata. Kullanıcı: yöneticiden gelen destek yanıtı/kapatma ve yeni duyuru. */

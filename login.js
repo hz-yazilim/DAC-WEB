@@ -49,7 +49,7 @@
 
   // Üyelik/Google girişi için Kullanım Koşulları + KVKK aydınlatma onayı (sunucuya giriş sonrası kaydedilir)
   const LEGAL_V = (window.DAC_COMPANY && window.DAC_COMPANY.surum) || "2026-10";
-  const termsOk = () => { const c = $("lterms"); if (c && c.checked) { try { localStorage.setItem("dac_terms_pending", LEGAL_V); } catch (e) {} return true; } say("Devam etmek için Kullanım Koşulları'nı ve KVKK Aydınlatma Metni'ni okuduğunuzu onaylayın."); return false; };
+  const termsOk = () => { const c = $("lterms"); if (c && c.checked) { try { localStorage.setItem("dac_terms_pending", LEGAL_V); } catch (e) {} const an = $("lanalytics"); if (window.DAC_COOKIE) window.DAC_COOKIE.set(an && an.checked ? "all" : "essential"); return true; } say("Devam etmek için Kullanım Koşulları'nı ve KVKK Aydınlatma Metni'ni okuduğunuzu onaylayın."); return false; };
   const busyForm = (b) => { for (const id of ["ebtn", "rbtn", "fbtn", "gbtn"]) $(id).disabled = b; };
 
   async function emailLogin(ev) {
@@ -148,7 +148,7 @@
       provider.setCustomParameters({ prompt: "select_account" });
       A.getRedirectResult(auth).catch((e) => { if (e && e.code && e.code !== "auth/no-auth-event") say(msgOf(e)); });
       // Analytics isteğe bağlı: yalnızca measurementId tanımlıysa; yüklenemezse girişi etkilemez
-      // Analytics: yalnızca ölçüm kimliği tanımlıysa VE kullanıcı çerez çubuğunda "Tümünü kabul et" dediyse (KVKK açık rıza)
+      // Analytics: yalnızca ölçüm kimliği tanımlıysa VE kullanıcı giriş kutusundaki isteğe bağlı analitik kutusunu işaretlediyse (KVKK açık rıza)
       let analyticsOn = false;
       const startAnalytics = () => { if (analyticsOn || !firebaseConfig.measurementId) return; if (!window.DAC_COOKIE || window.DAC_COOKIE.get() !== "all") return; analyticsOn = true; import(FB + "firebase-analytics.js").then((m) => { try { m.getAnalytics(app); } catch (e) {} }).catch(() => {}); };
       startAnalytics(); window.addEventListener("dac-cookie-consent", startAnalytics);

@@ -36,6 +36,22 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   const deny = (res, code, error, extra = {}) => res.status(code).json({ success: false, error, ...extra });
 
   const authn = SEC.authenticate(verifyUser);
+
+  /* ---------- Çevrimiçi durum (site içinde bulunma) ----------
+   * İstemci sekme AÇIK ve görünürken ~45 sn'de bir POST /api/presence çağırır. Yalnızca uid + zaman damgası bellek içinde tutulur (diske/Firestore'a yazılmaz);
+   * PRESENCE_TTL_MS (varsayılan 120 sn) içinde bildirim alınan kullanıcı "sitede" sayılır. Sunucu yeniden başlayınca sıfırlanır (kısa sürede kendiliğinden dolar).
+   * Birden fazla sunucu örneği çalıştırılırsa yalnızca ilgili örneğe bağlanan kullanıcılar görünür (hız sınırları gibi). */
+  const PRES_TTL = Math.max(30000, SEC.int(process.env.PRESENCE_TTL_MS, 120000));
+  const presence = new Map();
+  const isOnline = (uid) => now() - (presence.get(uid) || 0) < PRES_TTL;
+  const onlineUids = () => { const t = now(); for (const [k, v] of presence) if (t - v > PRES_TTL * 15) presence.delete(k); return [...presence].filter(([, v]) => t - v < PRES_TTL).map(([k]) => k); };
+  const presIp = SEC.makeLimiter(SEC.int(process.env.PRESENCE_IP_RATE_LIMIT, 1500), 5 * 60 * 1000);
+  const presUser = SEC.makeLimiter(SEC.int(process.env.PRESENCE_USER_RATE_LIMIT, 20), 60 * 1000);
+  app.post("/api/presence", [(req, res, next) => (presIp(req.ip) ? next() : deny(res, 429, "Çok fazla istek.")), authn, (req, res, next) => (presUser(req.user.uid) ? next() : deny(res, 429, "Çok fazla istek."))], (req, res) => {
+    if (!req.user.dev) { if (presence.size > 200000) presence.clear(); presence.set(req.user.uid, now()); }
+    res.set("Cache-Control", "no-store"); res.json({ success: true, ttlSeconds: Math.round(PRES_TTL / 1000) });
+  });
+  const withPresence = (u) => { u.online = isOnline(u.uid); u.lastSeenAt = presence.get(u.uid) || null; return u; };
   const TOTP = require("./totp"); const tfa = { tokens: TOTP.createTokens(process.env.ADMIN_2FA_SECRET || require("crypto").randomBytes(32).toString("hex"), now) };
   const tfaEnrolled = async (uid) => { if (!db) return false; try { const t = await db.collection("adminTotp").doc(uid).get(); return !!(t.exists && t.data().enabled); } catch { return false; } };
   const guard = [
@@ -122,7 +138,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     q.pending = q.items.PENDING + q.items.RETRYING; q.running = q.items.RUNNING;
     const n = (v, why) => (v == null ? unavailable(why || "Firestore bağlı değil veya sayım başarısız") : { available: true, value: v });
     res.json({ success: true, generatedAt: new Date().toISOString(),
-      users, assets: n(assetsTotal),
+      users, presence: { online: onlineUids().length, ttlSeconds: Math.round(PRES_TTL / 1000), note: "Sekmesi açık ve görünür olan kullanıcılar (bellek içi; sunucu yeniden başlayınca sıfırlanır)." }, assets: n(assetsTotal),
       scans: { total: n(checksTotal), last24h: n(checks24h), completed: n(completed), partial: n(partial), failed: n(failed), timedOut: n(timeout), note: "Kalıcı sayımlar Firestore assetChecks koleksiyonundandır." },
       queue: { ...q, recentJobsConsidered: recentJobs.length, engine: jobStats },
       api: { ...snap.api, windowMinutes: snap.windowMinutes, volatile: true, sinceBoot: snap.sinceBoot },
@@ -166,15 +182,16 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   }
   app.get("/api/admin/users", guard, wrap(async (req, res) => {
     if (!authOk()) return deny(res, 503, "Firebase Admin yapılandırılmamış");
-    const q = String(req.query.q || "").trim().toLowerCase().slice(0, 100), status = ["active", "disabled"].includes(req.query.status) ? req.query.status : "all";
+    const q = String(req.query.q || "").trim().toLowerCase().slice(0, 100), status = ["active", "disabled", "online"].includes(req.query.status) ? req.query.status : "all";
     const limit = Math.min(100, Math.max(1, +req.query.limit || 50)), offset = Math.min(1e6, Math.max(0, parseInt(req.query.pageToken, 10) || 0));
     let out = [], next = null, scanned = 0, truncated = false;
     if (q && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(q)) { try { out = [pubUser(await admin.auth().getUserByEmail(q))]; } catch { out = []; } scanned = out.length; }
     else {
       const all = await usersNewestFirst(); scanned = all.users.length; truncated = all.truncated;
-      const filtered = all.users.filter((p) => !(status === "active" && p.disabled) && !(status === "disabled" && !p.disabled) && (!q || `${p.email || ""} ${p.displayName || ""} ${p.uid}`.toLowerCase().includes(q)));
+      const filtered = all.users.filter((p) => !(status === "active" && p.disabled) && !(status === "disabled" && !p.disabled) && !(status === "online" && !isOnline(p.uid)) && (!q || `${p.email || ""} ${p.displayName || ""} ${p.uid}`.toLowerCase().includes(q)));
       out = filtered.slice(offset, offset + limit).map((u) => ({ ...u })); if (offset + limit < filtered.length) next = String(offset + limit);
     }
+    out.forEach(withPresence);
     const counts = await Promise.all(out.map((u) => (db ? countOf(db.collection("assets").where("ownerId", "==", u.uid)) : null)));
     out.forEach((u, i) => (u.assetCount = counts[i]));
     const subs = await Promise.all(out.map((u) => subOf(u.uid))); out.forEach((u, i) => { u.plan = planInfo(subs[i]); });
@@ -198,7 +215,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
       try { const os = await db.collection("orders").where("uid", "==", uid).limit(50).get(); orders = os.docs.map((d) => orderView(d.id, d.data(), { [uid]: u.email })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 20); } catch { /* sipariş okunamadı */ }
     }
     let note = null; if (db) { try { const n = await db.collection("adminNotes").doc(uid).get(); if (n.exists) note = { text: n.data().text || "", by: n.data().byEmail || n.data().by || null, at: n.data().at || null }; } catch { /* not okunamadı */ } }
-    res.json({ success: true, user: { ...pubUser(u), isAdmin: r.admin }, assets: { available: assetCount != null, count: assetCount, byType }, plan, subscription, orders, jobs: userJobs, note });
+    res.json({ success: true, user: withPresence({ ...pubUser(u), isAdmin: r.admin }), assets: { available: assetCount != null, count: assetCount, byType }, plan, subscription, orders, jobs: userJobs, note });
   }));
 
   /* Kullanıcının eklediği varlıklar (yönetici görünümü). KVKK/veri minimizasyonu: yalnızca yönetim için gerekli alanlar döner
@@ -226,8 +243,9 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     let stateCount = 0;
     try {
       const j = st && st.exists ? JSON.parse(st.data().data) : null;
+      const tomb = j && j.tomb && typeof j.tomb === "object" ? j.tomb : {}; // kullanıcının sildiği/engellenen (yasaklı hedef) varlıklar: durumda kalmış olsa bile gösterilmez
       for (const a of (j && Array.isArray(j.assets) ? j.assets : []).slice(0, CAP)) {
-        if (!a || typeof a.id !== "string") continue; stateCount++;
+        if (!a || typeof a.id !== "string" || tomb[a.id]) continue; stateCount++;
         const id = a.id.slice(0, 200), cat = clipS(a.cat, 30), r = byId.get(id);
         if (r) { r.cat = cat; r.createdAt = r.createdAt || toMs(a.createdAt); if (!r.target) r.target = clipS(a.target, 500); continue; }
         const res0 = a.result && typeof a.result === "object" ? a.result : null; // SaaS maliyet/ek alanlar (extra) bilinçli olarak alınmaz
@@ -356,7 +374,7 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   app.post("/api/admin/users/:uid/trial", guard, writeGuard, wrap(async (req, res) => {
     const uid = String(req.params.uid || ""); if (!uidOk(uid)) return deny(res, 400, "Geçersiz kullanıcı kimliği");
     if (!db || !authOk()) return deny(res, 503, "Firebase yapılandırılmamış");
-    const days = Math.floor(+(req.body || {}).days || 0); if (!(days >= 1 && days <= 90)) return deny(res, 400, "Gün sayısı 1-90 arasında olmalı");
+    const days = Math.floor(+(req.body || {}).days || 0); if (!(days >= 1 && days <= 365)) return deny(res, 400, "Gün sayısı 1-365 arasında olmalı");
     try { await admin.auth().getUser(uid); } catch { return deny(res, 404, "Kullanıcı bulunamadı"); }
     const trialStart = now() - (PLANS.TRIAL_DAYS - days) * 864e5; // deneme bitişi = şimdi + days
     await db.collection("users").doc(uid).set({ trialStart }, { merge: true });
@@ -431,11 +449,31 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
   /* ---------- Kullanıcıya müdahale: oturumları kapat, şifre sıfırlama bağlantısı, e-posta doğrulama, not ---------- */
   const userGuard = async (req, res) => { const uid = String(req.params.uid || ""); if (!uidOk(uid)) { deny(res, 400, "Geçersiz kullanıcı kimliği"); return null; } if (!authOk()) { deny(res, 503, "Firebase Admin yapılandırılmamış"); return null; } try { return { uid, u: await admin.auth().getUser(uid) }; } catch { deny(res, 404, "Kullanıcı bulunamadı"); return null; } };
   app.post("/api/admin/users/:uid/revoke-sessions", guard, writeGuard, wrap(async (req, res) => { const g = await userGuard(req, res); if (!g) return; await admin.auth().revokeRefreshTokens(g.uid); await auditSafe(req, "user.revoke-sessions", g.uid, { email: g.u.email }); res.json({ success: true, uid: g.uid }); }));
+  const hasPasswordLogin = (u) => (u.providerData || []).some((p) => p.providerId === "password");
+  /* Şifre sıfırlama: varsayılan olarak tek kullanımlık bağlantı döner; { send: true } ile bağlantı kullanıcıya e-posta (Resend) ile gönderilir.
+   * E-posta servisi kapalıysa bağlantı yine yöneticiye döner (sent:false) ve elle iletilebilir. Bağlantı denetim kaydına YAZILMAZ. */
   app.post("/api/admin/users/:uid/password-reset", guard, writeGuard, wrap(async (req, res) => {
     const g = await userGuard(req, res); if (!g) return; if (!g.u.email) return deny(res, 400, "Kullanıcının e-postası yok");
-    if (!(g.u.providerData || []).some((p) => p.providerId === "password")) return deny(res, 400, "Bu hesap e-posta/şifre ile açılmamış (ör. Google girişi); şifre sıfırlanamaz.");
-    const link = await admin.auth().generatePasswordResetLink(g.u.email); await auditSafe(req, "user.password-reset-link", g.uid, { email: g.u.email }); // bağlantı kayda yazılmaz
-    res.json({ success: true, uid: g.uid, email: g.u.email, link, note: "Bağlantı tek kullanımlıktır; yalnızca kullanıcıya güvenli bir kanaldan iletin." });
+    if (!hasPasswordLogin(g.u)) return deny(res, 400, "Bu hesap e-posta/şifre ile açılmamış (ör. Google girişi); şifre sıfırlanamaz.");
+    const link = await admin.auth().generatePasswordResetLink(g.u.email); const wantSend = (req.body || {}).send === true;
+    let sent = false, reason = null;
+    if (wantSend) {
+      if (mailer && mailer.enabled()) { const t = mailer.tpl.passwordReset({ link }); const r = await mailer.send({ to: g.u.email, subject: t.subject, text: t.text, html: t.html, type: "password-reset", uid: g.uid }); sent = !!r.sent; reason = r.reason || null; }
+      else reason = "disabled";
+    }
+    await auditSafe(req, wantSend ? (sent ? "user.password-reset-mail" : "user.password-reset-mail-failed") : "user.password-reset-link", g.uid, { email: g.u.email, reason });
+    res.json({ success: true, uid: g.uid, email: g.u.email, sent, reason, link: sent ? undefined : link, note: sent ? "Şifre sıfırlama bağlantısı kullanıcının e-posta adresine gönderildi." : (wantSend ? "E-posta gönderilemedi (servis kapalı veya hata); bağlantıyı kullanıcıya güvenli bir kanaldan iletin." : "Bağlantı tek kullanımlıktır; yalnızca kullanıcıya güvenli bir kanaldan iletin.") });
+  }));
+  /* Yönetici yeni şifre belirler (yalnızca e-posta/şifre hesapları). Şifre hiçbir kayda/yanıta yazılmaz; kullanıcının tüm oturumları kapatılır. */
+  app.post("/api/admin/users/:uid/password", guard, writeGuard, wrap(async (req, res) => {
+    const g = await userGuard(req, res); if (!g) return;
+    if (!hasPasswordLogin(g.u)) return deny(res, 400, "Bu hesap e-posta/şifre ile açılmamış (ör. Google girişi); şifre belirlenemez.");
+    const pw = String((req.body || {}).password || "");
+    if (pw.length < 8 || pw.length > 128) return deny(res, 400, "Şifre 8-128 karakter olmalı.");
+    if (g.uid === req.user.uid) return deny(res, 400, "Kendi şifrenizi buradan değiştirmeyin; Firebase üzerinden sıfırlayın.");
+    await admin.auth().updateUser(g.uid, { password: pw }); await admin.auth().revokeRefreshTokens(g.uid).catch(() => {});
+    await auditSafe(req, "user.password-set", g.uid, { email: g.u.email });
+    res.json({ success: true, uid: g.uid, note: "Şifre değiştirildi; kullanıcının açık oturumları kapatıldı." });
   }));
   app.post("/api/admin/users/:uid/verify-email", guard, writeGuard, wrap(async (req, res) => { const g = await userGuard(req, res); if (!g) return; if (g.u.emailVerified) return deny(res, 400, "E-posta zaten doğrulanmış"); await admin.auth().updateUser(g.uid, { emailVerified: true }); userStatsCache = { at: 0, val: null }; sortedCache = { at: 0, val: null }; await auditSafe(req, "user.verify-email", g.uid, { email: g.u.email }); res.json({ success: true, uid: g.uid }); }));
   app.post("/api/admin/users/:uid/note", guard, writeGuard, wrap(async (req, res) => {

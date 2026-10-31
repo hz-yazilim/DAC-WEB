@@ -7,7 +7,7 @@
  * Dil seçimi tarayıcıda "dac_lang" anahtarıyla saklanır; ?lang=en veya ?lang=tr ile de ayarlanabilir. */
 (function (w, d) {
   "use strict";
-  var KEY = "dac_lang", LOCALES = { tr: "tr-TR", en: "en-US" }, DICT_URL = "/js/i18n-en.js?v=20261030a";
+  var KEY = "dac_lang", LOCALES = { tr: "tr-TR", en: "en-US" }, DICT_URL = "/js/i18n-en.js?v=20261101a";
 
   function pick() {
     var q = "";

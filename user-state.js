@@ -142,6 +142,31 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     return { blocked: false, counts };
   }
 
+  // Yalnızca varlıkları siler (hesap, paket ve ayarlar kalır): sunucudaki `assets` + `assetChecks` kayıtları ve bulut durumundaki varlık listesi.
+  // Silinen kimlikler durumdaki `tomb` listesine yazılır ve sürüm artırılır; böylece kullanıcının açık/yerel kopyası eşitlenirken varlıkları geri yüklemez.
+  async function purgeAssets(uid) {
+    const counts = { assets: 0, assetChecks: 0, stateAssets: 0 }; const ids = new Set();
+    for (let i = 0; i < 200; i++) {
+      const snap = await db.collection("assets").where("ownerId", "==", uid).limit(CHUNK).get(); if (snap.empty) break;
+      const b = db.batch(); snap.docs.forEach(d => { ids.add(d.id); b.delete(d.ref); }); await b.commit(); counts.assets += snap.size; if (snap.size < CHUNK) break;
+    }
+    counts.assetChecks = await deleteWhere("assetChecks", "ownerId", uid);
+    const r = ref(uid);
+    await db.runTransaction(async (t) => {
+      const d = await t.get(r); if (!d.exists) return;
+      let st = null; try { st = JSON.parse(d.data().data); } catch { return; }
+      if (!st || typeof st !== "object") return;
+      const list = Array.isArray(st.assets) ? st.assets : []; counts.stateAssets = list.length;
+      const tomb = st.tomb && typeof st.tomb === "object" && !Array.isArray(st.tomb) ? st.tomb : {}; const at = Date.now();
+      for (const a of list) if (a && typeof a.id === "string" && !FORBIDDEN_KEYS.has(a.id)) tomb[a.id] = at;
+      for (const id of ids) if (!FORBIDDEN_KEYS.has(id)) tomb[id] = at;
+      const entries = Object.entries(tomb); if (entries.length > 5000) entries.sort((a, b) => b[1] - a[1]); // sanitizeState en çok 5000 tomb kabul eder
+      st.tomb = Object.fromEntries(entries.slice(0, 5000)); st.assets = [];
+      const json = JSON.stringify(st); t.set(r, { data: json, version: (d.data().version || 0) + 1, updatedAt: at, size: json.length });
+    });
+    return counts;
+  }
+
   app.delete("/api/account", accGuard, wrap(async (req, res) => {
     const uid = req.user.uid;
     if (String((req.body || {}).confirm || "") !== "HESABIMI SIL") return res.status(400).json({ success: false, error: 'Onay için "HESABIMI SIL" yazın.' });
@@ -150,6 +175,6 @@ module.exports = function initUserState({ app, db, admin, verifyUser }) {
     res.json({ success: true, deleted: counts });
   }));
 
-  return { sanitizeState, purgeAccount };
+  return { sanitizeState, purgeAccount, purgeAssets };
 };
 module.exports.sanitizeState = sanitizeState;

@@ -38,9 +38,9 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
-<script src="/js/i18n.js?v=20261030a"></script>
+<script src="/js/i18n.js?v=20261101a"></script>
 <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/css/style.css?v=20261030a">
+<link rel="stylesheet" href="/css/style.css?v=20261101a">
 <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://dacweb.tr/#website","url":"https://dacweb.tr/","name":"Digital Asset Center","alternateName":["DAC","Digital Asset Center DAC"],"inLanguage":["tr","en"],"publisher":{"@id":"https://dacweb.tr/#org"}},{"@type":"Organization","@id":"https://dacweb.tr/#org","name":"HZ Yazılım","url":"https://dacweb.tr/hakkimizda","logo":{"@type":"ImageObject","url":"https://dacweb.tr/icon-512.png","width":512,"height":512},"email":"hz.yazilimm@gmail.com","sameAs":["https://hz-yazilim.github.io"]},{"@type":"WebApplication","@id":"https://dacweb.tr/#app","name":"Digital Asset Center","url":"https://dacweb.tr/","applicationCategory":"BusinessApplication","operatingSystem":"Web","inLanguage":"tr","description":"Domain bitiş tarihi, SSL sertifikası, DNS, web güvenliği, SEO ve performans taramalarını tek panelden yapan dijital varlık yönetim aracı.","image":"https://dacweb.tr/icon-512.png","publisher":{"@id":"https://dacweb.tr/#org"},"offers":{"@type":"Offer","price":"0","priceCurrency":"TRY","description":"Ücretsiz plan"},"featureList":["Domain bitiş tarihi takibi","SSL sertifikası süre kontrolü","DNS ve e-posta güvenliği (SPF, DKIM, DMARC) denetimi","Web sitesi güvenlik başlıkları taraması","SEO analizi","Performans ve hız ölçümü","CSV ve JSON rapor dışa aktarma"]}]}</script>
 </head>
 <body class="init">
@@ -59,12 +59,22 @@
 <span class="lp-kicker">Digital Asset Center • DAC-WEB</span>
 <h1 id="lp-h1">Tüm dijital varlıklarınız tek merkezde</h1>
 <p class="lp-lead">DAC-WEB; web sitelerinizi, alan adlarınızı, SSL sertifikalarınızı, sunucularınızı, e-posta güvenliğinizi, mobil uygulamalarınızı ve yazılım aboneliklerinizi tek panelden tarar, puanlar ve süresi dolmadan sizi uyarır.</p>
-<form class="lp-quick" id="lp-quick" novalidate>
-<input class="field" id="lp-target" name="target" aria-label="Analiz edilecek alan adı veya adres" placeholder="örn: ornek.com" autocomplete="off" inputmode="url" maxlength="253">
-<button class="btn p" type="submit">Analizi başlat</button>
-</form>
-<p class="hint lp-note" id="lp-note">Analiz başlatmak için giriş gerekir. 3 gün ücretsiz deneme, kart bilgisi istenmez.</p>
-<div class="lp-cta"><a class="btn p" href="#kayit" data-login="register">Ücretsiz hesap oluştur</a><a class="btn" href="#paketler" data-go="paketler">Paketleri incele</a></div>
+<div class="lp-sample" role="img" aria-label="Örnek tarama raporu">
+<div class="lp-sample-head"><span class="badge mu">Örnek rapor</span><b>ornek.com</b><span class="hint">Güvenlik • SSL • Domain • E-posta</span></div>
+<div class="lp-sample-body">
+<div class="ring" style="--p:72;--rc:var(--wn)"><span>72</span></div>
+<div class="lp-sample-list">
+<div class="find"><span class="badge bd">Kritik</span><span>SPF kaydı bulunamadı: sahte e-posta riski</span></div>
+<div class="find"><span class="badge wn">Uyarı</span><span>Domain bitişine 24 gün kaldı</span></div>
+<div class="find"><span class="badge wn">Uyarı</span><span>Content-Security-Policy başlığı yok</span></div>
+<div class="find"><span class="badge ok">Başarılı</span><span>SSL sertifikası geçerli, 74 gün var</span></div>
+</div>
+</div>
+<p class="hint">Gösterilen veriler örnektir. Her bulgunun yanında nasıl düzeltileceği de yazar.</p>
+<a class="btn p lp-sample-cta" href="#kayit" data-login="register">Kendi sitemin raporunu al</a>
+</div>
+<p class="hint lp-note" id="lp-note">3 gün ücretsiz deneme, kart bilgisi istenmez.</p>
+<div class="lp-cta"><a class="btn" href="#giris" data-login="login">Giriş yap</a><a class="btn" href="#paketler" data-go="paketler">Paketleri incele</a></div>
 <ul class="lp-trust" aria-label="Öne çıkanlar"><li><i data-lucide="shield-check"></i>Google ile güvenli giriş</li><li><i data-lucide="credit-card"></i>TL ve USD ödeme</li><li><i data-lucide="languages"></i>Türkçe ve İngilizce</li><li><i data-lucide="smartphone"></i>Telefona yüklenebilir (PWA)</li></ul>
 </div>
 </section>
@@ -224,6 +234,7 @@
 <div class="lg" aria-hidden="true">G</div><h1>Digital Asset Center</h1><p>Devam etmek için giriş yapın</p>
 <div id="lmsg" class="lp-lmsg" role="status"></div>
 <label class="consent"><input type="checkbox" id="lterms"><span><a href="/kullanim-kosullari" target="_blank" rel="noopener">Kullanım Koşulları</a>'nı ve <a href="/kvkk" target="_blank" rel="noopener">KVKK Aydınlatma Metni</a>'ni okudum, kabul ediyorum. <small>(Google ile giriş ve hesap oluşturma için gereklidir.)</small></span></label>
+<label class="consent"><input type="checkbox" id="lanalytics"><span>İsteğe bağlı: anonim kullanım ölçümüne (analitik çerez) izin veriyorum. <small>(Zorunlu çerezler giriş için her durumda kullanılır; ayrıntı: <a href="/cerez-politikasi" target="_blank" rel="noopener">Çerez Politikası</a>.)</small></span></label>
 <button class="btn p w" id="gbtn" type="button">Google ile giriş yap</button>
 <div class="or"><span>veya e-posta ile</span></div>
 <form id="eform" novalidate>
@@ -253,19 +264,19 @@
 <div id="modal"><div class="box" id="box"></div></div>
 <div id="toast"></div>
 <script src="/js/lucide.min.js?v=0.462.0" defer></script>
-<script src="/js/config.js?v=20261025b" defer></script>
+<script src="/js/config.js?v=20261101a" defer></script>
 <script src="/js/company.js?v=20261025c" defer></script>
 <script src="/js/plans.js?v=20261025b" defer></script>
-<script src="/js/cookie-consent.js?v=20261025b" defer></script>
+<script src="/js/cookie-consent.js?v=20261101a" defer></script>
 <script src="/js/app.js?v=20261030d" defer></script>
 <script src="/js/app-analysis.js?v=20261030d" defer></script>
-<script src="/js/app-main.js?v=20261031a" defer></script>
+<script src="/js/app-main.js?v=20261101a" defer></script>
 <script src="/js/app-bulk.js?v=20261030c" defer></script>
-<script src="/js/app-admin.js?v=20261030c" defer></script>
-<script src="/js/app-admin-ops.js?v=20261030c" defer></script>
+<script src="/js/app-admin.js?v=20261101a" defer></script>
+<script src="/js/app-admin-ops.js?v=20261101a" defer></script>
 <script src="/js/app-support.js?v=20261029b" defer></script>
-<script src="/js/landing.js?v=20261030a" defer></script>
-<script type="module" src="/js/login.js?v=20261030a"></script>
+<script src="/js/landing.js?v=20261101a" defer></script>
+<script type="module" src="/js/login.js?v=20261101a"></script>
 <script src="/js/sw-register.js?v=20261025b" defer></script>
 <noscript><p>Digital Asset Center, HZ Yazılım tarafından geliştirilen dijital varlık takip uygulamasıdır. Uygulama JavaScript ve giriş gerektirir. Herkese açık bilgi: <a href="/hakkimizda">Hakkımızda</a>, <a href="/kvkk">KVKK</a>, <a href="/gizlilik">Gizlilik</a>, <a href="/iletisim">İletişim</a>.</p></noscript>
 </body>

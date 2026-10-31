@@ -61,6 +61,15 @@ const JOBLIB = SRV("jobs");                           // kalıcı toplu tarama k
 const PLANS = (() => { try { return require("../public/js/plans"); } catch (e) { return require("./plans"); } })();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
+// HTTPS zorunlu: üretimde düz HTTP istekleri https'e 301/308 ile yönlendirilir (Render/Cloudflare X-Forwarded-Proto ile). /health (sağlayıcı sağlık kontrolü) ve yerel adresler hariç.
+// Kapatmak için FORCE_HTTPS=false. HSTS başlığı aşağıda helmet ile zaten gönderilir.
+app.use((req, res, next) => {
+  if (process.env.FORCE_HTTPS === "false" || (process.env.NODE_ENV !== "production" && process.env.FORCE_HTTPS !== "true")) return next();
+  if (req.secure || req.path === "/health") return next();
+  const host = String(req.headers.host || "").toLowerCase().split(":")[0];
+  if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local") || !/^[a-z0-9.-]+$/.test(host)) return next();
+  return res.redirect(req.method === "GET" || req.method === "HEAD" ? 301 : 308, "https://" + host + req.originalUrl);
+});
 // Yanıt sıkıştırma (gzip/br): "compression" paketi yüklüyse etkinleşir
 try { app.use(require("compression")()); } catch (e) { console.warn("compression paketi yok: npm install compression"); }
 // SEO: API yanıtları arama sonuçlarına girmesin (robots.txt ile birlikte çift koruma)
@@ -2468,6 +2477,7 @@ async function policyCheck({ assetType, targetUrl, extra }) {
   return { blocked: false };
 }
 function blockedReply(res, req, pol, assetType) {
+  res.locals.expectedBlock = true; // beklenen yanıt: sistem hatası / hata rozeti olarak sayılmaz
   recordBlocked({ uid: req.user && req.user.uid, ip: req.ip, assetType, pol });
   if (req.user && !blockedLimit(req.user.uid)) return res.status(429).json({ success: false, code: "TOO_MANY_BLOCKED", error: "Çok fazla yasaklı hedef denemesi yaptınız. Bir süre sonra tekrar deneyin." });
   return res.status(403).json({ success: false, code: "TARGET_BLOCKED", error: pol.message || BLOCK.MESSAGE_GENERIC });
@@ -2566,6 +2576,7 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   }
   const out = await executeScan({ uid, assetId, assetType, handler, targetUrl, extra, name, ip: req.ip });
   const { scanStatus, checkId, saved, saveError, scanErrors, assetUpdate } = out;
+  if (scanStatus === "BLOCKED") res.locals.expectedBlock = true;
   if (scanStatus === "BLOCKED") return res.status(403).json({ success: false, code: "TARGET_BLOCKED", error: (out.blocked && out.blocked.message) || BLOCK.MESSAGE_GENERIC });
   if (scanStatus === "FAILED" || scanStatus === "TIMEOUT") {
     return res.status(scanStatus === "TIMEOUT" ? 504 : 502).json({ success: false, scanStatus, assetId, checkId, saved, error: scanStatus === "TIMEOUT" ? "Tarama zaman aşımına uğradı. Hedef yanıt vermiyor olabilir." : "Tarama tamamlanamadı. Hedefe ulaşılamadı veya analiz sırasında hata oluştu.", errors: scanErrors });

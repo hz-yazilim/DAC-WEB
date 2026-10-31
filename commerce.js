@@ -19,8 +19,10 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
   /* =================== FİYAT / LİMİT =================== */
   const DEFAULTS = {}; PAID.forEach((id) => { const p = PLANS.PLANS[id]; DEFAULTS[id] = { TRY: p.prices.TRY, USD: p.prices.USD, assets: p.assets, team: p.team, history: p.history, features: p.features.slice() }; });
   const DEFAULT_YEARLY = PLANS.YEARLY_MONTHS;
-  const defaultState = () => ({ plans: Object.fromEntries(PAID.map((id) => [id, { TRY: DEFAULTS[id].TRY, USD: DEFAULTS[id].USD, assets: DEFAULTS[id].assets, team: DEFAULTS[id].team, history: DEFAULTS[id].history }])), yearlyMonths: DEFAULT_YEARLY });
-  const currentState = () => ({ plans: Object.fromEntries(PAID.map((id) => { const p = PLANS.PLANS[id]; return [id, { TRY: p.prices.TRY, USD: p.prices.USD, assets: p.assets, team: p.team, history: p.history }]; })), yearlyMonths: PLANS.YEARLY_MONTHS });
+  const DEFAULT_TRIAL = PLANS.TRIAL_DAYS; // ücretsiz deneme süresi (gün): yönetici panelinden değiştirilebilir
+  const TRIAL_MIN = 1, TRIAL_MAX = 365;
+  const defaultState = () => ({ plans: Object.fromEntries(PAID.map((id) => [id, { TRY: DEFAULTS[id].TRY, USD: DEFAULTS[id].USD, assets: DEFAULTS[id].assets, team: DEFAULTS[id].team, history: DEFAULTS[id].history }])), yearlyMonths: DEFAULT_YEARLY, trialDays: DEFAULT_TRIAL });
+  const currentState = () => ({ plans: Object.fromEntries(PAID.map((id) => { const p = PLANS.PLANS[id]; return [id, { TRY: p.prices.TRY, USD: p.prices.USD, assets: p.assets, team: p.team, history: p.history }]; })), yearlyMonths: PLANS.YEARLY_MONTHS, trialDays: PLANS.TRIAL_DAYS });
   let meta = { custom: false, updatedAt: null, updatedBy: null }; let lastLoad = 0;
 
   // Paket kartındaki metinler (ör. "25 varlık") limit değişince güncel kalsın
@@ -38,6 +40,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
       p.features = DEFAULTS[id].features.map((f) => featureText(f, p));
     }
     PLANS.YEARLY_MONTHS = st.yearlyMonths;
+    if (Number.isInteger(st.trialDays)) { PLANS.TRIAL_DAYS = st.trialDays; const t = PLANS.PLANS.trial; if (t && Array.isArray(t.features)) t.features = t.features.map((f) => (/^\d+ gün ücretsiz$/.test(f) ? `${st.trialDays} gün ücretsiz` : f)); }
   }
   function parsePrice(v, cur, label) {
     const n = typeof v === "string" ? Number(v.trim().replace(",", ".")) : v;
@@ -74,6 +77,12 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
       if (!Number.isInteger(m) || m < 1 || m > 12) throw bad(400, "Yıllık ödemede ücretlendirilen ay sayısı 1-12 arasında tam sayı olmalı");
       if (m !== out.yearlyMonths) { changes.push({ plan: null, field: "yearlyMonths", from: out.yearlyMonths, to: m }); out.yearlyMonths = m; }
     }
+    if (input.trialDays !== undefined) {
+      const n = typeof input.trialDays === "string" ? Number(input.trialDays.trim()) : input.trialDays;
+      if (!Number.isInteger(n) || n < TRIAL_MIN || n > TRIAL_MAX) throw bad(400, `Ücretsiz deneme süresi ${TRIAL_MIN}-${TRIAL_MAX} gün arasında tam sayı olmalı`);
+      const before = Number.isInteger(out.trialDays) ? out.trialDays : DEFAULT_TRIAL;
+      if (n !== before) { changes.push({ plan: null, field: "trialDays", from: before, to: n }); out.trialDays = n; }
+    }
     return { state: out, changes, large };
   }
   const publicView = () => {
@@ -84,7 +93,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
     if (!db) return; const s = await db.collection("settings").doc("pricing").get(); lastLoad = now();
     if (!s.exists) { if (meta.custom) { applyState(defaultState()); meta = { custom: false, updatedAt: null, updatedBy: null }; } return; }
     const d = s.data() || {};
-    try { const { state } = normalize({ plans: d.plans, yearlyMonths: d.yearlyMonths }, defaultState()); applyState(state); meta = { custom: true, updatedAt: d.updatedAt || null, updatedBy: d.updatedByEmail || d.updatedBy || null }; }
+    try { const { state } = normalize({ plans: d.plans, yearlyMonths: d.yearlyMonths, trialDays: d.trialDays }, defaultState()); applyState(state); meta = { custom: true, updatedAt: d.updatedAt || null, updatedBy: d.updatedByEmail || d.updatedBy || null }; }
     catch (e) { log("Fiyat ayarı okunamadı, varsayılan kullanılıyor: " + e.message); }
   }
   const ensureFresh = async (maxAgeMs = 15000) => { if (db && now() - lastLoad > maxAgeMs) { lastLoad = now(); await loadPricing().catch((e) => log("Fiyat yenilenemedi: " + e.message)); } };
@@ -94,7 +103,7 @@ module.exports = function createCommerce({ db, PLANS, now = Date.now, log = () =
     if (!changes.length) throw bad(400, "Değişiklik yok");
     if (large.length && input.force !== true) throw bad(409, "Fiyat değişimi çok büyük (5 kattan fazla artış veya %80'den fazla düşüş). Yazım hatası olmadığından emin olup onaylayın.", { code: "LARGE_CHANGE", large });
     const at = now();
-    await db.collection("settings").doc("pricing").set({ plans: state.plans, yearlyMonths: state.yearlyMonths, updatedAt: at, updatedBy: by.uid, updatedByEmail: by.email || null });
+    await db.collection("settings").doc("pricing").set({ plans: state.plans, yearlyMonths: state.yearlyMonths, trialDays: Number.isInteger(state.trialDays) ? state.trialDays : DEFAULT_TRIAL, updatedAt: at, updatedBy: by.uid, updatedByEmail: by.email || null });
     try { await db.collection("pricingHistory").doc().set({ at, action: "update", by: by.uid, byEmail: by.email || null, changes }); } catch (e) { log("pricingHistory yazılamadı: " + e.message); }
     applyState(state); meta = { custom: true, updatedAt: at, updatedBy: by.email || by.uid }; lastLoad = at;
     return { changes, public: publicView() };

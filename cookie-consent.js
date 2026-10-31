@@ -15,7 +15,9 @@
     d.querySelector("#ck-ess").onclick = function () { window.DAC_COOKIE.set("essential"); d.remove(); };
     d.querySelector("#ck-all").onclick = function () { window.DAC_COOKIE.set("all"); d.remove(); };
   }
-  function init() { if (!get()) show(); }
+  // İlk açılışta çerez çubuğu GÖSTERİLMEZ: tercih giriş kutusunda alınır (zorunlu onay + isteğe bağlı analitik kutusu; bkz. index.html / login.js).
+  // Tercih hiç verilmemişse yalnızca zorunlu çerezler kullanılır. Çerez tercihi, alt bağlantıdaki "Çerez tercihleri" ile istenildiğinde değiştirilebilir.
+  function init() {}
   document.addEventListener("click", function (e) { var a = e.target.closest && e.target.closest("[data-cookie-settings]"); if (a) { e.preventDefault(); window.DAC_COOKIE.reopen(); } });
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();

@@ -98,6 +98,16 @@ module.exports = function registerAdminOps(c) {
     await auditSafe(req, "user.delete", uid, { email: u.email, counts: r.counts }); res.json({ success: true, deleted: r.counts, note: "Sipariş, abonelik ve onay kayıtları yasal saklama için korunur." });
   }));
 
+  /* ---------- Kullanıcının varlıklarını toplu sil (hesap ve paket korunur) ---------- */
+  app.post("/api/admin/users/:uid/assets/delete", guard, writeGuard, wrap(async (req, res) => {
+    const uid = String(req.params.uid || ""); if (!need(res, uidOk(uid), 400, "Geçersiz kullanıcı kimliği")) return; if (!authOk() || !db || !userState || !userState.purgeAssets) return deny(res, 503, "Firebase yapılandırılmamış");
+    if ((req.body || {}).confirm !== true) return deny(res, 400, "Onay gerekli");
+    let u; try { u = await admin.auth().getUser(uid); } catch { return deny(res, 404, "Kullanıcı bulunamadı"); }
+    const counts = await userState.purgeAssets(uid);
+    await auditSafe(req, "user.assets.delete", uid, { email: u.email, counts });
+    res.json({ success: true, uid, deleted: counts });
+  }));
+
   /* ---------- Destek talepleri ---------- */
   app.get("/api/admin/support", guard, wrap(async (req, res) => {
     if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", tickets: [] }); const st = ["open", "answered", "resolved", "closed"].includes(req.query.status) ? req.query.status : "";
