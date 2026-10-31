@@ -205,7 +205,7 @@ async function bdgPull(){
  bdgPaint();
  if(BADGE.again){BADGE.again=false;return bdgPull()}
 }
-function bdgStart(){if(BADGE.timer)return;bdgPull();BADGE.timer=setInterval(()=>{if(!document.hidden)bdgPull()},BK.isAdmin?30000:90000)}
+function bdgStart(){if(BADGE.timer)return;bdgPull();BADGE.timer=setInterval(()=>{if(!document.hidden)bdgPull()},BK.isAdmin?60000:300000)}
 function bdgStop(){clearInterval(BADGE.timer);BADGE.timer=null;BADGE.adm={support:0,users:0,orders:0,errors:0};BADGE.sup=[]}
 addEventListener('focus',()=>{if(S&&U)bdgPull()});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S&&U)bdgPull()});
