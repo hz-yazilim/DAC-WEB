@@ -124,7 +124,7 @@ window.dacStart=u=>{
  // Eski sürümlerden kalan demo (örnek) tarama verilerini temizle: yalnızca gerçek sonuçlar kalır
  S.assets=Array.isArray(S.assets)?S.assets.filter(a=>a&&typeof a==='object'&&CATS[a.cat]&&typeof a.id==='string'):[];S.scans=Array.isArray(S.scans)?S.scans.filter(x=>x&&!x.mock):[];S.team=Array.isArray(S.team)?S.team:[];S.projects=Array.isArray(S.projects)?S.projects:[];
  (S.assets||[]).forEach(a=>{if(a.result?.commonAnalysis?.analyzerVersion==='demo'){delete a.result;delete a.lastScan}});
- syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();loadPricing(true);loadSite(true);startSiteTimer();bdgStart();presenceStart();
+ syncReset();save(true);render();syncPlan();handleReturn();pullState().then(()=>pullLatest(true));sendConsents();bkInit();loadPricing(true);loadSite(true);startSiteTimer();bdgStart();presenceStart();quotaRefresh();
 };
 async function exportAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');busy(true);try{const r=await fetch(api+'/api/account/export',{headers:await authH()});const j=await r.json();if(!r.ok||!j.success)throw new Error(j.error||'Dışa aktarılamadı');dl('dac-verilerim-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(j,null,2));toast('Verileriniz indirildi')}catch(e){toast(e.message,'err')}busy(false)}
 async function deleteAccount(){const api=apiUrl();if(!api)return toast('Sunucu adresi yok','err');

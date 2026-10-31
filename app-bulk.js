@@ -4,6 +4,10 @@ const BK={isAdmin:false,timer:null,jobs:[],job:null,rows:[],total:0,page:1,pageS
 const ST={PENDING:'Bekliyor',RETRYING:'Yeniden denenecek',RUNNING:'Çalışıyor',COMPLETED:'Tamamlandı',PARTIAL:'Kısmen tamamlandı',FAILED:'Başarısız',CANCELED:'İptal edildi'};
 const stTone=x=>x==='COMPLETED'?'ok':x==='FAILED'?'bd':x==='PARTIAL'||x==='RETRYING'?'wn':'mu';
 const BULKCATS=[['domain','Domain'],['ssl','SSL Sertifikası'],['hosting','Hosting'],['web','Web Sitesi'],['seo','SEO'],['performance','Performans'],['uptime','Uptime']];
+/* Toplu tarama sınırları (sunucu uygular): tek seferde/kuyrukta en fazla N hedef, aynı hedefe 45 dk bekleme, her hedef aylık haktan düşer */
+const bkCap=()=>QUOTA&&!QUOTA.unlimited?(QUOTA.bulkMaxItems||null):null;
+const bkCoolMin=a=>{if(!a||!a.lastScan||(QUOTA&&(QUOTA.unlimited||QUOTA.bulkCooldownSec===0)))return 0;const l=((QUOTA&&QUOTA.bulkCooldownSec)||2700)*1000-(Date.now()-a.lastScan);return l>0?Math.ceil(l/60000):0};
+const bkLimitNote=()=>{const base='İşler sunucuda sırayla çalışır; sayfayı kapatabilirsiniz.';const q=QUOTA;if(!q||q.unlimited)return'Birçok hedefi tek seferde ekleyin. '+base;return`Tek seferde (ve aynı anda kuyrukta) en fazla ${q.bulkMaxItems||20} hedef olabilir. Aynı hedef ${Math.round((q.bulkCooldownSec||2700)/60)} dk içinde yeniden taranamaz; her hedef aylık tarama hakkınızdan düşer. `+base};
 async function bkApi(method,path,body,retried){
  const api=apiUrl();if(!api)throw new Error('Sunucu adresi yok');
  const r=await fetch(api+path,{method,headers:{'Content-Type':'application/json',...await authH(),...(path.startsWith('/api/admin/')?a2faH():{})},body:body?JSON.stringify(body):undefined});
@@ -52,7 +56,7 @@ function bkPaint(){const el=$('#bk-body');if(el)el.innerHTML=(location.hash.slic
 
 /* --- Domain: Genel Tarama --- */
 function domExtra(){const n=S.assets.filter(a=>a.cat==='domain').length;return`<div class="card"><b>${ic('radar')} Genel Tarama</b><div class="hint" style="margin:6px 0 10px">Ekli ${n} domaini sırayla tarar ve bitişe en az kalandan en çok kalana doğru listeler. Tek tek varlık taramasındaki ayrıntılı analiz değişmez.</div><div class="btns"><button class="btn p" data-act="bk-domscan"${n?'':' disabled'}>${ic('radar')} Genel Tarama</button><a class="btn s" href="#domains">Listeyi gör</a><a class="btn s" href="#bulk">Toplu domain ekle</a></div></div>`}
-function domainsPage(){return`<div class="mh"><h2>Domain Bitiş Süreleri</h2><div class="btns"><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button><button class="btn p" data-act="bk-domscan">${ic('radar')} Genel Tarama</button></div></div><p class="sub">Bitişe en yakından en uzağa doğru sıralıdır. Bitiş tarihi yalnızca kayıt kuruluşunun (RDAP) verisinden gelir.</p><div id="bk-body">${domBody()}</div>`}
+function domainsPage(){return`<div class="mh"><div><h2>Domain Bitiş Süreleri</h2>${quotaPill()}</div><div class="btns"><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button><button class="btn p" data-act="bk-domscan">${ic('radar')} Genel Tarama</button></div></div><p class="sub">Bitişe en yakından en uzağa doğru sıralıdır. Bitiş tarihi yalnızca kayıt kuruluşunun (RDAP) verisinden gelir.</p><div id="bk-body">${domBody()}</div>`}
 function domBody(){
  const doms=S.assets.filter(a=>a.cat==='domain').map(a=>({a,d:daysLeft(a)})).sort((x,y)=>(x.d==null)-(y.d==null)||(x.d??0)-(y.d??0));
  const j=BK.jobs.filter(x=>x.source!==undefined||true).find(x=>BK.domJob&&x.id===BK.domJob);
@@ -61,10 +65,13 @@ function domBody(){
  return prog+`<div class="card">${doms.map(({a,d})=>`<div class="item"><div class="ico" style="color:${CATS.domain.c}">${ic('link-2')}</div><div class="g"><b>${esc(a.name)}</b></div><span class="badge ${d==null?'mu':dayTone(d)}">${esc(dayTxt(d))}</span></div>`).join('')}</div>`;
 }
 async function bkDomScan(){
- if(!gate())return;const doms=S.assets.filter(a=>a.cat==='domain');if(!doms.length)return toast('Ekli domain yok','warn');
+ if(!gate())return;let doms=S.assets.filter(a=>a.cat==='domain');if(!doms.length)return toast('Ekli domain yok','warn');
+ const fresh=doms.filter(a=>bkCoolMin(a)).length;doms=doms.filter(a=>!bkCoolMin(a)); // yakın zamanda taranmış (45 dk) domainler atlanır, hak harcanmaz
+ if(!doms.length)return toast(`Tüm domainler yakın zamanda tarandı; ${Math.min(...S.assets.filter(a=>a.cat==='domain').map(bkCoolMin))} dk sonra yeniden başlatabilirsiniz.`,'warn');
+ const cap=bkCap();let more=0;if(cap&&doms.length>cap){doms=[...doms].sort((x,y)=>(x.lastScan||0)-(y.lastScan||0));more=doms.length-cap;doms=doms.slice(0,cap)} // en eski taranan önce
  busy(true);BK.busy=true;
  try{let last=null;for(let i=0;i<doms.length;i+=1000){const items=doms.slice(i,i+1000).map(a=>({assetId:a.id,type:'DOMAIN',target:a.target,name:a.name}));const j=await bkApi('POST','/api/jobs',{items,label:'Genel domain taraması',source:'domains-overview'});last=j.job.id}
-  BK.domJob=last;BK.wasActive=true;toast('Genel tarama kuyruğa alındı');location.hash='domains';await bkLoadView()}
+  BK.domJob=last;BK.wasActive=true;quotaRefresh();toast(`Genel tarama kuyruğa alındı (${doms.length} domain)`+(more?`; kalan ${more} domain için bu tarama bitince yeniden başlatın`:'')+(fresh?`; ${fresh} domain yakın zamanda tarandığı için atlandı`:''),more||fresh?'warn':'');location.hash='domains';await bkLoadView()}
  catch(e){toast(e.status===402?'Paket gerekli: '+e.message:e.message,'err');if(e.status===402)location.hash='plan'}
  BK.busy=false;busy(false);render();
 }
@@ -73,7 +80,7 @@ async function bkDomScan(){
 const bkBar=j=>{const done=j.total-j.counts.PENDING-j.counts.RETRYING-j.counts.RUNNING,pc=j.total?Math.round(done/j.total*100):0;return`<div class="bkbar"><i style="width:${pc}%"></i></div><div class="hint">${done}/${j.total} bitti • ${j.counts.RUNNING} çalışıyor • ${j.counts.PENDING+j.counts.RETRYING} bekliyor • ${j.counts.FAILED} başarısız</div>`};
 function bulkPage(){
  const opts=BULKCATS.map(([k,l])=>`<option value="${k}">${esc(l)}</option>`).join('');
- return`<div class="mh"><h2>Toplu Tarama</h2><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button></div><p class="sub">Yüzlerce hedefi tek seferde ekleyin. İşler sunucuda sırayla çalışır; sayfayı kapatabilirsiniz.</p>
+ return`<div class="mh"><div><h2>Toplu Tarama</h2>${quotaPill()}</div><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button></div><p class="sub">${bkLimitNote()}</p>
  <div class="card"><form data-bkform="import"><b>Toplu ekle</b><div style="height:10px"></div><select class="field" name="cat">${opts}</select>
  <textarea class="field" name="text" rows="6" placeholder="Her satıra bir adres (veya virgülle ayırın). CSV de yapıştırabilirsiniz." required></textarea>
  <input class="field" type="file" accept=".csv,.txt,text/plain,text/csv" data-bkfile>
@@ -97,23 +104,27 @@ function bkDetail(){
  <div class="mh" style="margin-top:10px"><button class="btn s" data-act="bk-prev"${BK.page<=1?' disabled':''}>Önceki</button><span class="hint">Sayfa ${BK.page}/${pages} • ${BK.total} kayıt</span><button class="btn s" data-act="bk-next"${BK.page>=pages?' disabled':''}>Sonraki</button></div></div>`;
 }
 async function bkImport(f){
- if(!gate())return;const d=Object.fromEntries(new FormData(f)),cat=d.cat,api=CATS[cat].api,seen=new Set(),items=[];let bad=0,existing=0,added=0;
+ if(!gate())return;const d=Object.fromEntries(new FormData(f)),cat=d.cat,api=CATS[cat].api,seen=new Set(),items=[];let bad=0,existing=0,added=0;const newIds=[];
  const cells=String(d.text||'').split(/[\n,;\t]/).map(x=>x.trim().replace(/^"|"$/g,'')).filter(Boolean);
  if(cells.length&&/^(domain|alan ?ad[ıi]|host|url|site)$/i.test(cells[0]))cells.shift();
  if(cells.length>2000)return toast('En fazla 2000 hedef girin','err');
+ {const cap=bkCap(),uniq=new Set(cells.map(x=>x.toLowerCase())).size;
+  if(cap&&uniq>cap)return toast(`Tek seferde en fazla ${cap} hedef eklenebilir (${uniq} girdiniz). Listeyi kısaltın.`,'err');
+  if(QUOTA&&!QUOTA.unlimited&&QUOTA.remaining!=null&&uniq>QUOTA.remaining)return toast(`Aylık tarama hakkınız yetmiyor (${uniq} hedef, ${QUOTA.remaining} hakkınız var).`,'err')}
  const ps=planState(),room=limitOf(ps)-S.assets.length;
  for(const raw of cells){const host=bkDomain(raw);if(!host){bad++;continue}
   const target=URLCATS.includes(cat)?proto(raw.includes('/')?raw:host):host,key=normKey(cat,target);if(seen.has(key))continue;seen.add(key);
   let a=S.assets.find(x=>x.cat===cat&&x.key===key);
-  if(a)existing++;else{if(added>=room){bad++;continue}a={id:uid(),cat,target:host,key,name:host,extra:{},createdAt:Date.now()};S.assets.push(a);added++}
+  if(a)existing++;else{if(added>=room){bad++;continue}a={id:uid(),cat,target:host,key,name:host,extra:{},createdAt:Date.now()};S.assets.push(a);newIds.push(a.id);added++}
   items.push({assetId:a.id,type:api,target:URLCATS.includes(cat)?target:host,name:a.name})}
  if(!items.length){return toast(bad?'Geçerli hedef bulunamadı ('+bad+' hatalı veya limit dışı)':'Hedef yok','err')}
  save();busy(true);BK.busy=true;
- try{let last=null,blockedN=0;const dropIdx=(chunk,j)=>{((j&&j.blockedIndexes)||[]).forEach(k=>{if(chunk[k]){dropBlocked(chunk[k].assetId);blockedN++}})};
-  for(let i=0;i<items.length;i+=1000){const chunk=items.slice(i,i+1000);try{const j=await bkApi('POST','/api/jobs',{items:chunk,label:'Toplu '+CATS[cat].label,source:'bulk'});last=j.job.id;dropIdx(chunk,j)}catch(e){dropIdx(chunk,e.data);if(e.code==='TARGET_BLOCKED')continue;throw e}}
+ try{let last=null,blockedN=0,coolN=0;const dropIdx=(chunk,j)=>{((j&&j.blockedIndexes)||[]).forEach(k=>{if(chunk[k]){dropBlocked(chunk[k].assetId);blockedN++}})};
+  for(let i=0;i<items.length;i+=1000){const chunk=items.slice(i,i+1000);try{const j=await bkApi('POST','/api/jobs',{items:chunk,label:'Toplu '+CATS[cat].label,source:'bulk'});last=j.job.id;coolN+=(j.rejected||[]).filter(x=>x.code==='SCAN_COOLDOWN').length;dropIdx(chunk,j)}catch(e){dropIdx(chunk,e.data);if(e.code==='TARGET_BLOCKED')continue;throw e}}
   if(blockedN)toast(blockedN+' hedef korumalı (devlet/kamu, büyük platform veya DAC) alan adı olduğundan taranmadı ve listenizden çıkarıldı','warn');
-  if(last){BK.job=last;BK.page=1;BK.sel=new Set();BK.wasActive=true;if(!blockedN)toast(`${items.length} hedef kuyruğa alındı (${added} yeni, ${existing} mevcut, ${bad} atlandı)`);f.reset();await bkLoadView()}else save()}
-  catch(e){toast(e.message,'err');if(e.status===402)location.hash='plan'}
+  if(last){BK.job=last;BK.page=1;BK.sel=new Set();BK.wasActive=true;quotaRefresh();if(!blockedN)toast(`${items.length-coolN} hedef kuyruğa alındı (${added} yeni, ${existing} mevcut, ${bad} atlandı)`+(coolN?`; ${coolN} hedef yakın zamanda tarandığı için (45 dk bekleme) atlandı`:''),coolN?'warn':'');f.reset();await bkLoadView()}else save()}
+  catch(e){if(['SCAN_COOLDOWN','SCAN_QUOTA','TOO_MANY_ITEMS','TOO_MANY_QUEUED'].includes(e.code)){S.assets=S.assets.filter(x=>!newIds.includes(x.id));save();quotaRefresh()} // iş oluşmadı: bu çağrıda eklenen varlıklar geri alınır
+  toast(e.message,e.code&&/^(SCAN_|TOO_MANY)/.test(e.code)?'warn':'err');if(e.status===402)location.hash='plan'}
  BK.busy=false;busy(false);render();
 }
 document.addEventListener('submit',e=>{const f=e.target.closest('[data-bkform]');if(!f)return;e.preventDefault();if(f.dataset.bkform==='import')bkImport(f)});

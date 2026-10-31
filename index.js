@@ -2447,8 +2447,15 @@ app.get("/api/firebase-config", (req, res) => {
 const ipLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_RATE_LIMIT, 60), 5 * 60 * 1000);
 const userLimit = SEC.makeLimiter(SEC.int(process.env.SCAN_USER_RATE_LIMIT, 30), 5 * 60 * 1000);
 const concurrency = SEC.makeConcurrency(SEC.int(process.env.SCAN_CONCURRENCY_PER_USER, 2), SEC.int(process.env.SCAN_CONCURRENCY_GLOBAL, 8));
-const { createScanQuota, denyMessage } = SRV("quota");
-const scanQuota = createScanQuota(process.env.NODE_TEST && process.env.SCAN_QUOTA_CAPACITY === undefined ? { capacity: 0, cooldownMs: 0 } : { capacity: SEC.int(process.env.SCAN_QUOTA_CAPACITY, 100), refillPerHour: SEC.int(process.env.SCAN_QUOTA_REFILL_PER_HOUR, 4), cooldownMs: SEC.int(process.env.SCAN_TARGET_COOLDOWN_SEC, 300) * 1000 });
+const { createScanQuota, targetKey, denyMessage } = SRV("quota");
+/* Tarama hakkı: AYLIK hak (varsayılan 100, kalıcı) + aynı hedefe bekleme (tekil 15 dk, toplu 45 dk) + toplu işte en fazla 20 hedef. Yöneticiler muaf.
+ * Kapatmak/ayarlamak: SCAN_MONTHLY_LIMIT (0=kapalı), SCAN_TARGET_COOLDOWN_SEC, BULK_TARGET_COOLDOWN_SEC, BULK_MAX_ITEMS. Testlerde (node --test) SCAN_MONTHLY_LIMIT verilmedikçe kapalı. */
+const QUOTA_OFF = !!(process.env.NODE_TEST || process.env.NODE_TEST_CONTEXT) && process.env.SCAN_MONTHLY_LIMIT === undefined; // node --test altında varsayılan kapalı
+const envInt0 = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) && n >= 0 ? n : d; }; // SEC.int 0'ı kabul etmez; burada 0 = "kapalı"
+const BULK_MAX_ITEMS = QUOTA_OFF || envInt0(process.env.BULK_MAX_ITEMS, 20) === 0 ? 1e9 : envInt0(process.env.BULK_MAX_ITEMS, 20);
+const scanQuota = createScanQuota(QUOTA_OFF ? { monthlyLimit: 0, cooldownMs: 0, bulkCooldownMs: 0 } : { monthlyLimit: envInt0(process.env.SCAN_MONTHLY_LIMIT, 100), cooldownMs: envInt0(process.env.SCAN_TARGET_COOLDOWN_SEC, 900) * 1000, bulkCooldownMs: envInt0(process.env.BULK_TARGET_COOLDOWN_SEC, 2700) * 1000, db });
+const quotaDenied = (res, r, bulk) => { res.set("Retry-After", String(r.retryAfterSec || 3600)); return res.status(429).json({ success: false, code: r.code, error: denyMessage(r, bulk), retryAfterSec: r.retryAfterSec, remaining: r.remaining, limit: r.limit, resetsAt: r.resetsAt, skipped: (r.skipped || []).slice(0, 50) }); };
+const isAdminUser = async (user) => { try { return !!(await ADMIN.roleOf(user)).admin; } catch { return false; } };
 const tooMany = (res, msg) => res.status(429).json({ success: false, error: msg || "Çok fazla istek. Biraz sonra tekrar deneyin." });
 const scanGuard = [
   (req, res, next) => (ipLimit(req.ip) ? next() : tooMany(res)),
@@ -2555,14 +2562,13 @@ app.post("/api/scan", scanGuard, async (req, res) => {
   }
   // Fail-closed: üretimde Firestore yoksa paket/sahiplik/kota denetlenemez; ücretli ürünü denetimsiz çalıştırmayız.
   if (SEC.enforcePlans() && !req.user.dev && !db && process.env.ALLOW_SCAN_WITHOUT_DB !== "true") return res.status(503).json({ success: false, error: "Sunucu yapılandırması eksik (veritabanı). Lütfen daha sonra tekrar deneyin." });
-  // Yenilenen tarama hakkı + aynı hedefe bekleme (Firestore'a dokunmaz). Yöneticiler muaf. Kapatmak: SCAN_QUOTA_CAPACITY=0 ve SCAN_TARGET_COOLDOWN_SEC=0.
-  { const qKey = assetType + "|" + (NO_HOST_TYPES.includes(assetType) ? assetId : hostOf(targetUrl || extra.domain || extra.target));
-    const tk = scanQuota.take(uid, qKey);
-    if (tk.ok) res.on("finish", () => { if (res.statusCode >= 400) scanQuota.refund(uid, qKey); }); // tarama hata verdiyse (paket sınırı, sunucu hatası, eşzamanlılık) hak boşa gitmez
-    if (!tk.ok) {
-      let isAdm = false; try { isAdm = !!(await ADMIN.roleOf(req.user)).admin; } catch {}
-      if (!isAdm) { res.set("Retry-After", String(tk.retryAfterSec)); return res.status(429).json({ success: false, code: tk.code, error: denyMessage(tk), retryAfterSec: tk.retryAfterSec, remaining: tk.remaining, limit: tk.limit }); }
-    } }
+  // Aylık tarama hakkı + aynı hedefe 15 dk bekleme. Ağ taraması yapmayan türler (SaaS/mobil/depo) sayılmaz. Hata yanıtında hak ve bekleme geri verilir. Yöneticiler muaf.
+  if (!NO_HOST_TYPES.includes(assetType)) {
+    const qKey = targetKey(assetType, hostOf(targetUrl || extra.domain || extra.target));
+    const rs = await scanQuota.reserve(uid, [qKey]);
+    if (rs.ok) res.on("finish", () => { if (res.statusCode >= 400) scanQuota.refund(uid, [qKey]).catch(() => {}); });
+    else if (!(await isAdminUser(req.user))) return quotaDenied(res, rs, false);
+  }
   // Eşzamanlılık yuvası, veritabanına yazmadan ÖNCE alınır (yuva yoksa kota tüketen boş varlık kaydı oluşmaz).
   const release = concurrency.acquire(uid);
   if (!release) return tooMany(res, "Aynı anda çok fazla tarama var. Birinin bitmesini bekleyin.");
@@ -2595,6 +2601,11 @@ app.post("/api/scan", scanGuard, async (req, res) => {
 });
 
 // Varlık silme: kullanıcı arayüzden sildiğinde sunucudaki güncel kayıt da silinir (yoksa kota sayacında kalır). Tarama geçmişi (assetChecks) saklanır.
+app.get("/api/scan/quota", scanGuard, async (req, res) => {
+  res.set("Cache-Control", "no-store"); const admin = await isAdminUser(req.user);
+  const st = await scanQuota.status(req.user.uid);
+  res.json({ success: true, ...st, bulkMaxItems: BULK_MAX_ITEMS >= 1e9 ? null : BULK_MAX_ITEMS, unlimited: admin || st.limit === 0, ...(admin ? { remaining: null } : {}) });
+});
 app.delete("/api/assets/:id", scanGuard, async (req, res) => {
   const id = String(req.params.id || "");
   if (!/^[A-Za-z0-9_-]{1,200}$/.test(id)) return res.status(400).json({ success: false, error: "Geçersiz varlık kimliği" });
@@ -2767,7 +2778,27 @@ app.post("/api/jobs", jobWrite, jobWrap(async (req, res) => {
   if (blockedHits.length) { for (const pol of blockedHits.slice(0, 5)) recordBlocked({ uid: req.user.uid, ip: req.ip, assetType: "BULK", pol, where: "jobs" }); if (!blockedLimit(req.user.uid)) return res.status(429).json({ success: false, code: "TOO_MANY_BLOCKED", blockedIndexes: blockedIdx, error: "Çok fazla yasaklı hedef denemesi yaptınız. Bir süre sonra tekrar deneyin." }); }
   if (!items.length) return res.status(blockedHits.length ? 403 : 400).json({ success: false, ...(blockedHits.length ? { code: "TARGET_BLOCKED", blockedIndexes: blockedIdx } : {}), error: blockedHits.length ? "Gönderilen hedeflerin tümü korumalı (devlet/kamu, büyük platform veya DAC) alan adı olduğundan taranamaz." : "Geçerli hedef yok", rejected: rejected.slice(0, 50) });
   if (SEC.enforcePlans() && req.user.uid !== "dev-user" && db) { const e = await payments.getEntitlement(req.user.uid).catch(() => null); if (e && e.plan === "expired") return res.status(402).json({ success: false, code: "PLAN_REQUIRED", error: "Deneme süreniz bitti. Devam etmek için bir paket seçin." }); }
-  const job = await JOBS.createJob({ ownerId: req.user.uid, items, label: typeof body.label === "string" ? body.label : "Toplu tarama", source: body.source === "domains-overview" ? "domains-overview" : "bulk" });
+  // Toplu tarama sınırları: tek seferde en fazla BULK_MAX_ITEMS hedef; aynı hedef 45 dk içinde yeniden eklenemez; her hedef aylık haktan düşer. Yöneticiler muaf.
+  let reserved = null, adminBulk = false;
+  const netItems = items.filter((x) => !NO_HOST_TYPES.includes(x.type));
+  if (netItems.length) {
+    adminBulk = await isAdminUser(req.user);
+    if (!adminBulk) {
+      if (items.length > BULK_MAX_ITEMS) return res.status(400).json({ success: false, code: "TOO_MANY_ITEMS", error: `Tek seferde en fazla ${BULK_MAX_ITEMS} hedef taranabilir.`, limit: BULK_MAX_ITEMS });
+      // "Aynı anda" sınırı: önceki işlerin kuyrukta bekleyen/çalışan hedefleri de sayılır (art arda küçük işlerle 20 sınırı aşılamaz).
+      const mine = await JOBS.listJobs(req.user.uid, 30);
+      const queued = mine.filter((j) => ["PENDING", "RUNNING"].includes(j.status)).reduce((n, j) => n + (j.counts.PENDING || 0) + (j.counts.RUNNING || 0) + (j.counts.RETRYING || 0), 0);
+      if (queued + items.length > BULK_MAX_ITEMS) return res.status(429).json({ success: false, code: "TOO_MANY_QUEUED", error: `Aynı anda en fazla ${BULK_MAX_ITEMS} hedef kuyrukta olabilir (şu an ${queued} bekliyor). Önceki toplu taramanın bitmesini bekleyin.`, limit: BULK_MAX_ITEMS, queued });
+      const keyOf = (x) => targetKey(x.type, hostOf(x.targetUrl));
+      const rs = await scanQuota.reserve(req.user.uid, netItems.map(keyOf), { bulk: true });
+      if (!rs.ok) return quotaDenied(res, rs, true);
+      reserved = rs.allowed; const okKeys = new Set(rs.allowed), taken = new Set();
+      const keep = items.filter((x) => { if (NO_HOST_TYPES.includes(x.type)) return true; const k = keyOf(x); if (okKeys.has(k) && !taken.has(k)) { taken.add(k); return true; } rejected.push({ error: okKeys.has(k) ? "Aynı hedef bu işte birden fazla kez var" : "Bu hedef az önce tarandı (45 dk bekleme)", code: okKeys.has(k) ? undefined : "SCAN_COOLDOWN" }); return false; });
+      items.length = 0; items.push(...keep);
+    }
+  }
+  let job; try { job = await JOBS.createJob({ ownerId: req.user.uid, items, label: typeof body.label === "string" ? body.label : "Toplu tarama", source: body.source === "domains-overview" ? "domains-overview" : "bulk" }); }
+  catch (e) { if (reserved && reserved.length) await scanQuota.refund(req.user.uid, reserved).catch(() => {}); throw e; } // iş oluşturulamadıysa hak geri verilir
   res.status(201).json({ success: true, job: pubJob(job), accepted: items.length, rejected: rejected.slice(0, 100), rejectedCount: rejected.length, blockedIndexes: blockedIdx });
 }));
 app.get("/api/jobs", jobRead, jobWrap(async (req, res) => { res.set("Cache-Control", "no-store"); res.json({ success: true, persistent: JOBS._store.persistent, jobs: (await JOBS.listJobs(req.user.uid, Math.min(100, +req.query.limit || 30))).map(pubJob) }); }));
@@ -2779,7 +2810,15 @@ app.get("/api/jobs/:id/export.csv", jobRead, jobWrap(async (req, res) => {
   res.set({ "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="toplu-tarama.csv"' }); res.type("text/csv").send(JOBLIB.itemsToCsv(rows));
 }));
 app.post("/api/jobs/:id/cancel", jobWrite, jobWrap(async (req, res) => { const r = await JOBS.cancelJob(jobId(req), req.user.uid); res.json({ success: true, canceled: r.canceled, job: pubJob(r.job) }); }));
-app.post("/api/jobs/:id/retry", jobWrite, jobWrap(async (req, res) => { const ids = Array.isArray(req.body && req.body.itemIds) ? req.body.itemIds.filter((x) => typeof x === "string").slice(0, 1000) : null; res.json({ success: true, ...(await JOBS.retryItems(jobId(req), req.user.uid, { itemIds: ids, includeCanceled: req.body && req.body.includeCanceled === true })) }); }));
+app.post("/api/jobs/:id/retry", jobWrite, jobWrap(async (req, res) => {
+  const ids = Array.isArray(req.body && req.body.itemIds) ? req.body.itemIds.filter((x) => typeof x === "string").slice(0, 1000) : null;
+  // Yeniden deneme de tarama sayılır: kalan aylık hakla sınırlanır, yeniden kuyruğa alınan her öğe haktan düşer (aksi halde hak atlatılırdı). Yöneticiler muaf.
+  const admin = await isAdminUser(req.user), st = admin ? null : await scanQuota.status(req.user.uid);
+  if (st && st.limit > 0 && st.remaining <= 0) return quotaDenied(res, { ...st, code: "SCAN_QUOTA", needed: 1 }, true);
+  const r = await JOBS.retryItems(jobId(req), req.user.uid, { itemIds: ids, includeCanceled: req.body && req.body.includeCanceled === true, ...(st && st.limit > 0 ? { limit: st.remaining } : {}) });
+  if (st && st.limit > 0 && r.requeued > 0) await scanQuota.charge(req.user.uid, r.requeued);
+  res.json({ success: true, ...r });
+}));
 app.post("/api/jobs/:id/items/cancel", jobWrite, jobWrap(async (req, res) => { const ids = Array.isArray(req.body && req.body.itemIds) ? req.body.itemIds.filter((x) => typeof x === "string").slice(0, 1000) : []; res.json({ success: true, ...(await JOBS.cancelItems(jobId(req), req.user.uid, ids)) }); }));
 
 // ===== Raporlar ve bileşik skor (AI'siz) =====

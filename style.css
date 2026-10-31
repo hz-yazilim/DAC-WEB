@@ -303,3 +303,4 @@ body.authed #landing,body.showlogin:not(.init) #landing{display:none}
 /* Bildirim paneli: dar ekranda ekrana sığar (sola taşmaz) */
 @media(max-width:700px){.rel:has(>#bell){position:static}#bell.drop{left:8px;right:8px;top:100%;width:auto;margin-top:6px;max-width:none;max-height:70vh}}
 #bell.drop{max-width:calc(100vw - 16px)}
+.quota-pill{margin-top:4px}

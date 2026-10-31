@@ -240,6 +240,13 @@ const busy=b=>document.body.classList.toggle('busy',b);
 const authH=async()=>{try{const t=window.dacToken?await window.dacToken():null;return t?{Authorization:'Bearer '+t}:{}}catch{return{}}};
 
 /* ---------- tarama ---------- */
+/* ---------- aylık tarama hakkı + aynı hedefe bekleme (sunucu uygular; burada yalnızca gösterim ve gereksiz istekleri önleme) ---------- */
+let QUOTA=null;
+const quotaPill=()=>QUOTA&&!QUOTA.unlimited&&QUOTA.limit>0&&QUOTA.remaining!=null?`<div class="quota-pill"><span class="badge ${QUOTA.remaining===0?'bd':QUOTA.remaining<=10?'wn':'ok'}" title="Aylık tarama hakkı; ${new Date(QUOTA.resetsAt).toLocaleDateString('tr-TR')} tarihinde yenilenir">Bu ay kalan tarama: ${QUOTA.remaining}/${QUOTA.limit}</span></div>`:'';
+function quotaPaint(){document.querySelectorAll('.quota-pill').forEach(el=>{const d=document.createElement('div');d.innerHTML=quotaPill();if(d.firstChild)el.replaceWith(d.firstChild);else el.remove()})}
+async function quotaRefresh(){const api=apiUrl();if(!api||!U)return;try{const h=await authH();if(!h.Authorization)return;const r=await fetch(api+'/api/scan/quota',{headers:h}),j=await r.json();if(j&&j.success){QUOTA=j;quotaPaint()}}catch{}}
+/* aynı hedef bekleme süresi dolmadıysa kalan dakika (0 = taranabilir) */
+const cooldownLeftMin=a=>{if(!a||!a.lastScan||(QUOTA&&(QUOTA.unlimited||QUOTA.cooldownSec===0)))return 0;const l=((QUOTA&&QUOTA.cooldownSec)||900)*1000-(Date.now()-a.lastScan);return l>0?Math.ceil(l/60000):0};
 async function runScan(a){
  const t0=Date.now(),api=apiUrl();let res;
  if(api){
@@ -251,11 +258,14 @@ async function runScan(a){
   if(r.status===402){location.hash='plan';throw new Error(j.error||'Paket gerekli')}
   if(j&&j.code==='FEATURE_DISABLED')throw new Error(FEATURE_MSG);
   if(j&&(j.code==='TARGET_BLOCKED'||j.code==='TOO_MANY_BLOCKED')){const e=new Error(j.error||'Bu hedef taranamaz');e.blocked=j.code==='TARGET_BLOCKED';throw e} // devlet/büyük platform/DAC alan adı: sunucu tarafından yasaklı
+  if(j&&(j.code==='SCAN_COOLDOWN'||j.code==='SCAN_QUOTA')){const e=new Error(j.error||'Tarama sınırına ulaşıldı');e.limit=j.code;e.retryAfterSec=j.retryAfterSec;if(QUOTA&&j.remaining!=null){QUOTA.remaining=j.remaining;quotaPaint()}throw e}
   if(!j.success)throw new Error(j.error||'Tarama başarısız');res=j.result;
  }else throw new Error('Tarama sunucusu adresi bulunamadı. Ayarlar > Scanner API adresini girin.');
  a.result=res;a.lastScan=Date.now();
  S.scans.unshift({id:uid(),assetId:a.id,name:a.name,cat:a.cat,score:res.healthScore,status:res.status,at:Date.now(),ms:Date.now()-t0});
  S.scans=S.scans.slice(0,planState().p.history||300);save();
+ if(QUOTA&&!QUOTA.unlimited&&QUOTA.remaining>0){QUOTA.remaining--;quotaPaint()}
+ quotaRefresh(); // sunucuyla senkron tut
 }
 /* ---------- tarayıcı bildirimleri (Web Push) ---------- */
 let NTF={on:false,perm:typeof Notification!=='undefined'?Notification.permission:'denied',checked:false};
@@ -313,8 +323,10 @@ async function delRemote(id){const api=apiUrl();if(!api||!U)return;try{const h=a
 /* Yasaklı hedef (devlet/büyük platform/DAC) varlık listesinde ve bulutta tutulmaz */
 function dropBlocked(id){S.assets=S.assets.filter(x=>x.id!==id);(S.tomb=S.tomb||{})[id]=Date.now();save();try{delRemote(id)}catch{}}
 async function rescan(id,open){
- const a=find(id);if(!a||!gate())return;busy(true);
- try{await runScan(a)}catch(e){if(e.blocked){dropBlocked(id);toast(e.message,'err')}else toast('Tarama hatası: '+e.message,'err')}
+ const a=find(id);if(!a||!gate())return;
+ const cl=cooldownLeftMin(a);if(cl){toast(`Bu varlık az önce tarandı; ${cl} dk sonra yeniden taranabilir. Mevcut sonuç gösteriliyor.`,'warn');if(open&&a.result)showDetail(id);return}
+ busy(true);
+ try{await runScan(a)}catch(e){if(e.blocked){dropBlocked(id);toast(e.message,'err')}else if(e.limit)toast(e.message,'warn');else toast('Tarama hatası: '+e.message,'err')}
  busy(false);render();if(open&&a.result)showDetail(id);
 }
 /* Tür sayfası Yenile: yalnızca o türdeki varlıkları yeniden tarar (diğer türlere dokunmaz) */
@@ -324,13 +336,14 @@ async function refreshCat(k){
  const list=S.assets.filter(a=>a.cat===k);
  if(!list.length)return toast('Bu türde taranacak varlık yok','warn');
  CATBUSY=true;busy(true);
- let ok=0,fail=0,i=0,stop=false,lastErr='';
+ let ok=0,fail=0,i=0,stop=false,lastErr='',wait=0,waitMin=0;
  const worker=async()=>{while(!stop&&i<list.length){const a=list[i++];
+  const cl=cooldownLeftMin(a);if(cl){wait++;waitMin=waitMin?Math.min(waitMin,cl):cl;continue} // bekleme süresi dolmayanlar taranmaz (hak harcanmaz)
   try{await runScan(a);ok++}
-  catch(e){fail++;lastErr=e.message||'';if(e.blocked)dropBlocked(a.id);if(/Paket gerekli|yetki onay|Deneme süreniz/i.test(lastErr))stop=true}}};
+  catch(e){if(e.limit==='SCAN_COOLDOWN'){wait++;continue}if(e.limit==='SCAN_QUOTA'){lastErr=e.message;stop=true;fail++;continue}fail++;lastErr=e.message||'';if(e.blocked)dropBlocked(a.id);if(/Paket gerekli|yetki onay|Deneme süreniz/i.test(lastErr))stop=true}}};
  try{await Promise.all(Array.from({length:Math.min(3,list.length)},worker))}catch(e){lastErr=e.message}
  CATBUSY=false;busy(false);render();
- toast(`${CATS[k].label}: ${ok} tarandı`+(fail?`, ${fail} hatalı`+(lastErr?' ('+lastErr+')':''):''),fail?'warn':'');
+ toast(`${CATS[k].label}: ${ok} tarandı`+(wait?`, ${wait} varlık yakın zamanda tarandığı için atlandı${waitMin?' ('+waitMin+' dk sonra yenilenebilir)':''}`:'')+(fail?`, ${fail} hatalı`+(lastErr?' ('+lastErr+')':''):''),fail||wait&&!ok?'warn':'');
 }
 async function addAndScan(cat,raw,extra={},name=''){
  const target=String(cat==='saas'?(extra.provider||raw):raw).trim();
@@ -407,13 +420,13 @@ function catPage(k){
  <label class="hint">Yenileme tarihi</label><input class="field" name="renewalDate" type="date">
  <button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form>`
  :`<form data-form="add" data-cat="${k}"><input class="field" name="t" placeholder="${v.ph}" required autocomplete="off"><input class="field" name="name" placeholder="Görünen ad (opsiyonel)">${k==='analytics'?'<input class="field" name="measurementId" placeholder="Ölçüm Kimliği (G-XXXXXXXXXX, opsiyonel)" autocomplete="off"><input class="field" name="propertyName" placeholder="Özellik (property) adı (opsiyonel)">':''}<button class="btn p w" type="submit">${ic('plus')} Ekle ve Tara</button></form>`;
- return`<div class="mh"><h2>${v.label}</h2><button class="btn s" data-act="cat-refresh" data-id="${k}"${list.length?'':' disabled'}>${ic('refresh-cw')} Yenile (${list.length})</button></div><p class="sub">${v.desc}</p>
+ return`<div class="mh"><div><h2>${v.label}</h2>${quotaPill()}</div><button class="btn s" data-act="cat-refresh" data-id="${k}"${list.length?'':' disabled'}>${ic('refresh-cw')} Yenile (${list.length})</button></div><p class="sub">${v.desc}</p>
  <div class="card info"><b>${ic('list-checks','style="color:'+v.c+'"')} Ne taranır?</b><ul class="ul">${v.what.map(x=>`<li>${x}</li>`).join('')}</ul><div class="why"><b>Neden önemli?</b> ${v.why}</div>${v.hint?`<div class="hint" style="margin-top:8px">${ic('info')} ${v.hint}</div>`:''}</div>
  <div class="card"><b>Yeni ${v.label} ekle</b><div style="height:12px"></div>${form}</div>${k==='domain'?domExtra():''}
  <div class="card"><div class="mh"><b>Varlıklar</b><span class="badge mu">${list.length}</span></div>${list.length?list.map(assetRow).join(''):`<div class="empty">Bu kategoride henüz varlık yok</div>`}</div>`;
 }
 function assets(){const q=($('#q')?.value||'').toLowerCase();const l=S.assets.filter(a=>!q||(a.name+a.target).toLowerCase().includes(q));
- return`<div class="mh"><h2>Varlıklarım</h2><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button></div><p class="sub">${S.assets.length} varlık</p><div class="card">${l.length?l.map(assetRow).join(''):`<div class="empty">Varlık yok. Sol menüden bir kategori seçip ekleyin.</div>`}</div>`}
+ return`<div class="mh"><div><h2>Varlıklarım</h2>${quotaPill()}</div><button class="btn s" data-act="bk-refresh">${ic('refresh-cw')} Yenile</button></div><p class="sub">${S.assets.length} varlık</p><div class="card">${l.length?l.map(assetRow).join(''):`<div class="empty">Varlık yok. Sol menüden bir kategori seçip ekleyin.</div>`}</div>`}
 function history(){return`<div class="mh"><div><h2>Tarama Geçmişi</h2><p class="sub">${S.scans.length} kayıt • bu pakette son ${planState().p.history}</p></div>${S.scans.length?`<button class="btn s d" data-act="clearhist">Temizle</button>`:''}</div><div class="card">${S.scans.length?S.scans.map(scanRow).join(''):`<div class="empty">Henüz tarama yok</div>`}</div>`}
 function renewals(){
  const l=renewItems(),tot=costTotals();
