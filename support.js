@@ -101,7 +101,8 @@ module.exports = function createSupport({ db, http, mailer, SEC, verifyUser = nu
       if (!sumIpLim(req.ip)) throw bad(429, "Çok fazla istek. Biraz sonra tekrar deneyin.");
       const u = await authed(req); res.set("Cache-Control", "no-store");
       const snap = await db.collection("supportTickets").where("uid", "==", u.uid).limit(100).get();
-      res.json({ success: true, serverTime: now(), tickets: snap.docs.map((d) => { const t = d.data(); return { id: d.id, no: ticketNo(d.id), subject: t.subject, status: t.status, staffAt: staffAtOf(t), updatedAt: t.updatedAt }; }) });
+      const tickets = snap.docs.map((d) => { const t = d.data(); return { id: d.id, no: ticketNo(d.id), subject: t.subject, status: t.status, staffAt: staffAtOf(t), updatedAt: t.updatedAt }; });
+      return res.json({ success: true, serverTime: now(), tickets });
     }));
     app.get("/api/support/my", panel(async (req, res, u) => res.json({ success: true, categories: CATEGORIES, tickets: await listMine(u.uid) })));
     app.post("/api/support/my", panel(async (req, res, u) => res.json({ success: true, ticket: await createMine(u, req.body || {}) }), { write: true }));

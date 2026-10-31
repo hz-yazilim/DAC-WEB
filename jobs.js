@@ -65,7 +65,7 @@ function firestoreStore(db, { jobsCol = "scanJobs", itemsCol = "scanJobItems" } 
 function createJobs({ store, scanItem, metrics = null, now = Date.now, config = {}, log = console }) {
   const cfg = {
     concurrency: config.concurrency ?? 3, perUser: config.perUser ?? 2, timeoutMs: config.timeoutMs ?? 75000, maxAttempts: config.maxAttempts ?? 3,
-    backoffBaseMs: config.backoffBaseMs ?? 30000, backoffMaxMs: config.backoffMaxMs ?? 300000, tickMs: config.tickMs ?? 3000,
+    backoffBaseMs: config.backoffBaseMs ?? 30000, backoffMaxMs: config.backoffMaxMs ?? 300000, tickMs: config.tickMs ?? 3000, idleTickMs: config.idleTickMs ?? 300000, errorTickMs: config.errorTickMs ?? 120000,
     maxItemsPerJob: config.maxItemsPerJob ?? 1000, maxActiveJobsPerUser: config.maxActiveJobsPerUser ?? 5, maxQueuedPerUser: config.maxQueuedPerUser ?? 3000,
     recoverImmediately: config.recoverImmediately ?? true
   };
@@ -136,15 +136,17 @@ function createJobs({ store, scanItem, metrics = null, now = Date.now, config = 
 
   async function tick() {
     if (ticking || stopped) return { skipped: true };
-    ticking = true; let started = 0;
+    ticking = true; let started = 0; let busy = running.size > 0, failed = false;
     try {
       // 1) bekleme süresi dolan yeniden denemeleri PENDING'e al
-      for (const it of await store.listItemsByStatus("RETRYING", 50)) if ((it.nextAttemptAt || 0) <= now()) await transition(it, { status: "PENDING" }, ["RETRYING"]);
+      const retrying = await store.listItemsByStatus("RETRYING", 50); if (retrying.length) busy = true;
+      for (const it of retrying) if ((it.nextAttemptAt || 0) <= now()) await transition(it, { status: "PENDING" }, ["RETRYING"]);
       // 2) boş yuva kadar öğe başlat
       const free = cfg.concurrency - running.size;
       if (free > 0) {
         const perUser = new Map(); for (const o of running.values()) perUser.set(o, (perUser.get(o) || 0) + 1);
         const pend = (await store.listItemsByStatus("PENDING", Math.max(free * 5, 25))).sort((a, b) => a.queuedAt - b.queuedAt);
+        if (pend.length) busy = true;
         for (const it of pend) {
           if (running.size >= cfg.concurrency) break;
           if ((perUser.get(it.ownerId) || 0) >= cfg.perUser) continue;
@@ -154,9 +156,15 @@ function createJobs({ store, scanItem, metrics = null, now = Date.now, config = 
           runItem({ ...it, attempts: (it.attempts || 0) + 1 }).catch((e) => log.error && log.error("kuyruk öğesi hatası:", e.message));
         }
       }
-    } catch (e) { log.error && log.error("kuyruk tick hatası:", e.message); }
-    finally { ticking = false; }
+    } catch (e) { failed = true; log.error && log.error("kuyruk tick hatası:", e.message); }
+    finally { ticking = false; lastBusy = busy || running.size > 0; lastFailed = failed; schedule(); }
     return { started, running: running.size };
+  }
+  // Firestore okuma kotasını korur: iş yokken yoklama seyrek (idleTickMs), iş varken sık (tickMs), hata/kota aşımında yavaş (errorTickMs). Yeni iş eklenince kick() hemen uyandırır.
+  let started = false, lastBusy = true, lastFailed = false;
+  function schedule() {
+    if (!started || stopped) return; if (timer) clearTimeout(timer);
+    timer = setTimeout(() => tick().catch(() => {}), lastFailed ? cfg.errorTickMs : lastBusy ? cfg.tickMs : cfg.idleTickMs); if (timer.unref) timer.unref();
   }
   const BOOT = newId("boot_");
   const kick = () => { if (!stopped) setImmediate(() => tick().catch(() => {})); };
@@ -220,11 +228,11 @@ function createJobs({ store, scanItem, metrics = null, now = Date.now, config = 
   const publicItem = (r) => ({ id: r.id, assetId: r.assetId, type: r.type, name: r.name, targetUrl: r.targetUrl, status: r.status, attempts: r.attempts, queuedAt: r.queuedAt, startedAt: r.startedAt || null, finishedAt: r.finishedAt || null, durationMs: r.durationMs ?? null, nextAttemptAt: r.nextAttemptAt || null, error: r.error || null, result: r.result || null });
 
   function start() {
-    if (timer) return; stopped = false;
+    if (started) return; started = true; stopped = false;
     recover().then((r) => { if (r.recovered && log.log) log.log(`Kuyruk: ${r.recovered} yarım kalan tarama yeniden sıraya alındı`); }).catch((e) => log.error && log.error("kuyruk kurtarma hatası:", e.message)).finally(() => tick().catch(() => {}));
-    timer = setInterval(() => tick().catch(() => {}), cfg.tickMs); if (timer.unref) timer.unref();
+    schedule();
   }
-  async function stop() { stopped = true; if (timer) clearInterval(timer); timer = null; // zarif kapanış: çalışanları PENDING'e döndür
+  async function stop() { stopped = true; started = false; if (timer) clearTimeout(timer); timer = null; // zarif kapanış: çalışanları PENDING'e döndür
     for (const id of [...running.keys()]) { const it = await store.getItem(id).catch(() => null); if (it && it.status === "RUNNING") await transition(it, { status: "PENDING", recovered: true }).catch(() => {}); } }
   async function stats() {
     const byStatus = await store.countJobsByStatus();

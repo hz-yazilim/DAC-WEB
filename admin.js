@@ -154,12 +154,17 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     do { const page = await admin.auth().listUsers(1000, token); for (const u of page.users) { const t = u.metadata && u.metadata.creationTime ? Date.parse(u.metadata.creationTime) : 0; if (t) arr.push(t); } token = page.pageToken; if (arr.length >= CAP && token) break; } while (token);
     createdCache = { at: now(), val: arr }; return arr;
   }
+  let bdgOrders = null, bdgSupport = null;
   app.get("/api/admin/badges", guard, wrap(async (req, res) => {
     const since = (k) => { const v = Number(req.query[k]); return Number.isFinite(v) && v > 0 ? v : now(); }; // süre verilmezse "şimdi": eskiler yeni sayılmaz
     const su = since("users"), so = since("orders"), se = since("errors"), out = { success: true, serverTime: now(), support: 0, users: 0, orders: 0, errors: 0 };
     if (db) {
-      out.support = (await countOf(db.collection("supportTickets").where("status", "==", "open"))) || 0;
-      try { const snap = await db.collection("orders").orderBy("createdAt", "desc").limit(100).get(); out.orders = snap.docs.filter((d) => { const o = d.data(); return o.status === "paid" && (ts(o.paidAt) || ts(o.createdAt) || 0) > so; }).length; } catch { /* sayılamadı */ }
+      if (!bdgSupport || now() - bdgSupport.at > 30000) bdgSupport = { at: now(), n: (await countOf(db.collection("supportTickets").where("status", "==", "open"))) || 0 }; // Firestore kotası: 30 sn önbellek
+      out.support = bdgSupport.n;
+      try {
+        if (!bdgOrders || now() - bdgOrders.at > 30000) { const snap = await db.collection("orders").orderBy("createdAt", "desc").limit(100).get(); bdgOrders = { at: now(), times: snap.docs.map((d) => d.data()).filter((o) => o.status === "paid").map((o) => ts(o.paidAt) || ts(o.createdAt) || 0) }; }
+        out.orders = bdgOrders.times.filter((t) => t > so).length;
+      } catch { /* sayılamadı */ }
     }
     try { out.users = (await userCreations()).filter((t) => t > su).length; } catch { /* kullanıcı listesi alınamadı */ }
     try { out.errors = metrics.recentErrors(200).filter((e) => Date.parse(e.at) > se).length; } catch { /* hata kaydı yok */ }
