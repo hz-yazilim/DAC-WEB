@@ -488,10 +488,46 @@ module.exports = function createAdmin({ app, db, admin, verifyUser, SEC, metrics
     await auditSafe(req, text ? "user.note" : "user.note-clear", g.uid, { length: text.length }); res.json({ success: true, uid: g.uid });
   }));
 
+  /* İşlem kayıtları (adminAudit) otomatik temizlenir: ADMIN_AUDIT_TTL_HOURS saatten (varsayılan 24) eski kayıtlar silinir.
+   * 0 yazılırsa otomatik silme kapanır. Temizlik günde bir kez çalışır. */
+  const AUDIT_TTL_H = SEC.int(process.env.ADMIN_AUDIT_TTL_HOURS, 24);
+  async function purgeAudit(cutoff) { // cutoff verilmezse hepsi silinir
+    if (!db) return 0; let n = 0;
+    for (let i = 0; i < 100; i++) {
+      let q = db.collection("adminAudit"); if (cutoff != null) q = q.where("at", "<", cutoff);
+      const snap = await q.limit(400).get(); if (snap.empty) break;
+      const b = db.batch(); snap.docs.forEach((d) => b.delete(d.ref)); await b.commit(); n += snap.size; if (snap.size < 400) break;
+    }
+    return n;
+  }
+  // Günde bir kez çalışır. Son çalışma zamanı Firestore'da tutulur; sunucu yeniden başlasa bile 24 saatte bir defadan fazla çalışmaz.
+  const purgeExpiredAudit = async () => {
+    if (!db || !(AUDIT_TTL_H > 0)) return 0;
+    try {
+      const ref = db.collection("adminMeta").doc("auditPurge"), last = (await ref.get()).data();
+      if (last && last.at && now() - last.at < 23 * 3600e3) return 0;
+      await ref.set({ at: now() });
+      return await purgeAudit(now() - AUDIT_TTL_H * 3600e3);
+    } catch (e) { metrics.recordError({ source: "audit-purge", message: e.message }); return 0; }
+  };
+  if (db && AUDIT_TTL_H > 0) { const t1 = setTimeout(purgeExpiredAudit, 30000), t2 = setInterval(purgeExpiredAudit, 24 * 3600e3); if (t1.unref) t1.unref(); if (t2.unref) t2.unref(); }
+
   app.get("/api/admin/audit", guard, wrap(async (req, res) => {
     if (!db) return res.json({ success: true, available: false, reason: "Firestore bağlı değil", entries: [] });
     const snap = await db.collection("adminAudit").orderBy("at", "desc").limit(Math.min(200, +req.query.limit || 100)).get();
-    res.json({ success: true, available: true, entries: snap.docs.map((d) => ({ id: d.id, ...d.data() })) });
+    res.json({ success: true, available: true, ttlHours: AUDIT_TTL_H > 0 ? AUDIT_TTL_H : 0, entries: snap.docs.map((d) => ({ id: d.id, ...d.data() })) });
+  }));
+  // Elle silme: tek kayıt
+  app.delete("/api/admin/audit/:id", guard, writeGuard, wrap(async (req, res) => {
+    if (!db) return deny(res, 503, "Firestore bağlı değil");
+    const ref = db.collection("adminAudit").doc(String(req.params.id)); if (!(await ref.get()).exists) return deny(res, 404, "Kayıt bulunamadı");
+    await ref.delete(); res.json({ success: true });
+  }));
+  // Elle silme: tüm kayıtlar (silme işleminin kendisi tek bir "audit.clear" kaydıyla izlenir)
+  app.post("/api/admin/audit/clear", guard, writeGuard, wrap(async (req, res) => {
+    if (!db) return deny(res, 503, "Firestore bağlı değil");
+    if ((req.body || {}).confirm !== true) return deny(res, 400, "Onay gerekli (confirm: true)");
+    const n = await purgeAudit(null); await auditSafe(req, "audit.clear", null, { deleted: n }); res.json({ success: true, deleted: n });
   }));
 
   // AI / para birimi / affiliate altyapı durumu (hepsi şimdilik devre dışı; gerçek veri yoksa uydurulmaz)
